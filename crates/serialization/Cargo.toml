@@ -7,4 +7,4 @@ description = "Canonical serialization/deserialization for wire and storage form
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
-openfiat-types = { path = "../types" }
+openfiat-types = { path = "../types", version = "0.1.0" }

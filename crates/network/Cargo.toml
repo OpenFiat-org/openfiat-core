@@ -7,6 +7,6 @@ description = "Transport layer: TCP/QUIC, TLS abstraction, connection management
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
-openfiat-types = { path = "../types" }
-openfiat-serialization = { path = "../serialization" }
-openfiat-crypto = { path = "../crypto" }
+openfiat-types = { path = "../types", version = "0.1.0" }
+openfiat-serialization = { path = "../serialization", version = "0.1.0" }
+openfiat-crypto = { path = "../crypto", version = "0.1.0" }

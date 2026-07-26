@@ -11,9 +11,9 @@ name = "openfiat-node"
 path = "src/main.rs"
 
 [dependencies]
-openfiat-config = { path = "../config" }
-openfiat-network = { path = "../network" }
-openfiat-rpc = { path = "../rpc" }
-openfiat-api = { path = "../api" }
-openfiat-metrics = { path = "../metrics" }
-openfiat-database = { path = "../database" }
+openfiat-config = { path = "../config", version = "0.1.0" }
+openfiat-network = { path = "../network", version = "0.1.0" }
+openfiat-rpc = { path = "../rpc", version = "0.1.0" }
+openfiat-api = { path = "../api", version = "0.1.0" }
+openfiat-metrics = { path = "../metrics", version = "0.1.0" }
+openfiat-database = { path = "../database", version = "0.1.0" }

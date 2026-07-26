@@ -7,6 +7,6 @@ description = "Settlement coordination with the Solana execution layer."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
-openfiat-types = { path = "../types" }
-openfiat-trade = { path = "../trade" }
-openfiat-crypto = { path = "../crypto" }
+openfiat-types = { path = "../types", version = "0.1.0" }
+openfiat-trade = { path = "../trade", version = "0.1.0" }
+openfiat-crypto = { path = "../crypto", version = "0.1.0" }

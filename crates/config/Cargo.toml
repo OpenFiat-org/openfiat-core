@@ -7,4 +7,4 @@ description = "Configuration loading, validation, and layering (file/env/flags).
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
-openfiat-types = { path = "../types" }
+openfiat-types = { path = "../types", version = "0.1.0" }

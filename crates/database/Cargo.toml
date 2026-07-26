@@ -7,5 +7,5 @@ description = "RocksDB-backed persistence layer built on `storage`, incl. migrat
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
-openfiat-storage = { path = "../storage" }
-openfiat-types = { path = "../types" }
+openfiat-storage = { path = "../storage", version = "0.1.0" }
+openfiat-types = { path = "../types", version = "0.1.0" }

@@ -7,6 +7,6 @@ description = "State snapshot creation and synchronization between nodes."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
-openfiat-network = { path = "../network" }
-openfiat-types = { path = "../types" }
-openfiat-serialization = { path = "../serialization" }
+openfiat-network = { path = "../network", version = "0.1.0" }
+openfiat-types = { path = "../types", version = "0.1.0" }
+openfiat-serialization = { path = "../serialization", version = "0.1.0" }

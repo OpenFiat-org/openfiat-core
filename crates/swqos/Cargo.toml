@@ -7,6 +7,6 @@ description = "Node reputation and stake-weighted quality of service."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
-openfiat-network = { path = "../network" }
-openfiat-reputation = { path = "../reputation" }
-openfiat-types = { path = "../types" }
+openfiat-network = { path = "../network", version = "0.1.0" }
+openfiat-reputation = { path = "../reputation", version = "0.1.0" }
+openfiat-types = { path = "../types", version = "0.1.0" }

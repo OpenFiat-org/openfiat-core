@@ -7,5 +7,5 @@ description = "Trade reservation and locking."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
-openfiat-types = { path = "../types" }
-openfiat-trade = { path = "../trade" }
+openfiat-types = { path = "../types", version = "0.1.0" }
+openfiat-trade = { path = "../trade", version = "0.1.0" }

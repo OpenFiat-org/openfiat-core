@@ -7,5 +7,5 @@ description = "Risk intelligence provider plugin architecture."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
-openfiat-types = { path = "../types" }
-openfiat-identity = { path = "../identity" }
+openfiat-types = { path = "../types", version = "0.1.0" }
+openfiat-identity = { path = "../identity", version = "0.1.0" }

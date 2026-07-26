@@ -7,6 +7,6 @@ description = "Encrypted session establishment and lifecycle between peers."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
-openfiat-network = { path = "../network" }
-openfiat-types = { path = "../types" }
-openfiat-crypto = { path = "../crypto" }
+openfiat-network = { path = "../network", version = "0.1.0" }
+openfiat-types = { path = "../types", version = "0.1.0" }
+openfiat-crypto = { path = "../crypto", version = "0.1.0" }
