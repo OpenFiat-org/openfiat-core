@@ -1,0 +1,12 @@
+[package]
+name = "openfiat-disputes"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Dispute lifecycle and evidence handling."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[dependencies]
+openfiat-types = { path = "../types" }
+openfiat-trade = { path = "../trade" }
+openfiat-settlement = { path = "../settlement" }

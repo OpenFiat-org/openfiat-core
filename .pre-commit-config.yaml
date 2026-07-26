@@ -1,0 +1,52 @@
+# Fast local hygiene checks. CI (.github/workflows/ci.yml) is authoritative
+# for linting, type-checking, and tests — this config catches formatting and
+# whitespace issues before they reach CI.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: ["--allow-multiple-documents"]
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  - repo: https://github.com/editorconfig-checker/editorconfig-checker.python
+    rev: 3.0.3
+    hooks:
+      - id: editorconfig-checker
+        alias: ec
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.42.0
+    hooks:
+      - id: markdownlint
+        args: ["--disable", "MD013", "MD033", "--"]
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: ["-d", "{extends: default, rules: {line-length: disable}}"]
+
+  - repo: local
+    hooks:
+      - id: rustfmt-.
+        name: rustfmt (.)
+        entry: bash -c 'cargo fmt --manifest-path Cargo.toml --all -- --check'
+        language: system
+        pass_filenames: false
+        files: ^./.*\.rs$
+  - repo: local
+    hooks:
+      - id: commitlint
+        name: commitlint (conventional commits)
+        entry: pnpm exec commitlint --edit
+        language: system
+        stages: [commit-msg]

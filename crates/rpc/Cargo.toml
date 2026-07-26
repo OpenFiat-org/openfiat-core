@@ -1,0 +1,11 @@
+[package]
+name = "openfiat-rpc"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "JSON-RPC / gRPC / WebSocket server surface."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[dependencies]
+openfiat-types = { path = "../types" }
+openfiat-serialization = { path = "../serialization" }

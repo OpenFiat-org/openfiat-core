@@ -1,0 +1,11 @@
+[package]
+name = "openfiat-identity"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Identity claims: DID-style identity and verifiable claims."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[dependencies]
+openfiat-crypto = { path = "../crypto" }
+openfiat-types = { path = "../types" }

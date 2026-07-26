@@ -1,0 +1,10 @@
+[package]
+name = "openfiat-crypto"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Cryptographic primitives: signing, hashing, key derivation."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[dependencies]
+openfiat-types = { path = "../types" }

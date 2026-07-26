@@ -1,0 +1,10 @@
+[package]
+name = "openfiat-notifications"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Notification gateway plugin architecture."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[dependencies]
+openfiat-types = { path = "../types" }

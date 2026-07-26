@@ -1,0 +1,16 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+
+*.rs linguist-language=Rust
+*.ts linguist-language=TypeScript
+*.tsx linguist-language=TypeScript
+*.py linguist-language=Python

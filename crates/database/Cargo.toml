@@ -1,0 +1,11 @@
+[package]
+name = "openfiat-database"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "RocksDB-backed persistence layer built on `storage`, incl. migrations."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[dependencies]
+openfiat-storage = { path = "../storage" }
+openfiat-types = { path = "../types" }

@@ -1,0 +1,11 @@
+[package]
+name = "openfiat-governance"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Protocol governance: proposals, voting, parameter changes."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[dependencies]
+openfiat-types = { path = "../types" }
+openfiat-identity = { path = "../identity" }

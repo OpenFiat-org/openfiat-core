@@ -1,0 +1,19 @@
+[package]
+name = "openfiat-cli"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "`openfiat-node` binary: composition root wiring the crates above."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[[bin]]
+name = "openfiat-node"
+path = "src/main.rs"
+
+[dependencies]
+openfiat-config = { path = "../config" }
+openfiat-network = { path = "../network" }
+openfiat-rpc = { path = "../rpc" }
+openfiat-api = { path = "../api" }
+openfiat-metrics = { path = "../metrics" }
+openfiat-database = { path = "../database" }

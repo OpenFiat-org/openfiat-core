@@ -1,0 +1,11 @@
+[package]
+name = "openfiat-reservations"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Trade reservation and locking."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[dependencies]
+openfiat-types = { path = "../types" }
+openfiat-trade = { path = "../trade" }

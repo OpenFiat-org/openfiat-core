@@ -1,0 +1,10 @@
+[package]
+name = "openfiat-serialization"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Canonical serialization/deserialization for wire and storage formats."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[dependencies]
+openfiat-types = { path = "../types" }

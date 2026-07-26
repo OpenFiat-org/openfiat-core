@@ -1,0 +1,11 @@
+[package]
+name = "openfiat-reputation"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Behavioral reputation scoring engine."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[dependencies]
+openfiat-types = { path = "../types" }
+openfiat-identity = { path = "../identity" }
