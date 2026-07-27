@@ -408,6 +408,7 @@ describe("presale", () => {
               minContribution: usdcUnit(1),
               maxContribution: usdcUnit(1_000),
               maxSlippageBps: 100,
+              endTime: new BN(Math.floor(Date.now() / 1000) + 3600),
             })
             .accountsPartial({ admin: impostor.publicKey, saleConfig })
             .signers([impostor])
@@ -426,6 +427,7 @@ describe("presale", () => {
             minContribution: usdcUnit(1),
             maxContribution: usdcUnit(1_000_000),
             maxSlippageBps: 100,
+            endTime: new BN(Math.floor(Date.now() / 1000) + 3600),
           })
           .accountsPartial({ admin: admin.publicKey, saleConfig })
           .rpc({ commitment: "confirmed" }),
@@ -449,6 +451,7 @@ describe("presale", () => {
             minContribution: usdcUnit(1),
             maxContribution: usdcUnit(1_000),
             maxSlippageBps: 100,
+            endTime: new BN(Math.floor(Date.now() / 1000) + 3600),
           })
           .accountsPartial({ admin: admin.publicKey, saleConfig })
           .rpc({ commitment: "confirmed" }),

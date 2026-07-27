@@ -3,12 +3,12 @@ use anchor_lang::prelude::*;
 use crate::{constants::*, error::ErrorCode, state::*};
 
 /// Admin-only adjustment of a live sale's economic bounds (hard/soft cap,
-/// per-wallet min/max, slippage tolerance) — everything except the mint,
-/// vaults, swap program, sale window and stablecoin whitelist, which stay
-/// fixed once initialized. Only callable while the sale is still `Active`:
-/// once finalized or resolved to `SoftCapMissed`, changing these numbers
-/// could make already-recorded contributions or claims inconsistent with
-/// the terms buyers contributed under.
+/// per-wallet min/max, slippage tolerance, end_time) — everything except
+/// the mint, vaults, swap program, start_time and stablecoin whitelist,
+/// which stay fixed once initialized. Only callable while the sale is
+/// still `Active`: once finalized or resolved to `SoftCapMissed`, changing
+/// these numbers could make already-recorded contributions or claims
+/// inconsistent with the terms buyers contributed under.
 #[derive(Accounts)]
 #[instruction(sale_nonce: u64)]
 pub struct UpdateSaleParams<'info> {
@@ -30,6 +30,7 @@ pub struct UpdateSaleParamsArgs {
     pub min_contribution: u64,
     pub max_contribution: u64,
     pub max_slippage_bps: u16,
+    pub end_time: i64,
 }
 
 pub fn handle_update_sale_params(
@@ -55,6 +56,10 @@ pub fn handle_update_sale_params(
         params.max_slippage_bps > 0 && (params.max_slippage_bps as u64) <= BPS_DENOMINATOR,
         ErrorCode::InvalidSlippageBps
     );
+    require!(
+        params.end_time > sale_config.start_time,
+        ErrorCode::InvalidSaleWindow
+    );
     // Never lower the hard cap below what's already been raised — that
     // would retroactively put the sale over its own limit.
     require!(
@@ -67,5 +72,6 @@ pub fn handle_update_sale_params(
     sale_config.min_contribution = params.min_contribution;
     sale_config.max_contribution = params.max_contribution;
     sale_config.max_slippage_bps = params.max_slippage_bps;
+    sale_config.end_time = params.end_time;
     Ok(())
 }
