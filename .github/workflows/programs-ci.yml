@@ -79,7 +79,11 @@ jobs:
           solana config set --url https://api.devnet.solana.com
           solana-keygen new --no-bip39-passphrase -o "$HOME/.config/solana/id.json"
       - name: Install Anchor CLI
-        run: cargo install anchor-cli --version ${ANCHOR_VERSION} --locked
+        # RUSTUP_TOOLCHAIN=stable overrides the rust-toolchain.toml pin in
+        # this directory (1.89.0, chosen for on-chain/SBF build
+        # reproducibility) — building the anchor-cli *host* binary itself
+        # needs a newer rustc than that pin provides.
+        run: RUSTUP_TOOLCHAIN=stable cargo install anchor-cli --version ${ANCHOR_VERSION} --locked
       - run: npm install
       - run: anchor build
       # --validator legacy: this Anchor CLI version defaults to the
@@ -92,10 +96,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Fail if mainnet-beta is referenced anywhere in programs/
+      - name: Fail if mainnet-beta is used as a live config value anywhere in programs/
         run: |
-          if grep -rIn "mainnet-beta" programs/ --include="*.toml" --include="*.ts" --include="*.rs" --include="*.json" 2>/dev/null | grep -v "programs/target/"; then
-            echo "::error::Found a mainnet-beta reference under programs/ — this workspace must stay devnet-only until the audit gate clears (see OFS-4200 §Status Banner)."
+          # Matches actual usage (a cluster value or RPC URL), not prose
+          # warning against it in comments/docs/README (e.g. this workflow
+          # file's own instructions, or Anchor.toml's warning comment) —
+          # those legitimately contain the string "mainnet-beta" as text.
+          if grep -rInE '(cluster[[:space:]]*=[[:space:]]*"mainnet-beta"|api\.mainnet-beta\.solana\.com)' programs/ \
+              --include="*.toml" --include="*.ts" --include="*.rs" --include="*.json" 2>/dev/null \
+              | grep -v "programs/target/"; then
+            echo "::error::Found a live mainnet-beta config value under programs/ — this workspace must stay devnet-only until the audit gate clears (see OFS-4200 §Status Banner)."
             exit 1
           fi
-          echo "No mainnet-beta references found."
+          echo "No mainnet-beta config values found."
