@@ -60,4 +60,12 @@ pub mod presale {
     pub fn refund(ctx: Context<Refund>, sale_nonce: u64) -> Result<()> {
         crate::instructions::refund::handle_refund(ctx, sale_nonce)
     }
+
+    pub fn update_sale_params(
+        ctx: Context<UpdateSaleParams>,
+        sale_nonce: u64,
+        params: UpdateSaleParamsArgs,
+    ) -> Result<()> {
+        crate::instructions::update_sale_params::handle_update_sale_params(ctx, sale_nonce, params)
+    }
 }

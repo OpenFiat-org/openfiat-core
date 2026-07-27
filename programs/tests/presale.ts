@@ -102,6 +102,31 @@ describe("presale", () => {
     }
   }
 
+  /**
+   * Retries a transaction send on a transient "Blockhash not found"
+   * simulation error — an occasional local-validator/RPC race where the
+   * blockhash used to build the transaction rotates out between signing
+   * and send. A known, standard mitigation for Solana transaction
+   * submission (not specific to this program's logic); rethrows anything
+   * else immediately.
+   */
+  async function withBlockhashRetry<T>(
+    fn: () => Promise<T>,
+    attempts = 4,
+  ): Promise<T> {
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await fn();
+      } catch (err) {
+        const isBlockhashRace =
+          err instanceof Error && err.message.includes("Blockhash not found");
+        if (!isBlockhashRace || i === attempts - 1) throw err;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    throw new Error("unreachable");
+  }
+
   type SaleParams = {
     hardCap: BN;
     softCap: BN;
@@ -343,6 +368,91 @@ describe("presale", () => {
           .signers([buyer2])
           .rpc({ commitment: "confirmed" }),
         "HardCapExceeded",
+      );
+    });
+  });
+
+  describe("update_sale_params", () => {
+    const nonce = 150;
+    let saleConfig: PublicKey;
+
+    before(async () => {
+      const treasury = await ata(usdcMint, admin.publicKey);
+      const now = Math.floor(Date.now() / 1000);
+      ({ saleConfig } = await initSale(
+        nonce,
+        {
+          hardCap: usdcUnit(1_000),
+          softCap: usdcUnit(10),
+          minContribution: usdcUnit(1),
+          maxContribution: usdcUnit(500),
+          maxSlippageBps: 100,
+          startTime: new BN(now - 60),
+          endTime: new BN(now + 3600),
+          stablecoinWhitelist: [],
+        },
+        treasury,
+        mockJupiter.programId,
+      ));
+    });
+
+    it("rejects an update from a non-admin signer", async () => {
+      const impostor = Keypair.generate();
+      await airdrop(impostor.publicKey);
+      await expectAnchorError(
+        withBlockhashRetry(() =>
+          program.methods
+            .updateSaleParams(new BN(nonce), {
+              hardCap: usdcUnit(2_000),
+              softCap: usdcUnit(10),
+              minContribution: usdcUnit(1),
+              maxContribution: usdcUnit(1_000),
+              maxSlippageBps: 100,
+            })
+            .accountsPartial({ admin: impostor.publicKey, saleConfig })
+            .signers([impostor])
+            .rpc({ commitment: "confirmed" }),
+        ),
+        "Unauthorized",
+      );
+    });
+
+    it("lets the admin raise the hard cap and per-wallet max", async () => {
+      await withBlockhashRetry(() =>
+        program.methods
+          .updateSaleParams(new BN(nonce), {
+            hardCap: usdcUnit(30_000_000),
+            softCap: usdcUnit(5_000_000),
+            minContribution: usdcUnit(1),
+            maxContribution: usdcUnit(1_000_000),
+            maxSlippageBps: 100,
+          })
+          .accountsPartial({ admin: admin.publicKey, saleConfig })
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const account = await program.account.saleConfig.fetch(saleConfig);
+      expect(account.hardCap.toString()).to.equal(
+        usdcUnit(30_000_000).toString(),
+      );
+      expect(account.maxContribution.toString()).to.equal(
+        usdcUnit(1_000_000).toString(),
+      );
+    });
+
+    it("rejects a hard cap that isn't greater than the soft cap", async () => {
+      await expectAnchorError(
+        program.methods
+          .updateSaleParams(new BN(nonce), {
+            hardCap: usdcUnit(5),
+            softCap: usdcUnit(10),
+            minContribution: usdcUnit(1),
+            maxContribution: usdcUnit(1_000),
+            maxSlippageBps: 100,
+          })
+          .accountsPartial({ admin: admin.publicKey, saleConfig })
+          .rpc({ commitment: "confirmed" }),
+        "HardCapNotGreaterThanSoftCap",
       );
     });
   });
