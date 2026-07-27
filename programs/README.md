@@ -71,6 +71,45 @@ After a real devnet deploy, record the resulting program ID in
 actually deployed; see Phase 3's exit criteria) — that file is the canonical
 source every later phase (core wiring, SDKs, the app) reads from.
 
+## OPEN token genesis
+
+`scripts/genesis.ts` creates the fixed-supply Token-2022 mint (OFS-4100 §1),
+mints the full 1,000,000,000 OPEN supply once, distributes it across the 7
+allocation buckets (OFS-4100 §2), then permanently revokes both mint and
+freeze authority. `scripts/verify-genesis.ts` reads back on-chain state and
+asserts every invariant (supply, decimals, revoked authorities, all 7 bucket
+accounts distinct, balances sum to total).
+
+The Community Presale bucket is owned by the `presale_vault` PDA (so the
+presale program can release it in Phase 3 without a human keypair ever
+custodying it). The other 6 buckets are each owned by a dedicated placeholder
+keypair generated on first run and persisted under `scripts/.bucket-keys/`
+(gitignored — never commit secret keys, even for devnet placeholders). Real
+production custody (a multisig, and/or the vesting program for time-locked
+buckets) is out of scope until the phases that actually spend from these
+buckets are built.
+
+```bash
+# Local validator (fast, deterministic — this is what CI runs):
+npx ts-node scripts/genesis.ts --cluster localnet
+npx ts-node scripts/verify-genesis.ts --cluster localnet
+
+# Real devnet (requires devnet SOL in the deploying wallet — see the
+# `anchor deploy` note above re: airdrop rate-limiting):
+npx ts-node scripts/genesis.ts --cluster devnet
+npx ts-node scripts/verify-genesis.ts --cluster devnet
+```
+
+Results are recorded per-cluster in `devnet-addresses.json` (mint address,
+admin pubkey, and each bucket's owner + token account address) — the
+canonical source every later phase reads from. **As of this writing, the
+real-devnet run is still pending**: the devnet SOL faucet has been
+rate-limited in this environment on every attempt so far. Genesis has been
+fully validated against a local `solana-test-validator` instead (all
+`verify-genesis.ts` assertions pass); re-run the devnet commands above once
+faucet access is available, or fund the deploying wallet manually via
+https://faucet.solana.com.
+
 ## Linting and license compliance
 
 ```bash

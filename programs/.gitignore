@@ -6,3 +6,7 @@ node_modules
 test-ledger
 .yarn
 .surfpool
+
+# Devnet placeholder bucket-owner keypairs (see scripts/genesis.ts) — these
+# are NOT production custody, but secret keys never belong in git regardless.
+scripts/.bucket-keys/
