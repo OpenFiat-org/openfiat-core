@@ -7,6 +7,10 @@ skip-lint = false
 
 [programs.localnet]
 presale = "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7"
+# Deterministic swap-aggregator test fixture (see programs/mock-jupiter) —
+# localnet/CI only, never deployed to devnet or referenced by production
+# SaleConfig.swap_program values.
+mock_jupiter = "8ysRdUzhhvm4jHJwbJqYF6ZuS2AqekfTJbxMUF1g3Ugn"
 
 # Filled in once `anchor deploy --provider.cluster devnet` has actually run
 # (Phase 3 exit criteria) — same program ID as localnet since it's derived

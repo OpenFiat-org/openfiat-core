@@ -1,0 +1,80 @@
+use anchor_lang::prelude::*;
+use anchor_spl::token_interface::{
+    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+};
+
+use crate::{constants::*, error::ErrorCode, state::*};
+
+#[derive(Accounts)]
+#[instruction(sale_nonce: u64)]
+pub struct Claim<'info> {
+    pub buyer: Signer<'info>,
+
+    #[account(
+        seeds = [SALE_CONFIG_SEED, &sale_nonce.to_le_bytes()],
+        bump = sale_config.bump,
+        constraint = sale_config.presale_vault == presale_vault.key(),
+        constraint = sale_config.open_mint == open_mint.key(),
+    )]
+    pub sale_config: Account<'info, SaleConfig>,
+
+    pub open_mint: InterfaceAccount<'info, Mint>,
+
+    /// CHECK: verified via seeds/bump; signs the OPEN transfer below.
+    #[account(seeds = [PRESALE_VAULT_SEED], bump)]
+    pub presale_vault_authority: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub presale_vault: InterfaceAccount<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [CONTRIBUTION_SEED, sale_config.key().as_ref(), buyer.key().as_ref()],
+        bump = contribution.bump,
+        has_one = buyer @ ErrorCode::Unauthorized,
+    )]
+    pub contribution: Account<'info, Contribution>,
+
+    #[account(
+        mut,
+        constraint = buyer_open.owner == buyer.key(),
+        constraint = buyer_open.mint == sale_config.open_mint,
+    )]
+    pub buyer_open: InterfaceAccount<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token2022>,
+}
+
+pub fn handle_claim(ctx: Context<Claim>, _sale_nonce: u64) -> Result<()> {
+    require!(
+        ctx.accounts.sale_config.state == SaleState::Finalized,
+        ErrorCode::SaleNotFinalized
+    );
+    require!(
+        !ctx.accounts.contribution.claimed,
+        ErrorCode::AlreadyClaimed
+    );
+
+    let bump = ctx.bumps.presale_vault_authority;
+    let signer_seeds: &[&[u8]] = &[PRESALE_VAULT_SEED, &[bump]];
+    let amount = ctx.accounts.contribution.open_entitlement;
+    let open_decimals = ctx.accounts.sale_config.open_decimals;
+
+    transfer_checked(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.key(),
+            TransferChecked {
+                from: ctx.accounts.presale_vault.to_account_info(),
+                mint: ctx.accounts.open_mint.to_account_info(),
+                to: ctx.accounts.buyer_open.to_account_info(),
+                authority: ctx.accounts.presale_vault_authority.to_account_info(),
+            },
+            &[signer_seeds],
+        ),
+        amount,
+        open_decimals,
+    )?;
+
+    ctx.accounts.contribution.claimed = true;
+    Ok(())
+}

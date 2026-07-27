@@ -11,18 +11,53 @@ pub use state::*;
 
 declare_id!("75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7");
 
-/// `openfiat-presale` — the OPEN token presale program (OFS-4200 §3).
-///
-/// This is Phase 1 scaffolding only: a single `initialize` instruction that
-/// creates an empty `SaleConfig` singleton, proving the workspace builds,
-/// deploys, and tests end-to-end. The real `contribute`/`finalize_sale`/
-/// `claim`/`refund` instructions and the Jupiter CPI swap path land in
-/// Phase 3, once OFS-4100's presale terms are signed off.
+/// `openfiat-presale` — the OPEN token presale program (OFS-4200 §3,
+/// OFS-4100 §3). Phase 3: full sale lifecycle — initialize, contribute
+/// (direct USDC or SOL/stablecoin via atomic Jupiter CPI swap), finalize,
+/// claim, refund.
 #[program]
 pub mod presale {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        crate::instructions::initialize::handle_initialize(ctx)
+    pub fn initialize_sale(
+        ctx: Context<InitializeSale>,
+        sale_nonce: u64,
+        params: InitializeSaleParams,
+    ) -> Result<()> {
+        crate::instructions::initialize_sale::handle_initialize_sale(ctx, sale_nonce, params)
+    }
+
+    pub fn contribute_usdc(
+        ctx: Context<ContributeUsdc>,
+        sale_nonce: u64,
+        amount: u64,
+    ) -> Result<()> {
+        crate::instructions::contribute_usdc::handle_contribute_usdc(ctx, sale_nonce, amount)
+    }
+
+    pub fn contribute_with_swap(
+        ctx: Context<ContributeWithSwap>,
+        sale_nonce: u64,
+        expected_usdc_out: u64,
+        swap_instruction_data: Vec<u8>,
+    ) -> Result<()> {
+        crate::instructions::contribute_with_swap::handle_contribute_with_swap(
+            ctx,
+            sale_nonce,
+            expected_usdc_out,
+            swap_instruction_data,
+        )
+    }
+
+    pub fn finalize_sale(ctx: Context<FinalizeSale>, sale_nonce: u64) -> Result<()> {
+        crate::instructions::finalize_sale::handle_finalize_sale(ctx, sale_nonce)
+    }
+
+    pub fn claim(ctx: Context<Claim>, sale_nonce: u64) -> Result<()> {
+        crate::instructions::claim::handle_claim(ctx, sale_nonce)
+    }
+
+    pub fn refund(ctx: Context<Refund>, sale_nonce: u64) -> Result<()> {
+        crate::instructions::refund::handle_refund(ctx, sale_nonce)
     }
 }
