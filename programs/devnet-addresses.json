@@ -16,5 +16,39 @@
     "bucket_liquidity-programs": "2csiLpz2TGvNSHkWW54QGGzTEBbCiiHpvhD1E5pe4vgE",
     "bucket_strategic-reserve_owner": "7TKkfy8hor1W155t4mR1bxq9ezaDWfgND9EE49DrG9kY",
     "bucket_strategic-reserve": "CvbgAeLUGDvQ7cAbDK1M1KgoZ5uYh2XRcBM9pGCEAnTX"
+  },
+  "devnet": {
+    "mint": "Gni52mcwmR5EH4c7UmUjmwKsNRCouDxsGe18hiRsbmL",
+    "admin": "EA8TyQ58C3eavg3ThRFTMu1KLyV9e1v2oTQubSBQ9s5z",
+    "bucket_community-presale_owner": "CicL1pD1fQoVRXYExKfdRMNfeyqTWuBw1nUueBw7p4ai",
+    "bucket_community-presale": "JtPL8d39DriRy4XY7q8qeJ4JSRRcwkVPS6jvXgqD6hT",
+    "bucket_allenhark-treasury_owner": "5EKezKhxjq4656gGPqd4f9Vkdk3rvd5hWBRqh2JUewg4",
+    "bucket_allenhark-treasury": "5TCY3WgHmV9rjjHBSCEKDoYUf48m3JxFFAMNU9Xghpj5",
+    "bucket_ecosystem-treasury_owner": "CwdU75AuaYzRMczH34UuQd561cELRfq5WxvWuSuwkNT",
+    "bucket_ecosystem-treasury": "48kX8WXqbbcXcB2wqVThML6WdzTNidHZn3UQLkMUBGLH",
+    "bucket_infrastructure-bootstrap_owner": "8JQ75HpFxZNmyxpc4iN7pED2khxNQPyXL4jrpezmvkn7",
+    "bucket_infrastructure-bootstrap": "Dad7kxrZ7EL4b9jLk5BVZ8bcchp2H9S6gGp1PoCS77bV",
+    "bucket_community-incentives_owner": "CudDricDMtJ4T21Uf3AZmKf9wx3yE8wjHgdiqTMcQxV7",
+    "bucket_community-incentives": "k2siXVV6SRrP7PGwkFCgGoviwrEX7BV28nbq3ozKvRX",
+    "bucket_liquidity-programs_owner": "DtYyVXnyZBV1ZHw9M8pEqsVx7kKXPxD6aDkcSK9t92cu",
+    "bucket_liquidity-programs": "Hhzmc7cihrtez4tSMRe7F48ZULyu3ipwuunjePcEXura",
+    "bucket_strategic-reserve_owner": "7TKkfy8hor1W155t4mR1bxq9ezaDWfgND9EE49DrG9kY",
+    "bucket_strategic-reserve": "HDGGTSWWA7DTN5GDDADjVutFzvbLRpLjFmUjCWMD7w31"
+  },
+  "devnet_sale": {
+    "programId": "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7",
+    "saleNonce": 0,
+    "openMint": "Gni52mcwmR5EH4c7UmUjmwKsNRCouDxsGe18hiRsbmL",
+    "usdcMint": "6xCTSCscWcChv1FkRyHzXHmGbQFUwkBUuWFSS1RVXtQa",
+    "swapProgram": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+    "saleConfig": "B1Z3QJG3JKwqV4Vn4DwQRQdzFB9kUzjmQ2gJFwovNhYr",
+    "usdcVault": "DKfj6buB6HQpsVgBumggYsbBsuSWaKAZQmVuSf6tTvBz",
+    "treasury": "6wyWdnDmGcqXHzHWbXTe7Cr2rvh1jWQvQGZMZghRWX2U",
+    "hardCapUsdc": 1000,
+    "softCapUsdc": 10,
+    "minContributionUsdc": 1,
+    "maxContributionUsdc": 500,
+    "opensAt": "2026-07-27T10:32:17.000Z",
+    "closesAt": "2026-08-26T10:33:17.000Z"
   }
 }

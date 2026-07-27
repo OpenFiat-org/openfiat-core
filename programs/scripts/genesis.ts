@@ -159,6 +159,11 @@ async function main() {
     admin: admin.publicKey.toBase58(),
   };
 
+  // The public devnet RPC (api.devnet.solana.com) rate-limits bursts of
+  // requests harder than mainnet or a paid provider — a brief pause between
+  // buckets avoids tripping that limit and failing mid-genesis.
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
   for (const bucket of BUCKETS) {
     const amount = bucketAmount(bucket.bps) * 10n ** BigInt(DECIMALS);
     const isPresale = bucket.name === "community-presale";
@@ -175,6 +180,7 @@ async function main() {
       undefined,
       TOKEN_2022_PROGRAM_ID,
     );
+    await sleep(cluster === "localnet" ? 0 : 800);
     await transfer(
       connection,
       admin,
@@ -191,6 +197,7 @@ async function main() {
     );
     addresses[`bucket_${bucket.name}_owner`] = owner.toBase58();
     addresses[`bucket_${bucket.name}`] = account.address.toBase58();
+    await sleep(cluster === "localnet" ? 0 : 800);
   }
 
   console.log(
