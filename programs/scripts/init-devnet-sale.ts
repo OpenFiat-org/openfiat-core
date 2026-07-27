@@ -38,7 +38,11 @@ const PRESALE_PROGRAM_ID = new PublicKey(
 const JUPITER_V6_PROGRAM_ID = new PublicKey(
   "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
 );
-const SALE_NONCE = 0;
+// Nonce 0 was initialized against the old (incorrect, 3%-presale-bucket)
+// mint and left in place — PDAs are namespaced by nonce, so bumping to 1
+// creates a fresh SaleConfig against the corrected mint rather than
+// colliding with (or trying to migrate) the stale nonce-0 sale.
+const SALE_NONCE = 1;
 const USDC_DECIMALS = 6;
 
 async function main() {

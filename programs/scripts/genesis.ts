@@ -45,16 +45,19 @@ import {
 const DECIMALS = 9; // OFS-4100 §1 [CONFIRMED]
 const TOTAL_SUPPLY = 1_000_000_000n; // OFS-4100 §1 [CONFIRMED]
 
-// OFS-4100 §2 — [PROPOSED — NEEDS SIGN-OFF], expressed as basis points of
-// TOTAL_SUPPLY so the split is exact regardless of decimals.
+// OFS-4100 §2 — Community Presale is [CONFIRMED] at 20% (the full bucket
+// funds two sequential sale phases — presale then public sale — rather than
+// sizing a single capped raise); the other six are still
+// [PROPOSED — NEEDS SIGN-OFF], expressed as basis points of TOTAL_SUPPLY so
+// the split is exact regardless of decimals.
 const BUCKETS: Array<{ name: string; bps: number }> = [
-  { name: "community-presale", bps: 300 }, // 3%
-  { name: "allenhark-treasury", bps: 1700 }, // 17%
-  { name: "ecosystem-treasury", bps: 2000 }, // 20%
-  { name: "infrastructure-bootstrap", bps: 1500 }, // 15%
-  { name: "community-incentives", bps: 2000 }, // 20%
-  { name: "liquidity-programs", bps: 1500 }, // 15%
-  { name: "strategic-reserve", bps: 1000 }, // 10%
+  { name: "community-presale", bps: 2000 }, // 20%
+  { name: "allenhark-treasury", bps: 1400 }, // 14%
+  { name: "ecosystem-treasury", bps: 1700 }, // 17%
+  { name: "infrastructure-bootstrap", bps: 1200 }, // 12%
+  { name: "community-incentives", bps: 1700 }, // 17%
+  { name: "liquidity-programs", bps: 1200 }, // 12%
+  { name: "strategic-reserve", bps: 800 }, // 8%
 ];
 
 function bucketAmount(bps: number): bigint {
