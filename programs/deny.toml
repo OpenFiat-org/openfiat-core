@@ -1,0 +1,30 @@
+# cargo-deny configuration for the on-chain programs workspace.
+#
+# This is a SEPARATE Cargo workspace from ../Cargo.toml (the off-chain
+# crates/ workspace) — Anchor pins its own solana-sdk/dependency versions
+# that may not match choices made in crates/, so the two are kept isolated
+# and each has its own deny.toml.
+[graph]
+all-features = true
+
+[licenses]
+allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[advisories]
+ignore = [
+    # bincode 1.3.3 is pulled in transitively by anchor-lang/solana-sdk itself
+    # (not a direct dependency choice here). The advisory is a maintenance
+    # notice (the maintainer stopped development after a harassment
+    # incident), not a known vulnerability, and there is no safe upgrade
+    # path until Anchor/solana-sdk move off it upstream. Revisit when
+    # bumping anchor-lang.
+    "RUSTSEC-2025-0141",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

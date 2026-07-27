@@ -1,0 +1,101 @@
+name: Programs CI
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["programs/**", ".github/workflows/programs-ci.yml"]
+  pull_request:
+    branches: ["main"]
+    paths: ["programs/**", ".github/workflows/programs-ci.yml"]
+
+env:
+  CARGO_TERM_COLOR: always
+  SOLANA_VERSION: stable
+  ANCHOR_VERSION: 1.1.2
+
+jobs:
+  fmt:
+    name: cargo fmt (programs/)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: programs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: cargo clippy (programs/)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: programs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "programs -> target"
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  deny:
+    name: cargo deny (programs/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: programs/Cargo.toml
+
+  anchor-build-test:
+    name: anchor build + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: programs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "programs -> target"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Set devnet-only Solana config (defense in depth)
+        run: |
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          solana config set --url https://api.devnet.solana.com
+          solana-keygen new --no-bip39-passphrase -o "$HOME/.config/solana/id.json"
+      - name: Install Anchor CLI
+        run: cargo install anchor-cli --version ${ANCHOR_VERSION} --locked
+      - run: npm install
+      - run: anchor build
+      # --validator legacy: this Anchor CLI version defaults to the
+      # `surfpool` validator, which isn't installed in CI; `legacy` uses the
+      # standard solana-test-validator that ships with the Solana CLI.
+      - run: anchor test --validator legacy
+
+  no-mainnet-check:
+    name: guard against accidental mainnet references
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if mainnet-beta is referenced anywhere in programs/
+        run: |
+          if grep -rIn "mainnet-beta" programs/ --include="*.toml" --include="*.ts" --include="*.rs" --include="*.json" 2>/dev/null | grep -v "programs/target/"; then
+            echo "::error::Found a mainnet-beta reference under programs/ — this workspace must stay devnet-only until the audit gate clears (see OFS-4200 §Status Banner)."
+            exit 1
+          fi
+          echo "No mainnet-beta references found."
