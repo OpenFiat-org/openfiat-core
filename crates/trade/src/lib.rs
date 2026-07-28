@@ -1,9 +1,15 @@
 //! `openfiat-trade` — Trade lifecycle state machine.
 //!
-//! Related specification: OFS-2000 (OFTP).
-//! This crate currently defines architecture only: module layout and public
-//! surface will be filled in during implementation. No business logic lives
-//! here yet.
+//! Implements OFS-2000 (OFTP) §9: "Every trade is the composition of two
+//! sub-protocols, each with its own canonical state machine... This
+//! specification does not redefine either state machine." This crate is
+//! therefore a read-time view over `openfiat-reservations` and
+//! `openfiat-settlement`'s own replicated state, not a third independent
+//! state machine — see the `view` module.
+
+pub mod view;
+
+pub use view::{Trade, TradeStatus, TradeView};
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {

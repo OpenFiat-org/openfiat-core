@@ -39,6 +39,14 @@ impl<S: KvStore + 'static> ReservationService<S> {
         self.registry.all()
     }
 
+    /// A shared handle to this node's reservation index, for crates
+    /// downstream in the dependency chain (`openfiat-trade`) that
+    /// correlate reservations with their settlements rather than
+    /// re-deriving reservation state themselves.
+    pub fn registry(&self) -> Rc<ReservationRegistry<S>> {
+        Rc::clone(&self.registry)
+    }
+
     pub fn expire_stale(&self) -> usize {
         self.registry.expire_stale(protocol::VALIDATION_WINDOW)
     }

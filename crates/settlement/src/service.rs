@@ -29,6 +29,14 @@ impl<S: KvStore + 'static> SettlementService<S> {
         Self { gossip, registry }
     }
 
+    /// A shared handle to this node's settlement index, for crates
+    /// downstream in the dependency chain (`openfiat-trade`) that
+    /// correlate settlements with their reservations rather than
+    /// re-deriving settlement state themselves.
+    pub fn registry(&self) -> Rc<SettlementRegistry<S>> {
+        Rc::clone(&self.registry)
+    }
+
     pub fn get(&self, id: &SettlementId) -> Option<Settlement> {
         self.registry.get(id)
     }
