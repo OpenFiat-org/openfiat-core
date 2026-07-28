@@ -72,6 +72,10 @@ error_registry! {
         MessageOutOfOrder = 1007, "MESSAGE_OUT_OF_ORDER", false;
         NodeNotSynchronized = 1008, "NODE_NOT_SYNCHRONIZED", true;
         NetworkUnavailable = 1009, "NETWORK_UNAVAILABLE", true;
+        ChainUnavailable = 1010, "CHAIN_UNAVAILABLE", true;
+        BlockhashExpired = 1011, "BLOCKHASH_EXPIRED", true;
+        MalformedTransaction = 1012, "MALFORMED_TRANSACTION", false;
+        TransactionSubmissionFailed = 1013, "TRANSACTION_SUBMISSION_FAILED", true;
     }
     range "Identity (2000-2999)" {
         IdentityNotFound = 2000, "IDENTITY_NOT_FOUND", false;

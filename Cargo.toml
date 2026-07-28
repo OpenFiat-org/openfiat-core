@@ -26,6 +26,7 @@ members = [
     "crates/notifications",
     "crates/oracles",
     "crates/risk",
+    "crates/chain",
     "crates/rpc",
     "crates/api",
     "crates/metrics",
