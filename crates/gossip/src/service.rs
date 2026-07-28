@@ -56,10 +56,24 @@ pub struct GossipService<S> {
     /// discrimination), so more than one domain crate needs to register a
     /// handler on the same instance without evicting the others'.
     event_handlers: Vec<EventHandler>,
+    /// Consulted before re-forwarding a *received* event (never for a
+    /// self-originated one — the origin's own first broadcast always
+    /// goes out). All registered filters must agree to forward; any one
+    /// returning `false` suppresses it. This exists for domain crates
+    /// whose events are independently, repeatedly observed by many
+    /// unrelated origins for the *same underlying fact* (OFS-4300 §6's
+    /// blockhash announcements) — ordinary dedup is keyed by `EventId`,
+    /// which differs per origin/signature/timestamp even for identical
+    /// content, so it does not by itself bound that kind of redundancy.
+    forward_filters: Vec<ForwardFilter>,
 }
 
 /// A callback notified of every event a [`GossipService`] stores.
 type EventHandler = Box<dyn FnMut(&EventEnvelope)>;
+
+/// A callback that may veto re-forwarding a received event (see
+/// `forward_filters`).
+type ForwardFilter = Box<dyn FnMut(&EventEnvelope) -> bool>;
 
 impl<S: KvStore> GossipService<S> {
     pub fn new(
@@ -80,6 +94,7 @@ impl<S: KvStore> GossipService<S> {
             peer_keys: HashMap::new(),
             connected: HashSet::new(),
             event_handlers: Vec::new(),
+            forward_filters: Vec::new(),
         }
     }
 
@@ -102,6 +117,14 @@ impl<S: KvStore> GossipService<S> {
     /// registered handler keeps running.
     pub fn add_event_handler(&mut self, handler: impl FnMut(&EventEnvelope) + 'static) {
         self.event_handlers.push(Box::new(handler));
+    }
+
+    /// Register a filter that may veto re-forwarding a *received* event
+    /// (see the `forward_filters` field doc). Appends — every previously
+    /// registered filter keeps running, and all of them must agree to
+    /// forward.
+    pub fn add_forward_filter(&mut self, filter: impl FnMut(&EventEnvelope) -> bool + 'static) {
+        self.forward_filters.push(Box::new(filter));
     }
 
     /// Register a peer's public key so events it originates can be
@@ -205,8 +228,17 @@ impl<S: KvStore> GossipService<S> {
         }
         self.store.put(&event);
         self.notify(&event);
-        self.forward(from, &event);
+        if self.should_forward(&event) {
+            self.forward(from, &event);
+        }
         ReceiveOutcome::Stored
+    }
+
+    /// Whether every registered forward filter agrees to re-forward
+    /// `event`. Vacuously `true` when no filter is registered, so this
+    /// changes nothing for domains that never call `add_forward_filter`.
+    fn should_forward(&mut self, event: &EventEnvelope) -> bool {
+        self.forward_filters.iter_mut().all(|filter| filter(event))
     }
 
     /// §9 local validation, applied identically to received events:

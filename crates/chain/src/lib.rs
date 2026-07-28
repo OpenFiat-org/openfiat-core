@@ -3,10 +3,9 @@
 //!
 //! An RPC-connected node ([`RpcChainClient`]) supplies a blockhash and
 //! submits transactions directly. A gossip-only node has neither — it
-//! gets both from RPC-connected peers over gossip instead, using
-//! [`BlockhashCache`] for the blockhash side (the gossip wiring itself,
-//! and the transaction-relay request/response path, land in the next
-//! phase alongside `openfiat-gossip`'s new Chain channel).
+//! gets both from RPC-connected peers over gossip instead, via
+//! [`ChainGossipService`], which wires [`events`]' three event types onto
+//! a node's shared `GossipService` and drives [`BlockhashCache`].
 //!
 //! Neither path ever holds or signs with a user's Solana key — every
 //! transaction arrives here already signed; this crate only supplies
@@ -15,11 +14,15 @@
 mod blockhash;
 mod client;
 mod error;
+pub mod events;
+mod gossip_service;
 mod mode;
+pub mod protocol;
 
 pub use blockhash::{BLOCKHASH_VALIDITY, BlockhashCache};
 pub use client::{ChainClient, RpcChainClient, SignatureStatus};
 pub use error::ChainError;
+pub use gossip_service::ChainGossipService;
 pub use mode::NodeChainMode;
 
 /// Crate version, re-exported for diagnostics.

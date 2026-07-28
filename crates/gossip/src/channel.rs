@@ -10,6 +10,7 @@ pub enum Channel {
     Notifications,
     Oracle,
     RiskIntelligence,
+    Chain,
     Infrastructure,
 }
 
@@ -26,6 +27,7 @@ impl Channel {
             6000 => Channel::Notifications,
             7000 => Channel::Oracle,
             7100 => Channel::RiskIntelligence,
+            4300 => Channel::Chain,
             _ => Channel::Infrastructure,
         }
     }
@@ -59,6 +61,7 @@ mod tests {
         assert_eq!(Channel::for_ofs_spec(4000), Channel::Governance);
         assert_eq!(Channel::for_ofs_spec(7000), Channel::Oracle);
         assert_eq!(Channel::for_ofs_spec(7100), Channel::RiskIntelligence);
+        assert_eq!(Channel::for_ofs_spec(4300), Channel::Chain);
         assert_eq!(Channel::for_ofs_spec(1000), Channel::Infrastructure);
     }
 

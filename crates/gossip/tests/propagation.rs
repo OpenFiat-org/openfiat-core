@@ -247,3 +247,69 @@ async fn a_reconnecting_node_recovers_events_it_missed_while_offline() {
         "reconnecting must recover events missed while offline"
     );
 }
+
+#[tokio::test]
+async fn a_forward_filter_suppresses_relaying_without_affecting_local_storage() {
+    // Chain: x - y - z, same shape as the ttl test. y's forward filter
+    // rejects one specific payload — proving suppression is per-event
+    // content, not a blanket "stop relaying anything" switch, and that a
+    // suppressed event is still stored/notified locally (only the
+    // outbound re-forward is vetoed).
+    let mut x = make_service(30);
+    let mut y = make_service(31);
+    let mut z = make_service(32);
+
+    let x_addr = listen_addr(&mut x).await;
+    let (x_id, x_key) = identity(30);
+    let (y_id, y_key) = identity(31);
+    y.register_peer_key(x_id.clone(), x_key);
+    y.node.dial(x_addr).unwrap();
+
+    let y_addr = listen_addr(&mut y).await;
+    z.register_peer_key(x_id, x_key);
+    z.register_peer_key(y_id, y_key);
+    z.node.dial(y_addr).unwrap();
+
+    y.add_forward_filter(|event| event.payload != b"suppress-me");
+
+    let mut all = vec![x, y, z];
+    drive_until(&mut all, |services| {
+        services[1].connected_peer_count() >= 1 && services[2].connected_peer_count() >= 1
+    })
+    .await;
+
+    let suppressed_id = all[0]
+        .originate(
+            EventType::new("GossipTestEvent").unwrap(),
+            TEST_OFS_SPEC,
+            Priority::Advertisement,
+            8,
+            b"suppress-me".to_vec(),
+        )
+        .unwrap();
+    let allowed_id = all[0]
+        .originate(
+            EventType::new("GossipTestEvent").unwrap(),
+            TEST_OFS_SPEC,
+            Priority::Advertisement,
+            8,
+            b"let-me-through".to_vec(),
+        )
+        .unwrap();
+
+    drive_until(&mut all, |services| services[2].has_event(&allowed_id)).await;
+    drive_briefly(&mut all, Duration::from_millis(500)).await;
+
+    assert!(
+        all[1].has_event(&suppressed_id),
+        "the filtered-out event is still stored locally by the node that vetoed its forward"
+    );
+    assert!(
+        !all[2].has_event(&suppressed_id),
+        "a forward filter returning false must stop the event reaching a further hop"
+    );
+    assert!(
+        all[2].has_event(&allowed_id),
+        "a forward filter must only suppress the content it targets, not everything"
+    );
+}
