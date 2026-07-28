@@ -3,8 +3,9 @@
 
 use crate::error::SettlementError;
 use crate::events::{
-    PaymentReversed, PaymentSubmitted, SettlementApproved, SettlementCancelled, SettlementInitiate, SettlementRejected, SignedPaymentReversed,
-    SignedPaymentSubmitted, SignedSettlementApproved, SignedSettlementCancelled, SignedSettlementInitiate, SignedSettlementRejected,
+    PaymentReversed, PaymentSubmitted, SettlementApproved, SettlementCancelled, SettlementInitiate,
+    SettlementRejected, SignedPaymentReversed, SignedPaymentSubmitted, SignedSettlementApproved,
+    SignedSettlementCancelled, SignedSettlementInitiate, SignedSettlementRejected,
 };
 use crate::protocol;
 use crate::record::{Settlement, SettlementId};
@@ -67,51 +68,110 @@ impl<S: KvStore + 'static> SettlementService<S> {
             timestamp: Timestamp::now(),
         };
         let bytes = wire::to_bytes(&initiate).expect("SettlementInitiate always serializes");
-        let signed = SignedSettlementInitiate { signature: self.gossip.sign(&bytes), initiate };
+        let signed = SignedSettlementInitiate {
+            signature: self.gossip.sign(&bytes),
+            initiate,
+        };
         self.originate(protocol::EVENT_INITIATED, &signed)?;
         Ok(signed.initiate.id)
     }
 
-    pub fn submit_payment(&mut self, settlement_id: SettlementId, payment_reference: Option<String>) -> Result<(), SettlementError> {
-        let action = PaymentSubmitted { settlement_id, buyer: self.gossip.node.local_peer_id(), payment_reference, timestamp: Timestamp::now() };
+    pub fn submit_payment(
+        &mut self,
+        settlement_id: SettlementId,
+        payment_reference: Option<String>,
+    ) -> Result<(), SettlementError> {
+        let action = PaymentSubmitted {
+            settlement_id,
+            buyer: self.gossip.node.local_peer_id(),
+            payment_reference,
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
-        let signed = SignedPaymentSubmitted { signature: self.gossip.sign(&bytes), action };
+        let signed = SignedPaymentSubmitted {
+            signature: self.gossip.sign(&bytes),
+            action,
+        };
         self.originate(protocol::EVENT_PAYMENT_SUBMITTED, &signed)
     }
 
     pub fn reverse_payment(&mut self, settlement_id: SettlementId) -> Result<(), SettlementError> {
-        let action = PaymentReversed { settlement_id, buyer: self.gossip.node.local_peer_id(), timestamp: Timestamp::now() };
+        let action = PaymentReversed {
+            settlement_id,
+            buyer: self.gossip.node.local_peer_id(),
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
-        let signed = SignedPaymentReversed { signature: self.gossip.sign(&bytes), action };
+        let signed = SignedPaymentReversed {
+            signature: self.gossip.sign(&bytes),
+            action,
+        };
         self.originate(protocol::EVENT_PAYMENT_REVERSED, &signed)
     }
 
     pub fn approve(&mut self, settlement_id: SettlementId) -> Result<(), SettlementError> {
-        let action = SettlementApproved { settlement_id, seller: self.gossip.node.local_peer_id(), timestamp: Timestamp::now() };
+        let action = SettlementApproved {
+            settlement_id,
+            seller: self.gossip.node.local_peer_id(),
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
-        let signed = SignedSettlementApproved { signature: self.gossip.sign(&bytes), action };
+        let signed = SignedSettlementApproved {
+            signature: self.gossip.sign(&bytes),
+            action,
+        };
         self.originate(protocol::EVENT_APPROVED, &signed)
     }
 
-    pub fn reject(&mut self, settlement_id: SettlementId, reason: String) -> Result<(), SettlementError> {
-        let action = SettlementRejected { settlement_id, seller: self.gossip.node.local_peer_id(), reason, timestamp: Timestamp::now() };
+    pub fn reject(
+        &mut self,
+        settlement_id: SettlementId,
+        reason: String,
+    ) -> Result<(), SettlementError> {
+        let action = SettlementRejected {
+            settlement_id,
+            seller: self.gossip.node.local_peer_id(),
+            reason,
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
-        let signed = SignedSettlementRejected { signature: self.gossip.sign(&bytes), action };
+        let signed = SignedSettlementRejected {
+            signature: self.gossip.sign(&bytes),
+            action,
+        };
         self.originate(protocol::EVENT_REJECTED, &signed)
     }
 
     pub fn cancel(&mut self, settlement_id: SettlementId) -> Result<(), SettlementError> {
-        let action = SettlementCancelled { settlement_id, canceller: self.gossip.node.local_peer_id(), timestamp: Timestamp::now() };
+        let action = SettlementCancelled {
+            settlement_id,
+            canceller: self.gossip.node.local_peer_id(),
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
-        let signed = SignedSettlementCancelled { signature: self.gossip.sign(&bytes), action };
+        let signed = SignedSettlementCancelled {
+            signature: self.gossip.sign(&bytes),
+            action,
+        };
         self.originate(protocol::EVENT_CANCELLED, &signed)
     }
 
-    fn originate(&mut self, event_type: &str, payload: &impl serde::Serialize) -> Result<(), SettlementError> {
+    fn originate(
+        &mut self,
+        event_type: &str,
+        payload: &impl serde::Serialize,
+    ) -> Result<(), SettlementError> {
         let bytes = wire::to_bytes(payload).map_err(|_| SettlementError::MalformedSettlement)?;
-        let event_type = EventType::new(event_type).expect("settlement event names are all valid PascalCase identifiers");
+        let event_type = EventType::new(event_type)
+            .expect("settlement event names are all valid PascalCase identifiers");
         self.gossip
-            .originate(event_type, protocol::OFS_SPEC, Priority::SessionReservationSettlement, 8, bytes)
+            .originate(
+                event_type,
+                protocol::OFS_SPEC,
+                Priority::SessionReservationSettlement,
+                8,
+                bytes,
+            )
             .map(|_| ())
             .map_err(|_| SettlementError::Unauthorized)
     }

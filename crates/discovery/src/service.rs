@@ -13,7 +13,10 @@
 //! independent-retries.
 
 use crate::cache::PeerCache;
-use crate::exchange::{ExchangeRequest, ExchangeResponse, MESSAGE_TYPE_ANNOUNCEMENT, MESSAGE_TYPE_REQUEST, MESSAGE_TYPE_RESPONSE, OFS_SPEC, PeerAdvert};
+use crate::exchange::{
+    ExchangeRequest, ExchangeResponse, MESSAGE_TYPE_ANNOUNCEMENT, MESSAGE_TYPE_REQUEST,
+    MESSAGE_TYPE_RESPONSE, OFS_SPEC, PeerAdvert,
+};
 use crate::record::PeerRecord;
 use libp2p::request_response::{self, Message, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
@@ -96,12 +99,12 @@ impl<S: KvStore> DiscoveryService<S> {
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 self.connected.remove(&peer_id);
             }
-            SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Envelope(request_response::Event::Message {
-                peer,
-                message,
-                ..
-            })) => match message {
-                Message::Request { request, channel, .. } => self.on_request(peer, request, channel),
+            SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Envelope(
+                request_response::Event::Message { peer, message, .. },
+            )) => match message {
+                Message::Request {
+                    request, channel, ..
+                } => self.on_request(peer, request, channel),
                 Message::Response { response, .. } => self.on_response(peer, response),
             },
             _ => {}
@@ -120,17 +123,23 @@ impl<S: KvStore> DiscoveryService<S> {
             node_version: self.self_node_version.clone(),
             supported_ofs: self.self_supported_ofs.clone(),
         }];
-        let known = self.cache.healthiest(DEFAULT_MAX_EXCHANGE_PEERS as usize).unwrap_or_default();
-        peers.extend(known.into_iter().filter(|record| &record.peer_id != exclude && !record.addresses.is_empty()).map(
-            |record| PeerAdvert {
-                peer_id: record.peer_id,
-                public_key: record.public_key,
-                addresses: record.addresses,
-                roles: record.roles,
-                node_version: record.node_version,
-                supported_ofs: record.supported_ofs,
-            },
-        ));
+        let known = self
+            .cache
+            .healthiest(DEFAULT_MAX_EXCHANGE_PEERS as usize)
+            .unwrap_or_default();
+        peers.extend(
+            known
+                .into_iter()
+                .filter(|record| &record.peer_id != exclude && !record.addresses.is_empty())
+                .map(|record| PeerAdvert {
+                    peer_id: record.peer_id,
+                    public_key: record.public_key,
+                    addresses: record.addresses,
+                    roles: record.roles,
+                    node_version: record.node_version,
+                    supported_ofs: record.supported_ofs,
+                }),
+        );
         peers
     }
 
@@ -144,7 +153,12 @@ impl<S: KvStore> DiscoveryService<S> {
             if advert.peer_id == self.self_peer_id {
                 continue;
             }
-            let already_known = self.cache.get(&advert.peer_id).ok().flatten().is_some_and(|r| !r.addresses.is_empty());
+            let already_known = self
+                .cache
+                .get(&advert.peer_id)
+                .ok()
+                .flatten()
+                .is_some_and(|r| !r.addresses.is_empty());
 
             let record = PeerRecord::new(
                 advert.peer_id.clone(),
@@ -158,9 +172,13 @@ impl<S: KvStore> DiscoveryService<S> {
 
             if !already_known {
                 newly_learned.push(advert.peer_id.clone());
-                let under_target = self.cache.all().map(|all| all.len()).unwrap_or(0) <= self.target_peers;
+                let under_target =
+                    self.cache.all().map(|all| all.len()).unwrap_or(0) <= self.target_peers;
                 if under_target
-                    && let Some(addr) = advert.addresses.first().and_then(|addr| addr.parse::<Multiaddr>().ok())
+                    && let Some(addr) = advert
+                        .addresses
+                        .first()
+                        .and_then(|addr| addr.parse::<Multiaddr>().ok())
                 {
                     let _ = self.node.dial(addr);
                 }
@@ -174,12 +192,16 @@ impl<S: KvStore> DiscoveryService<S> {
     fn broadcast_announcement(&mut self, exclude: Libp2pPeerId) {
         let excluded_peer_id = from_libp2p_peer_id(exclude);
         let peers = self.advert_batch(&excluded_peer_id);
-        let payload = wire::to_bytes(&ExchangeResponse { peers }).expect("ExchangeResponse always serializes");
+        let payload = wire::to_bytes(&ExchangeResponse { peers })
+            .expect("ExchangeResponse always serializes");
         for peer in self.connected.clone() {
             if peer == exclude {
                 continue;
             }
-            self.node.send_envelope(peer, Envelope::new(OFS_SPEC, MESSAGE_TYPE_ANNOUNCEMENT, 1, payload.clone()));
+            self.node.send_envelope(
+                peer,
+                Envelope::new(OFS_SPEC, MESSAGE_TYPE_ANNOUNCEMENT, 1, payload.clone()),
+            );
         }
     }
 
@@ -187,16 +209,33 @@ impl<S: KvStore> DiscoveryService<S> {
         self.connected.insert(peer);
         let peer_id = from_libp2p_peer_id(peer);
         if self.cache.get(&peer_id).ok().flatten().is_none() {
-            let placeholder = PeerRecord::new(peer_id, PublicKey::from_bytes([0u8; 32]), Vec::new(), String::new(), Vec::new(), Vec::new());
+            let placeholder = PeerRecord::new(
+                peer_id,
+                PublicKey::from_bytes([0u8; 32]),
+                Vec::new(),
+                String::new(),
+                Vec::new(),
+                Vec::new(),
+            );
             let _ = self.cache.upsert(&placeholder);
         }
 
-        let request = ExchangeRequest { max_peers: DEFAULT_MAX_EXCHANGE_PEERS };
+        let request = ExchangeRequest {
+            max_peers: DEFAULT_MAX_EXCHANGE_PEERS,
+        };
         let payload = wire::to_bytes(&request).expect("ExchangeRequest always serializes");
-        self.node.send_envelope(peer, Envelope::new(OFS_SPEC, MESSAGE_TYPE_REQUEST, 1, payload));
+        self.node.send_envelope(
+            peer,
+            Envelope::new(OFS_SPEC, MESSAGE_TYPE_REQUEST, 1, payload),
+        );
     }
 
-    fn on_request(&mut self, peer: Libp2pPeerId, envelope: Envelope, channel: ResponseChannel<Envelope>) {
+    fn on_request(
+        &mut self,
+        peer: Libp2pPeerId,
+        envelope: Envelope,
+        channel: ResponseChannel<Envelope>,
+    ) {
         if envelope.header.message_type == MESSAGE_TYPE_ANNOUNCEMENT {
             if let Ok(announcement) = wire::from_bytes::<ExchangeResponse>(&envelope.payload) {
                 let newly_learned = self.learn_peers(announcement.peers);
@@ -213,9 +252,17 @@ impl<S: KvStore> DiscoveryService<S> {
         }
 
         let requester = from_libp2p_peer_id(peer);
-        let payload = wire::to_bytes(&ExchangeResponse { peers: self.advert_batch(&requester) }).expect("ExchangeResponse always serializes");
+        let payload = wire::to_bytes(&ExchangeResponse {
+            peers: self.advert_batch(&requester),
+        })
+        .expect("ExchangeResponse always serializes");
         let response = Envelope::new(OFS_SPEC, MESSAGE_TYPE_RESPONSE, 1, payload);
-        let _ = self.node.swarm.behaviour_mut().envelope.send_response(channel, response);
+        let _ = self
+            .node
+            .swarm
+            .behaviour_mut()
+            .envelope
+            .send_response(channel, response);
     }
 
     fn on_response(&mut self, peer: Libp2pPeerId, envelope: Envelope) {

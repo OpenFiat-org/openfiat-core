@@ -2,7 +2,10 @@
 //! automatically and provides the operations that originate new ones.
 
 use crate::error::GovernanceError;
-use crate::events::{ProposalActivate, ProposalCreate, ProposalWithdraw, SignedProposalActivate, SignedProposalCreate, SignedProposalWithdraw, SignedVoteCast, VoteCast};
+use crate::events::{
+    ProposalActivate, ProposalCreate, ProposalWithdraw, SignedProposalActivate,
+    SignedProposalCreate, SignedProposalWithdraw, SignedVoteCast, VoteCast,
+};
 use crate::protocol;
 use crate::record::{Proposal, ProposalCategory, ProposalId, VoteChoice};
 use crate::store::GovernanceRegistry;
@@ -43,7 +46,13 @@ impl<S: KvStore + 'static> GovernanceService<S> {
         self.registry.resolve_expired(Timestamp::now())
     }
 
-    pub fn create_proposal(&mut self, id: impl Into<String>, title: impl Into<String>, summary: impl Into<String>, category: ProposalCategory) -> Result<ProposalId, GovernanceError> {
+    pub fn create_proposal(
+        &mut self,
+        id: impl Into<String>,
+        title: impl Into<String>,
+        summary: impl Into<String>,
+        category: ProposalCategory,
+    ) -> Result<ProposalId, GovernanceError> {
         let create = ProposalCreate {
             id: ProposalId::new(id),
             title: title.into(),
@@ -54,37 +63,80 @@ impl<S: KvStore + 'static> GovernanceService<S> {
             timestamp: Timestamp::now(),
         };
         let bytes = wire::to_bytes(&create).map_err(|_| GovernanceError::MalformedProposal)?;
-        let signed = SignedProposalCreate { signature: self.gossip.sign(&bytes), create };
+        let signed = SignedProposalCreate {
+            signature: self.gossip.sign(&bytes),
+            create,
+        };
         self.originate(protocol::EVENT_CREATED, &signed)?;
         Ok(signed.create.id)
     }
 
-    pub fn cast_vote(&mut self, proposal_id: ProposalId, choice: VoteChoice, weight: u64) -> Result<(), GovernanceError> {
-        let vote = VoteCast { proposal_id, voter: self.gossip.node.local_peer_id(), voter_public_key: self.gossip.public_key(), choice, weight, timestamp: Timestamp::now() };
+    pub fn cast_vote(
+        &mut self,
+        proposal_id: ProposalId,
+        choice: VoteChoice,
+        weight: u64,
+    ) -> Result<(), GovernanceError> {
+        let vote = VoteCast {
+            proposal_id,
+            voter: self.gossip.node.local_peer_id(),
+            voter_public_key: self.gossip.public_key(),
+            choice,
+            weight,
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&vote).map_err(|_| GovernanceError::MalformedProposal)?;
-        let signed = SignedVoteCast { signature: self.gossip.sign(&bytes), vote };
+        let signed = SignedVoteCast {
+            signature: self.gossip.sign(&bytes),
+            vote,
+        };
         self.originate(protocol::EVENT_VOTE_CAST, &signed)
     }
 
     pub fn withdraw_proposal(&mut self, proposal_id: ProposalId) -> Result<(), GovernanceError> {
-        let withdraw = ProposalWithdraw { proposal_id, author: self.gossip.node.local_peer_id(), timestamp: Timestamp::now() };
+        let withdraw = ProposalWithdraw {
+            proposal_id,
+            author: self.gossip.node.local_peer_id(),
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&withdraw).map_err(|_| GovernanceError::MalformedProposal)?;
-        let signed = SignedProposalWithdraw { signature: self.gossip.sign(&bytes), withdraw };
+        let signed = SignedProposalWithdraw {
+            signature: self.gossip.sign(&bytes),
+            withdraw,
+        };
         self.originate(protocol::EVENT_WITHDRAWN, &signed)
     }
 
     pub fn activate_proposal(&mut self, proposal_id: ProposalId) -> Result<(), GovernanceError> {
-        let activate = ProposalActivate { proposal_id, author: self.gossip.node.local_peer_id(), timestamp: Timestamp::now() };
+        let activate = ProposalActivate {
+            proposal_id,
+            author: self.gossip.node.local_peer_id(),
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&activate).map_err(|_| GovernanceError::MalformedProposal)?;
-        let signed = SignedProposalActivate { signature: self.gossip.sign(&bytes), activate };
+        let signed = SignedProposalActivate {
+            signature: self.gossip.sign(&bytes),
+            activate,
+        };
         self.originate(protocol::EVENT_ACTIVATED, &signed)
     }
 
-    fn originate(&mut self, event_type: &str, payload: &impl serde::Serialize) -> Result<(), GovernanceError> {
+    fn originate(
+        &mut self,
+        event_type: &str,
+        payload: &impl serde::Serialize,
+    ) -> Result<(), GovernanceError> {
         let bytes = wire::to_bytes(payload).map_err(|_| GovernanceError::MalformedProposal)?;
-        let event_type = EventType::new(event_type).expect("governance event names are all valid PascalCase identifiers");
+        let event_type = EventType::new(event_type)
+            .expect("governance event names are all valid PascalCase identifiers");
         self.gossip
-            .originate(event_type, protocol::OFS_SPEC, Priority::Governance, 8, bytes)
+            .originate(
+                event_type,
+                protocol::OFS_SPEC,
+                Priority::Governance,
+                8,
+                bytes,
+            )
             .map(|_| ())
             .map_err(|_| GovernanceError::Unauthorized)
     }

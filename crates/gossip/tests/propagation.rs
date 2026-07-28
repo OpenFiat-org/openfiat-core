@@ -32,11 +32,16 @@ fn identity(seed: u8) -> (PeerId, PublicKey) {
     (peer_id(&to_libp2p_keypair(&keypair)), keypair.public_key())
 }
 
-async fn drive_until(services: &mut [GossipService<MemoryStore>], mut condition: impl FnMut(&[GossipService<MemoryStore>]) -> bool) {
+async fn drive_until(
+    services: &mut [GossipService<MemoryStore>],
+    mut condition: impl FnMut(&[GossipService<MemoryStore>]) -> bool,
+) {
     tokio::time::timeout(Duration::from_secs(15), async {
         while !condition(services) {
-            let futures: Vec<Pin<Box<dyn Future<Output = ()> + '_>>> =
-                services.iter_mut().map(|s| Box::pin(s.drive_once()) as Pin<Box<dyn Future<Output = ()> + '_>>).collect();
+            let futures: Vec<Pin<Box<dyn Future<Output = ()> + '_>>> = services
+                .iter_mut()
+                .map(|s| Box::pin(s.drive_once()) as Pin<Box<dyn Future<Output = ()> + '_>>)
+                .collect();
             select_all(futures).await;
         }
     })
@@ -50,8 +55,10 @@ async fn drive_until(services: &mut [GossipService<MemoryStore>], mut condition:
 async fn drive_briefly(services: &mut [GossipService<MemoryStore>], window: Duration) {
     let _ = tokio::time::timeout(window, async {
         loop {
-            let futures: Vec<Pin<Box<dyn Future<Output = ()> + '_>>> =
-                services.iter_mut().map(|s| Box::pin(s.drive_once()) as Pin<Box<dyn Future<Output = ()> + '_>>).collect();
+            let futures: Vec<Pin<Box<dyn Future<Output = ()> + '_>>> = services
+                .iter_mut()
+                .map(|s| Box::pin(s.drive_once()) as Pin<Box<dyn Future<Output = ()> + '_>>)
+                .collect();
             select_all(futures).await;
         }
     })
@@ -59,9 +66,14 @@ async fn drive_briefly(services: &mut [GossipService<MemoryStore>], window: Dura
 }
 
 async fn listen_addr(service: &mut GossipService<MemoryStore>) -> Multiaddr {
-    service.node.listen_on("/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap()).unwrap();
+    service
+        .node
+        .listen_on("/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap())
+        .unwrap();
     loop {
-        if let libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } = service.node.next_event().await {
+        if let libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } =
+            service.node.next_event().await
+        {
             return address;
         }
     }
@@ -96,22 +108,44 @@ async fn event_reaches_every_node_exactly_once_and_a_resend_is_suppressed() {
         }
     }
 
-    drive_until(&mut all, |services| services.iter().all(|s| s.connected_peer_count() >= 1)).await;
+    drive_until(&mut all, |services| {
+        services.iter().all(|s| s.connected_peer_count() >= 1)
+    })
+    .await;
 
     let event_id = all[1]
-        .originate(EventType::new("GossipTestEvent").unwrap(), TEST_OFS_SPEC, Priority::Advertisement, 8, b"hello".to_vec())
+        .originate(
+            EventType::new("GossipTestEvent").unwrap(),
+            TEST_OFS_SPEC,
+            Priority::Advertisement,
+            8,
+            b"hello".to_vec(),
+        )
         .unwrap();
 
-    drive_until(&mut all, |services| services.iter().all(|s| s.has_event(&event_id))).await;
+    drive_until(&mut all, |services| {
+        services.iter().all(|s| s.has_event(&event_id))
+    })
+    .await;
 
     for service in &all {
-        assert_eq!(service.event_count(), 1, "every node should store the event exactly once");
+        assert_eq!(
+            service.event_count(),
+            1,
+            "every node should store the event exactly once"
+        );
     }
 
-    let stored = all[1].get_event(&event_id).expect("the origin has its own event");
+    let stored = all[1]
+        .get_event(&event_id)
+        .expect("the origin has its own event");
     let outcome = all[0].receive_event(None, stored);
     assert!(matches!(outcome, ReceiveOutcome::Duplicate));
-    assert_eq!(all[0].event_count(), 1, "a re-delivered event must not be counted again");
+    assert_eq!(
+        all[0].event_count(),
+        1,
+        "a re-delivered event must not be counted again"
+    );
 }
 
 #[tokio::test]
@@ -134,17 +168,36 @@ async fn a_ttl_of_one_reaches_the_direct_peer_but_not_a_second_hop() {
     z.node.dial(y_addr).unwrap();
 
     let mut all = vec![x, y, z];
-    drive_until(&mut all, |services| services[1].connected_peer_count() >= 1 && services[2].connected_peer_count() >= 1).await;
+    drive_until(&mut all, |services| {
+        services[1].connected_peer_count() >= 1 && services[2].connected_peer_count() >= 1
+    })
+    .await;
 
-    let event_id =
-        all[0].originate(EventType::new("GossipTestEvent").unwrap(), TEST_OFS_SPEC, Priority::Advertisement, 1, b"one-hop".to_vec()).unwrap();
+    let event_id = all[0]
+        .originate(
+            EventType::new("GossipTestEvent").unwrap(),
+            TEST_OFS_SPEC,
+            Priority::Advertisement,
+            1,
+            b"one-hop".to_vec(),
+        )
+        .unwrap();
 
     drive_until(&mut all, |services| services[1].has_event(&event_id)).await;
     drive_briefly(&mut all, Duration::from_millis(500)).await;
 
-    assert!(all[0].has_event(&event_id), "the origin always has its own event");
-    assert!(all[1].has_event(&event_id), "ttl=1 must reach the direct peer");
-    assert!(!all[2].has_event(&event_id), "ttl=1 must not reach a second hop");
+    assert!(
+        all[0].has_event(&event_id),
+        "the origin always has its own event"
+    );
+    assert!(
+        all[1].has_event(&event_id),
+        "ttl=1 must reach the direct peer"
+    );
+    assert!(
+        !all[2].has_event(&event_id),
+        "ttl=1 must not reach a second hop"
+    );
 }
 
 #[tokio::test]
@@ -160,19 +213,37 @@ async fn a_reconnecting_node_recovers_events_it_missed_while_offline() {
     b.node.dial(a_addr.clone()).unwrap();
 
     let mut all = vec![a, b];
-    drive_until(&mut all, |services| services.iter().all(|s| s.connected_peer_count() >= 1)).await;
+    drive_until(&mut all, |services| {
+        services.iter().all(|s| s.connected_peer_count() >= 1)
+    })
+    .await;
 
     all[1].disconnect_all();
-    drive_until(&mut all, |services| services.iter().all(|s| s.connected_peer_count() == 0)).await;
+    drive_until(&mut all, |services| {
+        services.iter().all(|s| s.connected_peer_count() == 0)
+    })
+    .await;
 
     let event_id = all[0]
-        .originate(EventType::new("GossipTestEvent").unwrap(), TEST_OFS_SPEC, Priority::Advertisement, 8, b"missed-me".to_vec())
+        .originate(
+            EventType::new("GossipTestEvent").unwrap(),
+            TEST_OFS_SPEC,
+            Priority::Advertisement,
+            8,
+            b"missed-me".to_vec(),
+        )
         .unwrap();
     drive_briefly(&mut all, Duration::from_millis(200)).await;
-    assert!(!all[1].has_event(&event_id), "an offline node must not receive events sent while disconnected");
+    assert!(
+        !all[1].has_event(&event_id),
+        "an offline node must not receive events sent while disconnected"
+    );
 
     all[1].node.dial(a_addr).unwrap();
     drive_until(&mut all, |services| services[1].has_event(&event_id)).await;
 
-    assert!(all[1].has_event(&event_id), "reconnecting must recover events missed while offline");
+    assert!(
+        all[1].has_event(&event_id),
+        "reconnecting must recover events missed while offline"
+    );
 }

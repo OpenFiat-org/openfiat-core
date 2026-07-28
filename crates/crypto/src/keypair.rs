@@ -57,12 +57,18 @@ mod tests {
 
     #[test]
     fn generated_keypairs_are_not_the_same() {
-        assert_ne!(Keypair::generate().public_key(), Keypair::generate().public_key());
+        assert_ne!(
+            Keypair::generate().public_key(),
+            Keypair::generate().public_key()
+        );
     }
 
     #[test]
     fn from_seed_is_deterministic() {
         let seed = [42u8; 32];
-        assert_eq!(Keypair::from_seed(seed).public_key(), Keypair::from_seed(seed).public_key());
+        assert_eq!(
+            Keypair::from_seed(seed).public_key(),
+            Keypair::from_seed(seed).public_key()
+        );
     }
 }

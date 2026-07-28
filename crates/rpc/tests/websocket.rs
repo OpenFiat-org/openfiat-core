@@ -17,7 +17,10 @@ use tokio_tungstenite::tungstenite::Message;
 #[tokio::test]
 async fn a_websocket_client_receives_a_notification_for_a_real_mutation() {
     let handle = spawn_actor(MemoryStore::new);
-    let app = router(handle.clone(), Arc::new(openfiat_metrics::MetricsRegistry::new()));
+    let app = router(
+        handle.clone(),
+        Arc::new(openfiat_metrics::MetricsRegistry::new()),
+    );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -25,7 +28,9 @@ async fn a_websocket_client_receives_a_notification_for_a_real_mutation() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.expect("failed to connect to /ws");
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .expect("failed to connect to /ws");
 
     // Give the server a moment to register the subscription before the
     // mutation fires, so the notification isn't sent before anyone's listening.
@@ -44,15 +49,29 @@ async fn a_websocket_client_receives_a_notification_for_a_real_mutation() {
         expires_at: Timestamp::from_millis(Timestamp::now().as_millis() + 3_600_000),
     };
     let signed = SignedSessionCreate::sign(create, &wallet);
-    let data = openfiat_rpc::dispatch::encode_bytes(&openfiat_serialization::wire::to_bytes(&signed).unwrap());
+    let data = openfiat_rpc::dispatch::encode_bytes(
+        &openfiat_serialization::wire::to_bytes(&signed).unwrap(),
+    );
 
-    handle.call("sendSessionEstablish", serde_json::json!({ "data": data })).await.unwrap();
+    handle
+        .call("sendSessionEstablish", serde_json::json!({ "data": data }))
+        .await
+        .unwrap();
 
-    let message = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await.expect("timed out waiting for a websocket message").expect("stream ended without a message").unwrap();
+    let message = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+        .await
+        .expect("timed out waiting for a websocket message")
+        .expect("stream ended without a message")
+        .unwrap();
 
-    let Message::Text(text) = message else { panic!("expected a text frame, got {message:?}") };
+    let Message::Text(text) = message else {
+        panic!("expected a text frame, got {message:?}")
+    };
     let notification: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(notification["method"], serde_json::Value::from("sendSessionEstablish"));
+    assert_eq!(
+        notification["method"],
+        serde_json::Value::from("sendSessionEstablish")
+    );
     assert_eq!(notification["result"], serde_json::Value::from("sess-1"));
 
     ws.close(None).await.ok();

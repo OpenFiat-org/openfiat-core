@@ -31,13 +31,19 @@ impl MetricsRegistry {
     /// single registration point through the whole node.
     pub fn counter(&self, name: &str, help: &str) -> Arc<Counter> {
         validate_name(name);
-        let mut metrics = self.metrics.write().expect("metrics registry lock poisoned");
+        let mut metrics = self
+            .metrics
+            .write()
+            .expect("metrics registry lock poisoned");
         match metrics.get(name) {
             Some((_, Metric::Counter(counter))) => Arc::clone(counter),
             Some((_, Metric::Gauge(_))) => panic!("metric {name} is already registered as a gauge"),
             None => {
                 let counter = Arc::new(Counter::default());
-                metrics.insert(name.to_string(), (help.to_string(), Metric::Counter(Arc::clone(&counter))));
+                metrics.insert(
+                    name.to_string(),
+                    (help.to_string(), Metric::Counter(Arc::clone(&counter))),
+                );
                 counter
             }
         }
@@ -45,13 +51,21 @@ impl MetricsRegistry {
 
     pub fn gauge(&self, name: &str, help: &str) -> Arc<Gauge> {
         validate_name(name);
-        let mut metrics = self.metrics.write().expect("metrics registry lock poisoned");
+        let mut metrics = self
+            .metrics
+            .write()
+            .expect("metrics registry lock poisoned");
         match metrics.get(name) {
             Some((_, Metric::Gauge(gauge))) => Arc::clone(gauge),
-            Some((_, Metric::Counter(_))) => panic!("metric {name} is already registered as a counter"),
+            Some((_, Metric::Counter(_))) => {
+                panic!("metric {name} is already registered as a counter")
+            }
             None => {
                 let gauge = Arc::new(Gauge::default());
-                metrics.insert(name.to_string(), (help.to_string(), Metric::Gauge(Arc::clone(&gauge))));
+                metrics.insert(
+                    name.to_string(),
+                    (help.to_string(), Metric::Gauge(Arc::clone(&gauge))),
+                );
                 gauge
             }
         }
@@ -83,9 +97,16 @@ impl MetricsRegistry {
 /// untrusted input, so this panics rather than returning a `Result`.
 fn validate_name(name: &str) {
     let valid = name.chars().enumerate().all(|(i, c)| {
-        if i == 0 { c.is_ascii_alphabetic() || c == '_' || c == ':' } else { c.is_ascii_alphanumeric() || c == '_' || c == ':' }
+        if i == 0 {
+            c.is_ascii_alphabetic() || c == '_' || c == ':'
+        } else {
+            c.is_ascii_alphanumeric() || c == '_' || c == ':'
+        }
     });
-    assert!(!name.is_empty() && valid, "invalid Prometheus metric name: {name:?}");
+    assert!(
+        !name.is_empty() && valid,
+        "invalid Prometheus metric name: {name:?}"
+    );
 }
 
 #[cfg(test)]
@@ -119,7 +140,10 @@ mod tests {
     #[test]
     fn render_produces_help_type_and_value_lines() {
         let registry = MetricsRegistry::new();
-        let counter = registry.counter("gossip_events_received_total", "Total gossip events received");
+        let counter = registry.counter(
+            "gossip_events_received_total",
+            "Total gossip events received",
+        );
         counter.add(3);
         let gauge = registry.gauge("connected_peers", "Currently connected peers");
         gauge.set(2);

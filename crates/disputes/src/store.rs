@@ -5,9 +5,14 @@
 
 use crate::commitment;
 use crate::error::DisputeError;
-use crate::events::{SignedArbitratorJoin, SignedDisputeOpen, SignedMutualSettlementAgree, SignedVoteCommit, SignedVoteReveal};
+use crate::events::{
+    SignedArbitratorJoin, SignedDisputeOpen, SignedMutualSettlementAgree, SignedVoteCommit,
+    SignedVoteReveal,
+};
 use crate::protocol;
-use crate::record::{ArbitratorCommitment, ArbitratorReveal, Dispute, DisputeId, DisputeStatus, Resolution, Vote};
+use crate::record::{
+    ArbitratorCommitment, ArbitratorReveal, Dispute, DisputeId, DisputeStatus, Resolution, Vote,
+};
 use openfiat_crypto::verify;
 use openfiat_serialization::wire;
 use openfiat_settlement::SettlementRegistry;
@@ -28,18 +33,29 @@ impl<S: KvStore> DisputeRegistry<S> {
     }
 
     pub fn get(&self, id: &DisputeId) -> Option<Dispute> {
-        let bytes = self.store.get(COLUMN_FAMILY, id.as_str().as_bytes()).ok().flatten()?;
+        let bytes = self
+            .store
+            .get(COLUMN_FAMILY, id.as_str().as_bytes())
+            .ok()
+            .flatten()?;
         wire::from_bytes(&bytes).ok()
     }
 
     fn put(&self, dispute: &Dispute) {
         if let Ok(bytes) = wire::to_bytes(dispute) {
-            let _ = self.store.put(COLUMN_FAMILY, dispute.id.as_str().as_bytes(), &bytes);
+            let _ = self
+                .store
+                .put(COLUMN_FAMILY, dispute.id.as_str().as_bytes(), &bytes);
         }
     }
 
     pub fn all(&self) -> Vec<Dispute> {
-        self.store.iter_prefix(COLUMN_FAMILY, &[]).unwrap_or_default().into_iter().filter_map(|(_, value)| wire::from_bytes(&value).ok()).collect()
+        self.store
+            .iter_prefix(COLUMN_FAMILY, &[])
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, value)| wire::from_bytes(&value).ok())
+            .collect()
     }
 
     /// §5-8: only a party to the referenced settlement may open a
@@ -51,7 +67,10 @@ impl<S: KvStore> DisputeRegistry<S> {
         if self.get(&id).is_some() {
             return Err(DisputeError::DuplicateDisputeId);
         }
-        let settlement = self.settlements.get(&signed.open.settlement_id).ok_or(DisputeError::SettlementNotFound)?;
+        let settlement = self
+            .settlements
+            .get(&signed.open.settlement_id)
+            .ok_or(DisputeError::SettlementNotFound)?;
         if signed.open.opener != settlement.buyer && signed.open.opener != settlement.seller {
             return Err(DisputeError::NotAParty);
         }
@@ -85,7 +104,9 @@ impl<S: KvStore> DisputeRegistry<S> {
     /// arbitrators may join".
     pub fn apply_arbitrator_join(&self, signed: SignedArbitratorJoin) -> Result<(), DisputeError> {
         signed.verify()?;
-        let mut dispute = self.get(&signed.join.dispute_id).ok_or(DisputeError::DisputeNotFound)?;
+        let mut dispute = self
+            .get(&signed.join.dispute_id)
+            .ok_or(DisputeError::DisputeNotFound)?;
         if dispute.status != DisputeStatus::Open {
             return Err(DisputeError::InvalidStateTransition);
         }
@@ -97,7 +118,9 @@ impl<S: KvStore> DisputeRegistry<S> {
         }
 
         dispute.arbitrators.push(signed.join.arbitrator.clone());
-        dispute.arbitrator_keys.push((signed.join.arbitrator, signed.join.arbitrator_public_key));
+        dispute
+            .arbitrator_keys
+            .push((signed.join.arbitrator, signed.join.arbitrator_public_key));
         if dispute.arbitrators.len() == dispute.required_arbitrators as usize {
             dispute.status = DisputeStatus::CaseLocked;
         }
@@ -110,18 +133,31 @@ impl<S: KvStore> DisputeRegistry<S> {
     /// arbitrator, verified against the public key recorded when they
     /// joined.
     pub fn apply_vote_commit(&self, signed: SignedVoteCommit) -> Result<(), DisputeError> {
-        let mut dispute = self.get(&signed.commit.dispute_id).ok_or(DisputeError::DisputeNotFound)?;
+        let mut dispute = self
+            .get(&signed.commit.dispute_id)
+            .ok_or(DisputeError::DisputeNotFound)?;
         if dispute.status != DisputeStatus::CaseLocked {
             return Err(DisputeError::InvalidStateTransition);
         }
-        let arbitrator_key = dispute.arbitrator_key(&signed.commit.arbitrator).copied().ok_or(DisputeError::NotAnArbitrator)?;
+        let arbitrator_key = dispute
+            .arbitrator_key(&signed.commit.arbitrator)
+            .copied()
+            .ok_or(DisputeError::NotAnArbitrator)?;
         let bytes = wire::to_bytes(&signed.commit).map_err(|_| DisputeError::MalformedDispute)?;
-        verify(&arbitrator_key, &bytes, &signed.signature).map_err(|_| DisputeError::InvalidSignature)?;
+        verify(&arbitrator_key, &bytes, &signed.signature)
+            .map_err(|_| DisputeError::InvalidSignature)?;
 
-        if dispute.commitments.iter().any(|c| c.arbitrator == signed.commit.arbitrator) {
+        if dispute
+            .commitments
+            .iter()
+            .any(|c| c.arbitrator == signed.commit.arbitrator)
+        {
             return Ok(()); // idempotent no-op
         }
-        dispute.commitments.push(ArbitratorCommitment { arbitrator: signed.commit.arbitrator, commitment: signed.commit.commitment });
+        dispute.commitments.push(ArbitratorCommitment {
+            arbitrator: signed.commit.arbitrator,
+            commitment: signed.commit.commitment,
+        });
         if dispute.commitments.len() == dispute.required_arbitrators as usize {
             dispute.status = DisputeStatus::RevealPhase;
         }
@@ -134,23 +170,40 @@ impl<S: KvStore> DisputeRegistry<S> {
     /// counted" — a mismatch is rejected outright rather than silently
     /// ignored, so the caller knows the reveal didn't count.
     pub fn apply_vote_reveal(&self, signed: SignedVoteReveal) -> Result<(), DisputeError> {
-        let mut dispute = self.get(&signed.reveal.dispute_id).ok_or(DisputeError::DisputeNotFound)?;
+        let mut dispute = self
+            .get(&signed.reveal.dispute_id)
+            .ok_or(DisputeError::DisputeNotFound)?;
         if dispute.status != DisputeStatus::RevealPhase {
             return Err(DisputeError::InvalidStateTransition);
         }
-        let arbitrator_key = dispute.arbitrator_key(&signed.reveal.arbitrator).copied().ok_or(DisputeError::NotAnArbitrator)?;
+        let arbitrator_key = dispute
+            .arbitrator_key(&signed.reveal.arbitrator)
+            .copied()
+            .ok_or(DisputeError::NotAnArbitrator)?;
         let bytes = wire::to_bytes(&signed.reveal).map_err(|_| DisputeError::MalformedDispute)?;
-        verify(&arbitrator_key, &bytes, &signed.signature).map_err(|_| DisputeError::InvalidSignature)?;
+        verify(&arbitrator_key, &bytes, &signed.signature)
+            .map_err(|_| DisputeError::InvalidSignature)?;
 
-        let committed = dispute.commitments.iter().find(|c| c.arbitrator == signed.reveal.arbitrator).ok_or(DisputeError::NotAnArbitrator)?;
+        let committed = dispute
+            .commitments
+            .iter()
+            .find(|c| c.arbitrator == signed.reveal.arbitrator)
+            .ok_or(DisputeError::NotAnArbitrator)?;
         if commitment::compute(signed.reveal.vote, &signed.reveal.secret) != committed.commitment {
             return Err(DisputeError::CommitmentMismatch);
         }
 
-        if dispute.reveals.iter().any(|r| r.arbitrator == signed.reveal.arbitrator) {
+        if dispute
+            .reveals
+            .iter()
+            .any(|r| r.arbitrator == signed.reveal.arbitrator)
+        {
             return Ok(()); // idempotent no-op
         }
-        dispute.reveals.push(ArbitratorReveal { arbitrator: signed.reveal.arbitrator, vote: signed.reveal.vote });
+        dispute.reveals.push(ArbitratorReveal {
+            arbitrator: signed.reveal.arbitrator,
+            vote: signed.reveal.vote,
+        });
         if dispute.reveals.len() == dispute.required_arbitrators as usize {
             dispute.resolution = Some(consensus(&dispute.reveals));
             dispute.status = DisputeStatus::Resolved;
@@ -162,18 +215,25 @@ impl<S: KvStore> DisputeRegistry<S> {
 
     /// §17: parties may voluntarily resolve at any point before
     /// arbitration concludes.
-    pub fn apply_mutual_settlement_agree(&self, signed: SignedMutualSettlementAgree) -> Result<(), DisputeError> {
-        let mut dispute = self.get(&signed.agree.dispute_id).ok_or(DisputeError::DisputeNotFound)?;
+    pub fn apply_mutual_settlement_agree(
+        &self,
+        signed: SignedMutualSettlementAgree,
+    ) -> Result<(), DisputeError> {
+        let mut dispute = self
+            .get(&signed.agree.dispute_id)
+            .ok_or(DisputeError::DisputeNotFound)?;
         if dispute.status == DisputeStatus::Resolved {
             return Err(DisputeError::InvalidStateTransition);
         }
 
         let bytes = wire::to_bytes(&signed.agree).map_err(|_| DisputeError::MalformedDispute)?;
         if signed.agree.party == dispute.buyer {
-            verify(&dispute.buyer_public_key, &bytes, &signed.signature).map_err(|_| DisputeError::InvalidSignature)?;
+            verify(&dispute.buyer_public_key, &bytes, &signed.signature)
+                .map_err(|_| DisputeError::InvalidSignature)?;
             dispute.buyer_agreed_mutual_settlement = true;
         } else if signed.agree.party == dispute.seller {
-            verify(&dispute.seller_public_key, &bytes, &signed.signature).map_err(|_| DisputeError::InvalidSignature)?;
+            verify(&dispute.seller_public_key, &bytes, &signed.signature)
+                .map_err(|_| DisputeError::InvalidSignature)?;
             dispute.seller_agreed_mutual_settlement = true;
         } else {
             return Err(DisputeError::NotAParty);
@@ -247,7 +307,9 @@ fn consensus(reveals: &[ArbitratorReveal]) -> Resolution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{ArbitratorJoin, DisputeOpen, MutualSettlementAgree, VoteCommit, VoteReveal};
+    use crate::events::{
+        ArbitratorJoin, DisputeOpen, MutualSettlementAgree, VoteCommit, VoteReveal,
+    };
     use openfiat_crypto::Keypair;
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_reservations::ReservationId;
@@ -256,7 +318,13 @@ mod tests {
     use openfiat_storage::mem::MemoryStore;
     use openfiat_types::{Amount, Timestamp};
 
-    fn setup() -> (Rc<SettlementRegistry<MemoryStore>>, DisputeRegistry<MemoryStore>, Keypair, Keypair, SettlementId) {
+    fn setup() -> (
+        Rc<SettlementRegistry<MemoryStore>>,
+        DisputeRegistry<MemoryStore>,
+        Keypair,
+        Keypair,
+        SettlementId,
+    ) {
         let settlements = Rc::new(SettlementRegistry::new(MemoryStore::new()));
         let buyer = Keypair::generate();
         let seller = Keypair::generate();
@@ -270,12 +338,18 @@ mod tests {
             amount: Amount::new(2_000_000, 6),
             timestamp: Timestamp::now(),
         };
-        let settlement_id = settlements.apply_initiate(SignedSettlementInitiate::sign(initiate, &buyer)).unwrap();
+        let settlement_id = settlements
+            .apply_initiate(SignedSettlementInitiate::sign(initiate, &buyer))
+            .unwrap();
         let disputes = DisputeRegistry::new(MemoryStore::new(), Rc::clone(&settlements));
         (settlements, disputes, buyer, seller, settlement_id)
     }
 
-    fn open_dispute(disputes: &DisputeRegistry<MemoryStore>, opener: &Keypair, settlement_id: &SettlementId) -> DisputeId {
+    fn open_dispute(
+        disputes: &DisputeRegistry<MemoryStore>,
+        opener: &Keypair,
+        settlement_id: &SettlementId,
+    ) -> DisputeId {
         let open = DisputeOpen {
             id: DisputeId::new("dispute-1"),
             settlement_id: settlement_id.clone(),
@@ -284,7 +358,9 @@ mod tests {
             reason: "payment not received".to_string(),
             timestamp: Timestamp::now(),
         };
-        disputes.apply_open(SignedDisputeOpen::sign(open, opener)).unwrap()
+        disputes
+            .apply_open(SignedDisputeOpen::sign(open, opener))
+            .unwrap()
     }
 
     fn join(disputes: &DisputeRegistry<MemoryStore>, dispute_id: &DisputeId, arbitrator: &Keypair) {
@@ -294,7 +370,9 @@ mod tests {
             arbitrator_public_key: arbitrator.public_key(),
             timestamp: Timestamp::now(),
         };
-        disputes.apply_arbitrator_join(SignedArbitratorJoin::sign(join, arbitrator)).unwrap();
+        disputes
+            .apply_arbitrator_join(SignedArbitratorJoin::sign(join, arbitrator))
+            .unwrap();
     }
 
     #[test]
@@ -320,10 +398,16 @@ mod tests {
         let arbitrators: Vec<Keypair> = (0..3).map(|_| Keypair::generate()).collect();
 
         join(&disputes, &dispute_id, &arbitrators[0]);
-        assert_eq!(disputes.get(&dispute_id).unwrap().status, DisputeStatus::Open);
+        assert_eq!(
+            disputes.get(&dispute_id).unwrap().status,
+            DisputeStatus::Open
+        );
         join(&disputes, &dispute_id, &arbitrators[1]);
         join(&disputes, &dispute_id, &arbitrators[2]);
-        assert_eq!(disputes.get(&dispute_id).unwrap().status, DisputeStatus::CaseLocked);
+        assert_eq!(
+            disputes.get(&dispute_id).unwrap().status,
+            DisputeStatus::CaseLocked
+        );
 
         // A fourth arbitrator can no longer join.
         let fourth = Keypair::generate();
@@ -333,7 +417,8 @@ mod tests {
             arbitrator_public_key: fourth.public_key(),
             timestamp: Timestamp::now(),
         };
-        let result = disputes.apply_arbitrator_join(SignedArbitratorJoin::sign(join_event, &fourth));
+        let result =
+            disputes.apply_arbitrator_join(SignedArbitratorJoin::sign(join_event, &fourth));
         assert_eq!(result, Err(DisputeError::InvalidStateTransition));
     }
 
@@ -356,9 +441,14 @@ mod tests {
                 commitment,
                 timestamp: Timestamp::now(),
             };
-            disputes.apply_vote_commit(SignedVoteCommit::sign(commit, arbitrator)).unwrap();
+            disputes
+                .apply_vote_commit(SignedVoteCommit::sign(commit, arbitrator))
+                .unwrap();
         }
-        assert_eq!(disputes.get(&dispute_id).unwrap().status, DisputeStatus::RevealPhase);
+        assert_eq!(
+            disputes.get(&dispute_id).unwrap().status,
+            DisputeStatus::RevealPhase
+        );
 
         for ((arbitrator, vote), secret) in arbitrators.iter().zip(votes).zip(secrets) {
             let reveal = VoteReveal {
@@ -368,7 +458,9 @@ mod tests {
                 secret,
                 timestamp: Timestamp::now(),
             };
-            disputes.apply_vote_reveal(SignedVoteReveal::sign(reveal, arbitrator)).unwrap();
+            disputes
+                .apply_vote_reveal(SignedVoteReveal::sign(reveal, arbitrator))
+                .unwrap();
         }
 
         let dispute = disputes.get(&dispute_id).unwrap();
@@ -394,7 +486,9 @@ mod tests {
             commitment: commitment::compute(Vote::BuyerWins, &[1u8; 32]),
             timestamp: Timestamp::now(),
         };
-        disputes.apply_vote_commit(SignedVoteCommit::sign(commit, &arbitrator)).unwrap();
+        disputes
+            .apply_vote_commit(SignedVoteCommit::sign(commit, &arbitrator))
+            .unwrap();
         for other in &others {
             let commit = VoteCommit {
                 dispute_id: dispute_id.clone(),
@@ -402,9 +496,14 @@ mod tests {
                 commitment: commitment::compute(Vote::MerchantWins, &[9u8; 32]),
                 timestamp: Timestamp::now(),
             };
-            disputes.apply_vote_commit(SignedVoteCommit::sign(commit, other)).unwrap();
+            disputes
+                .apply_vote_commit(SignedVoteCommit::sign(commit, other))
+                .unwrap();
         }
-        assert_eq!(disputes.get(&dispute_id).unwrap().status, DisputeStatus::RevealPhase);
+        assert_eq!(
+            disputes.get(&dispute_id).unwrap().status,
+            DisputeStatus::RevealPhase
+        );
 
         // Reveals a *different* vote than committed.
         let reveal = VoteReveal {
@@ -423,12 +522,27 @@ mod tests {
         let (_settlements, disputes, buyer, seller, settlement_id) = setup();
         let dispute_id = open_dispute(&disputes, &buyer, &settlement_id);
 
-        let buyer_agree = MutualSettlementAgree { dispute_id: dispute_id.clone(), party: peer_id_from_public_key(&buyer.public_key()).unwrap(), timestamp: Timestamp::now() };
-        disputes.apply_mutual_settlement_agree(SignedMutualSettlementAgree::sign(buyer_agree, &buyer)).unwrap();
-        assert_eq!(disputes.get(&dispute_id).unwrap().status, DisputeStatus::Open);
+        let buyer_agree = MutualSettlementAgree {
+            dispute_id: dispute_id.clone(),
+            party: peer_id_from_public_key(&buyer.public_key()).unwrap(),
+            timestamp: Timestamp::now(),
+        };
+        disputes
+            .apply_mutual_settlement_agree(SignedMutualSettlementAgree::sign(buyer_agree, &buyer))
+            .unwrap();
+        assert_eq!(
+            disputes.get(&dispute_id).unwrap().status,
+            DisputeStatus::Open
+        );
 
-        let seller_agree = MutualSettlementAgree { dispute_id: dispute_id.clone(), party: peer_id_from_public_key(&seller.public_key()).unwrap(), timestamp: Timestamp::now() };
-        disputes.apply_mutual_settlement_agree(SignedMutualSettlementAgree::sign(seller_agree, &seller)).unwrap();
+        let seller_agree = MutualSettlementAgree {
+            dispute_id: dispute_id.clone(),
+            party: peer_id_from_public_key(&seller.public_key()).unwrap(),
+            timestamp: Timestamp::now(),
+        };
+        disputes
+            .apply_mutual_settlement_agree(SignedMutualSettlementAgree::sign(seller_agree, &seller))
+            .unwrap();
 
         let dispute = disputes.get(&dispute_id).unwrap();
         assert_eq!(dispute.status, DisputeStatus::Resolved);

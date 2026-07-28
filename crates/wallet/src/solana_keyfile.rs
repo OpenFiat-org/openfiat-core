@@ -33,8 +33,14 @@ impl fmt::Display for KeyfileError {
             Self::Read(e) => write!(f, "failed to read keyfile: {e}"),
             Self::Write(e) => write!(f, "failed to write keyfile: {e}"),
             Self::Parse(e) => write!(f, "failed to parse keyfile as a JSON byte array: {e}"),
-            Self::WrongLength(len) => write!(f, "keyfile must contain exactly 64 bytes (seed + public key), found {len}"),
-            Self::PublicKeyMismatch => write!(f, "keyfile's embedded public key does not match its own seed"),
+            Self::WrongLength(len) => write!(
+                f,
+                "keyfile must contain exactly 64 bytes (seed + public key), found {len}"
+            ),
+            Self::PublicKeyMismatch => write!(
+                f,
+                "keyfile's embedded public key does not match its own seed"
+            ),
         }
     }
 }
@@ -76,7 +82,8 @@ mod tests {
     #[test]
     fn a_saved_wallet_loads_back_to_the_same_identity() {
         let wallet = Wallet::generate();
-        let path = std::env::temp_dir().join(format!("openfiat-wallet-test-{}.json", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("openfiat-wallet-test-{}.json", std::process::id()));
         save(&wallet, &path).unwrap();
 
         let loaded = load(&path).unwrap();
@@ -88,7 +95,10 @@ mod tests {
 
     #[test]
     fn a_file_that_is_not_64_bytes_is_rejected() {
-        let path = std::env::temp_dir().join(format!("openfiat-wallet-test-short-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "openfiat-wallet-test-short-{}.json",
+            std::process::id()
+        ));
         std::fs::write(&path, "[1,2,3]").unwrap();
 
         let result = load(&path);
@@ -100,10 +110,14 @@ mod tests {
     #[test]
     fn a_tampered_public_key_is_rejected() {
         let wallet = Wallet::generate();
-        let path = std::env::temp_dir().join(format!("openfiat-wallet-test-tampered-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "openfiat-wallet-test-tampered-{}.json",
+            std::process::id()
+        ));
         save(&wallet, &path).unwrap();
 
-        let mut bytes: Vec<u8> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut bytes: Vec<u8> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         bytes[63] ^= 0xFF;
         std::fs::write(&path, serde_json::to_string(&bytes).unwrap()).unwrap();
 

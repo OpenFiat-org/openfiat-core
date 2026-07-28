@@ -27,7 +27,8 @@ impl<S: KvStore> PeerCache<S> {
 
     pub fn upsert(&self, record: &PeerRecord) -> Result<(), S::Error> {
         let bytes = wire::to_bytes(record).expect("PeerRecord always serializes");
-        self.store.put(COLUMN_FAMILY, record.peer_id.as_bytes(), &bytes)
+        self.store
+            .put(COLUMN_FAMILY, record.peer_id.as_bytes(), &bytes)
     }
 
     pub fn get(&self, peer_id: &PeerId) -> Result<Option<PeerRecord>, S::Error> {
@@ -42,14 +43,23 @@ impl<S: KvStore> PeerCache<S> {
     /// Every cached peer record.
     pub fn all(&self) -> Result<Vec<PeerRecord>, S::Error> {
         let entries = self.store.iter_prefix(COLUMN_FAMILY, &[])?;
-        Ok(entries.into_iter().filter_map(|(_, value)| wire::from_bytes(&value).ok()).collect())
+        Ok(entries
+            .into_iter()
+            .filter_map(|(_, value)| wire::from_bytes(&value).ok())
+            .collect())
     }
 
     /// Remove peers not seen within `max_age` (§23 peer expiration).
     pub fn expire_stale(&self, max_age: Duration) -> Result<usize, S::Error> {
-        let cutoff = Timestamp::now().as_millis().saturating_sub(max_age.as_millis() as u64);
-        let stale: Vec<PeerId> =
-            self.all()?.into_iter().filter(|record| record.last_seen.as_millis() < cutoff).map(|record| record.peer_id).collect();
+        let cutoff = Timestamp::now()
+            .as_millis()
+            .saturating_sub(max_age.as_millis() as u64);
+        let stale: Vec<PeerId> = self
+            .all()?
+            .into_iter()
+            .filter(|record| record.last_seen.as_millis() < cutoff)
+            .map(|record| record.peer_id)
+            .collect();
         let count = stale.len();
         for peer_id in &stale {
             self.remove(peer_id)?;
@@ -66,7 +76,11 @@ impl<S: KvStore> PeerCache<S> {
             a.failures
                 .cmp(&b.failures)
                 .then_with(|| b.successes.cmp(&a.successes))
-                .then_with(|| a.latency_ms.unwrap_or(u32::MAX).cmp(&b.latency_ms.unwrap_or(u32::MAX)))
+                .then_with(|| {
+                    a.latency_ms
+                        .unwrap_or(u32::MAX)
+                        .cmp(&b.latency_ms.unwrap_or(u32::MAX))
+                })
         });
         all.truncate(limit);
         Ok(all)

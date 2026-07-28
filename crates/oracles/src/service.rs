@@ -43,13 +43,20 @@ impl<S: KvStore + 'static> OracleService<S> {
     }
 
     pub fn median_exchange_rate(&self, base: &str, quote: &str) -> Option<f64> {
-        self.registry.median_exchange_rate(base, quote, Timestamp::now())
+        self.registry
+            .median_exchange_rate(base, quote, Timestamp::now())
     }
 
     /// §8: publish a new or updated record under this node's own
     /// identity, `version` strictly greater than whatever's already on
     /// file (see `OracleIndex::apply_publish`).
-    pub fn publish(&mut self, id: impl Into<String>, data: OracleData, version: u64, ttl: std::time::Duration) -> Result<OracleId, OracleError> {
+    pub fn publish(
+        &mut self,
+        id: impl Into<String>,
+        data: OracleData,
+        version: u64,
+        ttl: std::time::Duration,
+    ) -> Result<OracleId, OracleError> {
         let now = Timestamp::now();
         let publish = OraclePublish {
             id: OracleId::new(id),
@@ -61,16 +68,26 @@ impl<S: KvStore + 'static> OracleService<S> {
             expires_at: Timestamp::from_millis(now.as_millis() + ttl.as_millis() as u64),
         };
         let bytes = wire::to_bytes(&publish).map_err(|_| OracleError::MalformedRecord)?;
-        let signed = SignedOraclePublish { signature: self.gossip.sign(&bytes), publish };
+        let signed = SignedOraclePublish {
+            signature: self.gossip.sign(&bytes),
+            publish,
+        };
         self.originate(&signed)?;
         Ok(signed.publish.id)
     }
 
     fn originate(&mut self, payload: &impl serde::Serialize) -> Result<(), OracleError> {
         let bytes = wire::to_bytes(payload).map_err(|_| OracleError::MalformedRecord)?;
-        let event_type = EventType::new(protocol::EVENT_PUBLISHED).expect("oracle event name is a valid PascalCase identifier");
+        let event_type = EventType::new(protocol::EVENT_PUBLISHED)
+            .expect("oracle event name is a valid PascalCase identifier");
         self.gossip
-            .originate(event_type, protocol::OFS_SPEC, Priority::Reputation, 8, bytes)
+            .originate(
+                event_type,
+                protocol::OFS_SPEC,
+                Priority::Reputation,
+                8,
+                bytes,
+            )
             .map(|_| ())
             .map_err(|_| OracleError::Unauthorized)
     }

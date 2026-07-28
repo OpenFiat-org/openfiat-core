@@ -25,22 +25,36 @@ impl<S: KvStore> OracleIndex<S> {
     }
 
     pub fn get(&self, id: &OracleId) -> Option<OracleRecord> {
-        let bytes = self.store.get(COLUMN_FAMILY, id.as_str().as_bytes()).ok().flatten()?;
+        let bytes = self
+            .store
+            .get(COLUMN_FAMILY, id.as_str().as_bytes())
+            .ok()
+            .flatten()?;
         wire::from_bytes(&bytes).ok()
     }
 
     fn put(&self, record: &OracleRecord) {
         if let Ok(bytes) = wire::to_bytes(record) {
-            let _ = self.store.put(COLUMN_FAMILY, record.id.as_str().as_bytes(), &bytes);
+            let _ = self
+                .store
+                .put(COLUMN_FAMILY, record.id.as_str().as_bytes(), &bytes);
         }
     }
 
     pub fn all(&self) -> Vec<OracleRecord> {
-        self.store.iter_prefix(COLUMN_FAMILY, &[]).unwrap_or_default().into_iter().filter_map(|(_, value)| wire::from_bytes(&value).ok()).collect()
+        self.store
+            .iter_prefix(COLUMN_FAMILY, &[])
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, value)| wire::from_bytes(&value).ok())
+            .collect()
     }
 
     pub fn find_by_category(&self, category: OracleCategory) -> Vec<OracleRecord> {
-        self.all().into_iter().filter(|record| record.data.category() == category).collect()
+        self.all()
+            .into_iter()
+            .filter(|record| record.data.category() == category)
+            .collect()
     }
 
     /// §5/§8/§15: only a registered market-data provider may publish,
@@ -49,7 +63,10 @@ impl<S: KvStore> OracleIndex<S> {
     pub fn apply_publish(&self, signed: SignedOraclePublish) -> Result<OracleId, OracleError> {
         signed.verify()?;
         let publish = signed.publish;
-        if !self.services.all().into_iter().any(|service| service.provider == publish.provider && matches!(service.service_type, ServiceType::MarketData(_))) {
+        if !self.services.all().into_iter().any(|service| {
+            service.provider == publish.provider
+                && matches!(service.service_type, ServiceType::MarketData(_))
+        }) {
             return Err(OracleError::Unauthorized);
         }
         if publish.expires_at.as_millis() <= publish.timestamp.as_millis() {
@@ -82,7 +99,11 @@ impl<S: KvStore> OracleIndex<S> {
             .into_iter()
             .filter(|record| record.is_current(now))
             .filter_map(|record| match record.data {
-                OracleData::ExchangeRate { base: b, quote: q, rate } if b == base && q == quote => Some(rate),
+                OracleData::ExchangeRate {
+                    base: b,
+                    quote: q,
+                    rate,
+                } if b == base && q == quote => Some(rate),
                 _ => None,
             })
             .collect();
@@ -94,7 +115,9 @@ impl<S: KvStore> OracleIndex<S> {
     }
 
     pub fn apply_event(&self, event: &EventEnvelope) {
-        if event.ofs_spec != protocol::OFS_SPEC || event.event_type.as_str() != protocol::EVENT_PUBLISHED {
+        if event.ofs_spec != protocol::OFS_SPEC
+            || event.event_type.as_str() != protocol::EVENT_PUBLISHED
+        {
             return;
         }
         if let Ok(signed) = wire::from_bytes(&event.payload) {
@@ -128,7 +151,9 @@ mod tests {
             pricing: None,
             timestamp: Timestamp::now(),
         };
-        services.apply_registration(SignedRegistration::sign(registration, &keypair)).unwrap();
+        services
+            .apply_registration(SignedRegistration::sign(registration, &keypair))
+            .unwrap();
         (keypair, services)
     }
 
@@ -137,7 +162,11 @@ mod tests {
             id: OracleId::new(id),
             provider: peer_id_from_public_key(&provider.public_key()).unwrap(),
             provider_public_key: provider.public_key(),
-            data: OracleData::ExchangeRate { base: "USD".to_string(), quote: "KES".to_string(), rate },
+            data: OracleData::ExchangeRate {
+                base: "USD".to_string(),
+                quote: "KES".to_string(),
+                rate,
+            },
             version,
             timestamp: Timestamp::now(),
             expires_at: Timestamp::from_millis(Timestamp::now().as_millis() + 60_000),
@@ -149,7 +178,10 @@ mod tests {
         let services = Rc::new(Registry::new(MemoryStore::new()));
         let registry = OracleIndex::new(MemoryStore::new(), services);
         let stranger = Keypair::generate();
-        let result = registry.apply_publish(SignedOraclePublish::sign(publish(&stranger, "usd-kes", 1, 129.52), &stranger));
+        let result = registry.apply_publish(SignedOraclePublish::sign(
+            publish(&stranger, "usd-kes", 1, 129.52),
+            &stranger,
+        ));
         assert_eq!(result, Err(OracleError::Unauthorized));
     }
 
@@ -157,16 +189,36 @@ mod tests {
     fn a_registered_provider_can_publish_and_it_is_queryable() {
         let (provider, services) = registered_provider(1);
         let registry = OracleIndex::new(MemoryStore::new(), services);
-        let id = registry.apply_publish(SignedOraclePublish::sign(publish(&provider, "usd-kes", 1, 129.52), &provider)).unwrap();
-        assert_eq!(registry.get(&id).unwrap().data, OracleData::ExchangeRate { base: "USD".to_string(), quote: "KES".to_string(), rate: 129.52 });
+        let id = registry
+            .apply_publish(SignedOraclePublish::sign(
+                publish(&provider, "usd-kes", 1, 129.52),
+                &provider,
+            ))
+            .unwrap();
+        assert_eq!(
+            registry.get(&id).unwrap().data,
+            OracleData::ExchangeRate {
+                base: "USD".to_string(),
+                quote: "KES".to_string(),
+                rate: 129.52
+            }
+        );
     }
 
     #[test]
     fn a_stale_version_is_rejected() {
         let (provider, services) = registered_provider(1);
         let registry = OracleIndex::new(MemoryStore::new(), services);
-        registry.apply_publish(SignedOraclePublish::sign(publish(&provider, "usd-kes", 2, 129.52), &provider)).unwrap();
-        let result = registry.apply_publish(SignedOraclePublish::sign(publish(&provider, "usd-kes", 2, 129.60), &provider));
+        registry
+            .apply_publish(SignedOraclePublish::sign(
+                publish(&provider, "usd-kes", 2, 129.52),
+                &provider,
+            ))
+            .unwrap();
+        let result = registry.apply_publish(SignedOraclePublish::sign(
+            publish(&provider, "usd-kes", 2, 129.60),
+            &provider,
+        ));
         assert_eq!(result, Err(OracleError::StaleVersion));
     }
 
@@ -199,10 +251,20 @@ mod tests {
                 pricing: None,
                 timestamp: Timestamp::now(),
             };
-            services.apply_registration(SignedRegistration::sign(registration, &provider)).unwrap();
-            registry.apply_publish(SignedOraclePublish::sign(publish(&provider, &format!("usd-kes-{i}"), 1, *rate), &provider)).unwrap();
+            services
+                .apply_registration(SignedRegistration::sign(registration, &provider))
+                .unwrap();
+            registry
+                .apply_publish(SignedOraclePublish::sign(
+                    publish(&provider, &format!("usd-kes-{i}"), 1, *rate),
+                    &provider,
+                ))
+                .unwrap();
         }
-        assert_eq!(registry.median_exchange_rate("USD", "KES", Timestamp::now()), Some(129.51));
+        assert_eq!(
+            registry.median_exchange_rate("USD", "KES", Timestamp::now()),
+            Some(129.51)
+        );
     }
 
     #[test]
@@ -211,9 +273,14 @@ mod tests {
         let registry = OracleIndex::new(MemoryStore::new(), services);
         let mut record = publish(&provider, "usd-kes", 1, 129.52);
         record.expires_at = Timestamp::from_millis(record.timestamp.as_millis() + 1);
-        registry.apply_publish(SignedOraclePublish::sign(record, &provider)).unwrap();
+        registry
+            .apply_publish(SignedOraclePublish::sign(record, &provider))
+            .unwrap();
 
         let far_future = Timestamp::from_millis(Timestamp::now().as_millis() + 60_000);
-        assert_eq!(registry.median_exchange_rate("USD", "KES", far_future), None);
+        assert_eq!(
+            registry.median_exchange_rate("USD", "KES", far_future),
+            None
+        );
     }
 }

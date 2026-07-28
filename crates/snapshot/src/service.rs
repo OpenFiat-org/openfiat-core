@@ -47,7 +47,11 @@ impl<S: KvStore + 'static> SnapshotService<S> {
         self.registry.checkpoint_height()
     }
 
-    pub fn import(&self, metadata: &SnapshotMetadata, compressed_bytes: &[u8]) -> Result<Vec<u8>, SnapshotError> {
+    pub fn import(
+        &self,
+        metadata: &SnapshotMetadata,
+        compressed_bytes: &[u8],
+    ) -> Result<Vec<u8>, SnapshotError> {
         self.registry.import(metadata, compressed_bytes)
     }
 
@@ -57,7 +61,12 @@ impl<S: KvStore + 'static> SnapshotService<S> {
     /// identity. `height` is `[PROPOSED — NEEDS SIGN-OFF]`'d to this
     /// node's local gossip event count at generation time; see
     /// `record::SnapshotMetadata::height`.
-    pub fn announce(&mut self, id: impl Into<String>, state_bytes: &[u8], height: u64) -> Result<(SnapshotId, Vec<u8>), SnapshotError> {
+    pub fn announce(
+        &mut self,
+        id: impl Into<String>,
+        state_bytes: &[u8],
+        height: u64,
+    ) -> Result<(SnapshotId, Vec<u8>), SnapshotError> {
         let compression = CompressionMethod::None;
         let compressed = codec::compress(state_bytes, compression)?;
         let metadata = SnapshotMetadata {
@@ -73,14 +82,18 @@ impl<S: KvStore + 'static> SnapshotService<S> {
             producer_public_key: self.gossip.public_key(),
         };
         let bytes = wire::to_bytes(&metadata).map_err(|_| SnapshotError::MalformedRecord)?;
-        let signed = SignedSnapshotAnnounce { signature: self.gossip.sign(&bytes), metadata };
+        let signed = SignedSnapshotAnnounce {
+            signature: self.gossip.sign(&bytes),
+            metadata,
+        };
         self.originate(&signed)?;
         Ok((signed.metadata.id, compressed))
     }
 
     fn originate(&mut self, payload: &impl serde::Serialize) -> Result<(), SnapshotError> {
         let bytes = wire::to_bytes(payload).map_err(|_| SnapshotError::MalformedRecord)?;
-        let event_type = EventType::new(protocol::EVENT_ANNOUNCED).expect("snapshot event name is a valid PascalCase identifier");
+        let event_type = EventType::new(protocol::EVENT_ANNOUNCED)
+            .expect("snapshot event name is a valid PascalCase identifier");
         self.gossip
             .originate(event_type, protocol::OFS_SPEC, Priority::Snapshot, 8, bytes)
             .map(|_| ())

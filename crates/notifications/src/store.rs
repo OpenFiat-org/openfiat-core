@@ -27,16 +27,29 @@ impl<S: KvStore> NotificationRegistry<S> {
     }
 
     pub fn subscription(&self, wallet: &PeerId) -> Option<Subscription> {
-        let bytes = self.store.get(SUBSCRIPTIONS_COLUMN_FAMILY, wallet.as_bytes()).ok().flatten()?;
+        let bytes = self
+            .store
+            .get(SUBSCRIPTIONS_COLUMN_FAMILY, wallet.as_bytes())
+            .ok()
+            .flatten()?;
         wire::from_bytes(&bytes).ok()
     }
 
     pub fn all_subscriptions(&self) -> Vec<Subscription> {
-        self.store.iter_prefix(SUBSCRIPTIONS_COLUMN_FAMILY, &[]).unwrap_or_default().into_iter().filter_map(|(_, value)| wire::from_bytes(&value).ok()).collect()
+        self.store
+            .iter_prefix(SUBSCRIPTIONS_COLUMN_FAMILY, &[])
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, value)| wire::from_bytes(&value).ok())
+            .collect()
     }
 
     pub fn receipt(&self, id: &NotificationId) -> Option<DeliveryReceipt> {
-        let bytes = self.store.get(RECEIPTS_COLUMN_FAMILY, id.as_str().as_bytes()).ok().flatten()?;
+        let bytes = self
+            .store
+            .get(RECEIPTS_COLUMN_FAMILY, id.as_str().as_bytes())
+            .ok()
+            .flatten()?;
         wire::from_bytes(&bytes).ok()
     }
 
@@ -52,20 +65,38 @@ impl<S: KvStore> NotificationRegistry<S> {
 
     /// §11: a full upsert — the latest update fully replaces whatever
     /// this wallet's subscription previously was.
-    pub fn apply_subscription_update(&self, signed: SignedSubscriptionUpdate) -> Result<(), NotificationError> {
+    pub fn apply_subscription_update(
+        &self,
+        signed: SignedSubscriptionUpdate,
+    ) -> Result<(), NotificationError> {
         signed.verify()?;
         let update = signed.update;
-        let subscription = Subscription { wallet: update.wallet.clone(), wallet_public_key: update.wallet_public_key, enabled_categories: update.enabled_categories, updated_at: update.timestamp };
+        let subscription = Subscription {
+            wallet: update.wallet.clone(),
+            wallet_public_key: update.wallet_public_key,
+            enabled_categories: update.enabled_categories,
+            updated_at: update.timestamp,
+        };
         let bytes = wire::to_bytes(&subscription).map_err(|_| NotificationError::MalformedEvent)?;
-        let _ = self.store.put(SUBSCRIPTIONS_COLUMN_FAMILY, update.wallet.as_bytes(), &bytes);
+        let _ = self.store.put(
+            SUBSCRIPTIONS_COLUMN_FAMILY,
+            update.wallet.as_bytes(),
+            &bytes,
+        );
         Ok(())
     }
 
     /// §17/§20: only a service's on-file provider (per `openfiat-registry`)
     /// may report a delivery outcome for it.
-    pub fn apply_delivery_report(&self, signed: SignedDeliveryReport) -> Result<(), NotificationError> {
+    pub fn apply_delivery_report(
+        &self,
+        signed: SignedDeliveryReport,
+    ) -> Result<(), NotificationError> {
         signed.verify()?;
-        let service = self.services.get(&signed.report.service_id).ok_or(NotificationError::ServiceNotFound)?;
+        let service = self
+            .services
+            .get(&signed.report.service_id)
+            .ok_or(NotificationError::ServiceNotFound)?;
         if service.provider != signed.report.provider {
             return Err(NotificationError::Unauthorized);
         }
@@ -80,7 +111,11 @@ impl<S: KvStore> NotificationRegistry<S> {
             updated_at: report.timestamp,
         };
         let bytes = wire::to_bytes(&receipt).map_err(|_| NotificationError::MalformedEvent)?;
-        let _ = self.store.put(RECEIPTS_COLUMN_FAMILY, report.notification_id.as_str().as_bytes(), &bytes);
+        let _ = self.store.put(
+            RECEIPTS_COLUMN_FAMILY,
+            report.notification_id.as_str().as_bytes(),
+            &bytes,
+        );
         Ok(())
     }
 
@@ -113,7 +148,10 @@ mod tests {
     use openfiat_storage::mem::MemoryStore;
     use openfiat_types::{NotificationChannel, ServiceId, ServiceType, Timestamp};
 
-    fn setup_with_provider(provider: &Keypair, service_id: &str) -> NotificationRegistry<MemoryStore> {
+    fn setup_with_provider(
+        provider: &Keypair,
+        service_id: &str,
+    ) -> NotificationRegistry<MemoryStore> {
         let services = Rc::new(Registry::new(MemoryStore::new()));
         let registration = Registration {
             service_id: ServiceId::new(service_id),
@@ -127,7 +165,9 @@ mod tests {
             pricing: None,
             timestamp: Timestamp::now(),
         };
-        services.apply_registration(SignedRegistration::sign(registration, provider)).unwrap();
+        services
+            .apply_registration(SignedRegistration::sign(registration, provider))
+            .unwrap();
         NotificationRegistry::new(MemoryStore::new(), services)
     }
 
@@ -139,10 +179,15 @@ mod tests {
         let update = SubscriptionUpdate {
             wallet: peer_id_from_public_key(&wallet.public_key()).unwrap(),
             wallet_public_key: wallet.public_key(),
-            enabled_categories: vec![NotificationCategory::Trading, NotificationCategory::Governance],
+            enabled_categories: vec![
+                NotificationCategory::Trading,
+                NotificationCategory::Governance,
+            ],
             timestamp: Timestamp::now(),
         };
-        registry.apply_subscription_update(SignedSubscriptionUpdate::sign(update, &wallet)).unwrap();
+        registry
+            .apply_subscription_update(SignedSubscriptionUpdate::sign(update, &wallet))
+            .unwrap();
 
         let wallet_id = peer_id_from_public_key(&wallet.public_key()).unwrap();
         let subscription = registry.subscription(&wallet_id).unwrap();
@@ -156,11 +201,25 @@ mod tests {
         let registry = NotificationRegistry::new(MemoryStore::new(), services);
         let wallet = Keypair::generate();
         let wallet_id = peer_id_from_public_key(&wallet.public_key()).unwrap();
-        let first = SubscriptionUpdate { wallet: wallet_id.clone(), wallet_public_key: wallet.public_key(), enabled_categories: vec![NotificationCategory::Trading], timestamp: Timestamp::now() };
-        registry.apply_subscription_update(SignedSubscriptionUpdate::sign(first, &wallet)).unwrap();
+        let first = SubscriptionUpdate {
+            wallet: wallet_id.clone(),
+            wallet_public_key: wallet.public_key(),
+            enabled_categories: vec![NotificationCategory::Trading],
+            timestamp: Timestamp::now(),
+        };
+        registry
+            .apply_subscription_update(SignedSubscriptionUpdate::sign(first, &wallet))
+            .unwrap();
 
-        let second = SubscriptionUpdate { wallet: wallet_id.clone(), wallet_public_key: wallet.public_key(), enabled_categories: vec![NotificationCategory::Infrastructure], timestamp: Timestamp::now() };
-        registry.apply_subscription_update(SignedSubscriptionUpdate::sign(second, &wallet)).unwrap();
+        let second = SubscriptionUpdate {
+            wallet: wallet_id.clone(),
+            wallet_public_key: wallet.public_key(),
+            enabled_categories: vec![NotificationCategory::Infrastructure],
+            timestamp: Timestamp::now(),
+        };
+        registry
+            .apply_subscription_update(SignedSubscriptionUpdate::sign(second, &wallet))
+            .unwrap();
 
         let subscription = registry.subscription(&wallet_id).unwrap();
         assert!(!subscription.wants(NotificationTrigger::TradeCompleted));
@@ -182,8 +241,16 @@ mod tests {
             status: DeliveryStatus::Delivered,
             timestamp: Timestamp::now(),
         };
-        registry.apply_delivery_report(SignedDeliveryReport::sign(report, &provider)).unwrap();
-        assert_eq!(registry.receipt(&NotificationId::new("notif-1")).unwrap().status, DeliveryStatus::Delivered);
+        registry
+            .apply_delivery_report(SignedDeliveryReport::sign(report, &provider))
+            .unwrap();
+        assert_eq!(
+            registry
+                .receipt(&NotificationId::new("notif-1"))
+                .unwrap()
+                .status,
+            DeliveryStatus::Delivered
+        );
     }
 
     #[test]

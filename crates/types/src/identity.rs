@@ -100,7 +100,13 @@ mod tests {
 
     #[test]
     fn peer_id_equality_is_byte_equality() {
-        assert_eq!(PeerId::from_bytes(vec![1, 2, 3]), PeerId::from_bytes(vec![1, 2, 3]));
-        assert_ne!(PeerId::from_bytes(vec![1, 2, 3]), PeerId::from_bytes(vec![1, 2, 4]));
+        assert_eq!(
+            PeerId::from_bytes(vec![1, 2, 3]),
+            PeerId::from_bytes(vec![1, 2, 3])
+        );
+        assert_ne!(
+            PeerId::from_bytes(vec![1, 2, 3]),
+            PeerId::from_bytes(vec![1, 2, 4])
+        );
     }
 }

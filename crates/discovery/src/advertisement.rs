@@ -32,8 +32,12 @@ pub struct SignedAdvertisement {
 impl SignedAdvertisement {
     /// Sign an advertisement about oneself with one's own keypair.
     pub fn sign(advertisement: Advertisement, keypair: &Keypair) -> Result<Self, DiscoveryError> {
-        let bytes = openfiat_serialization::wire::to_bytes(&advertisement).map_err(|_| DiscoveryError::MalformedAdvertisement)?;
-        Ok(Self { signature: keypair.sign(&bytes), advertisement })
+        let bytes = openfiat_serialization::wire::to_bytes(&advertisement)
+            .map_err(|_| DiscoveryError::MalformedAdvertisement)?;
+        Ok(Self {
+            signature: keypair.sign(&bytes),
+            advertisement,
+        })
     }
 
     /// Verify the signature, and that the advertisement is internally
@@ -41,14 +45,16 @@ impl SignedAdvertisement {
     /// `public_key` derives to (§10 identity verification, §21/§25 peer
     /// poisoning resistance).
     pub fn verify(&self) -> Result<(), DiscoveryError> {
-        let expected_peer_id =
-            peer_id_from_public_key(&self.advertisement.public_key).map_err(|_| DiscoveryError::InvalidPublicKey)?;
+        let expected_peer_id = peer_id_from_public_key(&self.advertisement.public_key)
+            .map_err(|_| DiscoveryError::InvalidPublicKey)?;
         if expected_peer_id != self.advertisement.peer_id {
             return Err(DiscoveryError::PeerIdMismatch);
         }
 
-        let bytes = openfiat_serialization::wire::to_bytes(&self.advertisement).map_err(|_| DiscoveryError::MalformedAdvertisement)?;
-        verify(&self.advertisement.public_key, &bytes, &self.signature).map_err(|_| DiscoveryError::InvalidSignature)
+        let bytes = openfiat_serialization::wire::to_bytes(&self.advertisement)
+            .map_err(|_| DiscoveryError::MalformedAdvertisement)?;
+        verify(&self.advertisement.public_key, &bytes, &self.signature)
+            .map_err(|_| DiscoveryError::InvalidSignature)
     }
 }
 
@@ -94,7 +100,8 @@ mod tests {
     fn rejects_a_peer_id_that_does_not_match_the_public_key() {
         let keypair = Keypair::generate();
         let wrong_peer_id = PeerId::from_bytes(vec![0, 0, 0]);
-        let signed = SignedAdvertisement::sign(advertisement(&keypair, wrong_peer_id), &keypair).unwrap();
+        let signed =
+            SignedAdvertisement::sign(advertisement(&keypair, wrong_peer_id), &keypair).unwrap();
         assert_eq!(signed.verify(), Err(DiscoveryError::PeerIdMismatch));
     }
 
@@ -102,7 +109,8 @@ mod tests {
     fn rejects_a_tampered_advertisement() {
         let keypair = Keypair::generate();
         let peer_id = peer_id_from_public_key(&keypair.public_key()).unwrap();
-        let mut signed = SignedAdvertisement::sign(advertisement(&keypair, peer_id), &keypair).unwrap();
+        let mut signed =
+            SignedAdvertisement::sign(advertisement(&keypair, peer_id), &keypair).unwrap();
         signed.advertisement.node_version = "9.9.9".to_string();
         assert_eq!(signed.verify(), Err(DiscoveryError::InvalidSignature));
     }

@@ -2,7 +2,9 @@
 //! is publicly recorded; §26: deterministic proposal states).
 
 use crate::error::GovernanceError;
-use crate::events::{SignedProposalActivate, SignedProposalCreate, SignedProposalWithdraw, SignedVoteCast};
+use crate::events::{
+    SignedProposalActivate, SignedProposalCreate, SignedProposalWithdraw, SignedVoteCast,
+};
 use crate::protocol;
 use crate::record::{CastVote, Proposal, ProposalId, ProposalStatus};
 use openfiat_crypto::verify;
@@ -22,28 +24,44 @@ impl<S: KvStore> GovernanceRegistry<S> {
     }
 
     pub fn get(&self, id: &ProposalId) -> Option<Proposal> {
-        let bytes = self.store.get(COLUMN_FAMILY, id.as_str().as_bytes()).ok().flatten()?;
+        let bytes = self
+            .store
+            .get(COLUMN_FAMILY, id.as_str().as_bytes())
+            .ok()
+            .flatten()?;
         wire::from_bytes(&bytes).ok()
     }
 
     fn put(&self, proposal: &Proposal) {
         if let Ok(bytes) = wire::to_bytes(proposal) {
-            let _ = self.store.put(COLUMN_FAMILY, proposal.id.as_str().as_bytes(), &bytes);
+            let _ = self
+                .store
+                .put(COLUMN_FAMILY, proposal.id.as_str().as_bytes(), &bytes);
         }
     }
 
     pub fn all(&self) -> Vec<Proposal> {
-        self.store.iter_prefix(COLUMN_FAMILY, &[]).unwrap_or_default().into_iter().filter_map(|(_, value)| wire::from_bytes(&value).ok()).collect()
+        self.store
+            .iter_prefix(COLUMN_FAMILY, &[])
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, value)| wire::from_bytes(&value).ok())
+            .collect()
     }
 
-    pub fn apply_create(&self, signed: SignedProposalCreate) -> Result<ProposalId, GovernanceError> {
+    pub fn apply_create(
+        &self,
+        signed: SignedProposalCreate,
+    ) -> Result<ProposalId, GovernanceError> {
         signed.verify()?;
         let id = signed.create.id.clone();
         if self.get(&id).is_some() {
             return Err(GovernanceError::DuplicateProposalId);
         }
         let create = signed.create;
-        let voting_closes_at = Timestamp::from_millis(create.timestamp.as_millis() + protocol::DEFAULT_VOTING_PERIOD.as_millis() as u64);
+        let voting_closes_at = Timestamp::from_millis(
+            create.timestamp.as_millis() + protocol::DEFAULT_VOTING_PERIOD.as_millis() as u64,
+        );
         self.put(&Proposal {
             id: id.clone(),
             title: create.title,
@@ -63,15 +81,24 @@ impl<S: KvStore> GovernanceRegistry<S> {
     /// §13/§24: only legal while voting is open, and only once per voter.
     pub fn apply_vote(&self, signed: SignedVoteCast) -> Result<(), GovernanceError> {
         signed.verify()?;
-        let mut proposal = self.get(&signed.vote.proposal_id).ok_or(GovernanceError::ProposalNotFound)?;
-        if proposal.status != ProposalStatus::Voting || signed.vote.timestamp.as_millis() >= proposal.voting_closes_at.as_millis() {
+        let mut proposal = self
+            .get(&signed.vote.proposal_id)
+            .ok_or(GovernanceError::ProposalNotFound)?;
+        if proposal.status != ProposalStatus::Voting
+            || signed.vote.timestamp.as_millis() >= proposal.voting_closes_at.as_millis()
+        {
             return Err(GovernanceError::VotingClosed);
         }
         if proposal.vote_by(&signed.vote.voter).is_some() {
             return Err(GovernanceError::DuplicateVote);
         }
 
-        proposal.votes.push(CastVote { voter: signed.vote.voter, choice: signed.vote.choice, weight: signed.vote.weight, timestamp: signed.vote.timestamp });
+        proposal.votes.push(CastVote {
+            voter: signed.vote.voter,
+            choice: signed.vote.choice,
+            weight: signed.vote.weight,
+            timestamp: signed.vote.timestamp,
+        });
         proposal.updated_at = signed.vote.timestamp;
         self.put(&proposal);
         Ok(())
@@ -79,12 +106,16 @@ impl<S: KvStore> GovernanceRegistry<S> {
 
     /// §21: proposal authors may withdraw before voting concludes.
     pub fn apply_withdraw(&self, signed: SignedProposalWithdraw) -> Result<(), GovernanceError> {
-        let mut proposal = self.get(&signed.withdraw.proposal_id).ok_or(GovernanceError::ProposalNotFound)?;
+        let mut proposal = self
+            .get(&signed.withdraw.proposal_id)
+            .ok_or(GovernanceError::ProposalNotFound)?;
         if proposal.author != signed.withdraw.author {
             return Err(GovernanceError::Unauthorized);
         }
-        let bytes = wire::to_bytes(&signed.withdraw).map_err(|_| GovernanceError::MalformedProposal)?;
-        verify(&proposal.author_public_key, &bytes, &signed.signature).map_err(|_| GovernanceError::InvalidSignature)?;
+        let bytes =
+            wire::to_bytes(&signed.withdraw).map_err(|_| GovernanceError::MalformedProposal)?;
+        verify(&proposal.author_public_key, &bytes, &signed.signature)
+            .map_err(|_| GovernanceError::InvalidSignature)?;
         if proposal.status != ProposalStatus::Voting {
             return Err(GovernanceError::InvalidStateTransition);
         }
@@ -97,12 +128,16 @@ impl<S: KvStore> GovernanceRegistry<S> {
 
     /// §18: only a proposal that reached `Accepted` may be activated.
     pub fn apply_activate(&self, signed: SignedProposalActivate) -> Result<(), GovernanceError> {
-        let mut proposal = self.get(&signed.activate.proposal_id).ok_or(GovernanceError::ProposalNotFound)?;
+        let mut proposal = self
+            .get(&signed.activate.proposal_id)
+            .ok_or(GovernanceError::ProposalNotFound)?;
         if proposal.author != signed.activate.author {
             return Err(GovernanceError::Unauthorized);
         }
-        let bytes = wire::to_bytes(&signed.activate).map_err(|_| GovernanceError::MalformedProposal)?;
-        verify(&proposal.author_public_key, &bytes, &signed.signature).map_err(|_| GovernanceError::InvalidSignature)?;
+        let bytes =
+            wire::to_bytes(&signed.activate).map_err(|_| GovernanceError::MalformedProposal)?;
+        verify(&proposal.author_public_key, &bytes, &signed.signature)
+            .map_err(|_| GovernanceError::InvalidSignature)?;
         if proposal.status != ProposalStatus::Accepted {
             return Err(GovernanceError::InvalidStateTransition);
         }
@@ -120,7 +155,9 @@ impl<S: KvStore> GovernanceRegistry<S> {
     pub fn resolve_expired(&self, now: Timestamp) -> usize {
         let mut resolved = 0;
         for mut proposal in self.all() {
-            if proposal.status != ProposalStatus::Voting || now.as_millis() < proposal.voting_closes_at.as_millis() {
+            if proposal.status != ProposalStatus::Voting
+                || now.as_millis() < proposal.voting_closes_at.as_millis()
+            {
                 continue;
             }
             proposal.status = tally(&proposal);
@@ -177,7 +214,11 @@ fn tally(proposal: &Proposal) -> ProposalStatus {
             crate::record::VoteChoice::Abstain => {}
         }
     }
-    if approve > reject { ProposalStatus::Accepted } else { ProposalStatus::Rejected }
+    if approve > reject {
+        ProposalStatus::Accepted
+    } else {
+        ProposalStatus::Rejected
+    }
 }
 
 #[cfg(test)]
@@ -189,7 +230,10 @@ mod tests {
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_storage::mem::MemoryStore;
 
-    fn registry_with_proposal(author: &Keypair, id: &str) -> (GovernanceRegistry<MemoryStore>, ProposalId) {
+    fn registry_with_proposal(
+        author: &Keypair,
+        id: &str,
+    ) -> (GovernanceRegistry<MemoryStore>, ProposalId) {
         let registry = GovernanceRegistry::new(MemoryStore::new());
         let create = ProposalCreate {
             id: ProposalId::new(id),
@@ -200,11 +244,19 @@ mod tests {
             author_public_key: author.public_key(),
             timestamp: Timestamp::now(),
         };
-        let id = registry.apply_create(SignedProposalCreate::sign(create, author)).unwrap();
+        let id = registry
+            .apply_create(SignedProposalCreate::sign(create, author))
+            .unwrap();
         (registry, id)
     }
 
-    fn cast(registry: &GovernanceRegistry<MemoryStore>, proposal_id: &ProposalId, voter: &Keypair, choice: VoteChoice, weight: u64) -> Result<(), GovernanceError> {
+    fn cast(
+        registry: &GovernanceRegistry<MemoryStore>,
+        proposal_id: &ProposalId,
+        voter: &Keypair,
+        choice: VoteChoice,
+        weight: u64,
+    ) -> Result<(), GovernanceError> {
         let vote = VoteCast {
             proposal_id: proposal_id.clone(),
             voter: peer_id_from_public_key(&voter.public_key()).unwrap(),
@@ -236,7 +288,9 @@ mod tests {
             author_public_key: author.public_key(),
             timestamp: Timestamp::now(),
         };
-        registry.apply_create(SignedProposalCreate::sign(create(), &author)).unwrap();
+        registry
+            .apply_create(SignedProposalCreate::sign(create(), &author))
+            .unwrap();
         let result = registry.apply_create(SignedProposalCreate::sign(create(), &author));
         assert_eq!(result, Err(GovernanceError::DuplicateProposalId));
     }
@@ -260,7 +314,8 @@ mod tests {
         cast(&registry, &id, &voters[1], VoteChoice::Approve, 5).unwrap();
         cast(&registry, &id, &voters[2], VoteChoice::Reject, 3).unwrap();
 
-        let far_future = Timestamp::from_millis(registry.get(&id).unwrap().voting_closes_at.as_millis() + 1);
+        let far_future =
+            Timestamp::from_millis(registry.get(&id).unwrap().voting_closes_at.as_millis() + 1);
         assert_eq!(registry.resolve_expired(far_future), 1);
         assert_eq!(registry.get(&id).unwrap().status, ProposalStatus::Accepted);
     }
@@ -272,7 +327,8 @@ mod tests {
         let voter = Keypair::generate();
         cast(&registry, &id, &voter, VoteChoice::Approve, 1000).unwrap();
 
-        let far_future = Timestamp::from_millis(registry.get(&id).unwrap().voting_closes_at.as_millis() + 1);
+        let far_future =
+            Timestamp::from_millis(registry.get(&id).unwrap().voting_closes_at.as_millis() + 1);
         registry.resolve_expired(far_future);
         assert_eq!(registry.get(&id).unwrap().status, ProposalStatus::Rejected);
     }
@@ -282,7 +338,11 @@ mod tests {
         let author = Keypair::generate();
         let (registry, id) = registry_with_proposal(&author, "ofp-1");
         let stranger = Keypair::generate();
-        let withdraw = ProposalWithdraw { proposal_id: id, author: peer_id_from_public_key(&stranger.public_key()).unwrap(), timestamp: Timestamp::now() };
+        let withdraw = ProposalWithdraw {
+            proposal_id: id,
+            author: peer_id_from_public_key(&stranger.public_key()).unwrap(),
+            timestamp: Timestamp::now(),
+        };
         let result = registry.apply_withdraw(SignedProposalWithdraw::sign(withdraw, &stranger));
         assert_eq!(result, Err(GovernanceError::Unauthorized));
     }
@@ -292,7 +352,11 @@ mod tests {
         let author = Keypair::generate();
         let (registry, id) = registry_with_proposal(&author, "ofp-1");
         let author_peer_id = peer_id_from_public_key(&author.public_key()).unwrap();
-        let activate = ProposalActivate { proposal_id: id, author: author_peer_id, timestamp: Timestamp::now() };
+        let activate = ProposalActivate {
+            proposal_id: id,
+            author: author_peer_id,
+            timestamp: Timestamp::now(),
+        };
         let result = registry.apply_activate(SignedProposalActivate::sign(activate, &author));
         assert_eq!(result, Err(GovernanceError::InvalidStateTransition));
     }
@@ -305,13 +369,20 @@ mod tests {
         for voter in &voters {
             cast(&registry, &id, voter, VoteChoice::Approve, 1).unwrap();
         }
-        let far_future = Timestamp::from_millis(registry.get(&id).unwrap().voting_closes_at.as_millis() + 1);
+        let far_future =
+            Timestamp::from_millis(registry.get(&id).unwrap().voting_closes_at.as_millis() + 1);
         registry.resolve_expired(far_future);
         assert_eq!(registry.get(&id).unwrap().status, ProposalStatus::Accepted);
 
         let author_peer_id = peer_id_from_public_key(&author.public_key()).unwrap();
-        let activate = ProposalActivate { proposal_id: id.clone(), author: author_peer_id, timestamp: Timestamp::now() };
-        registry.apply_activate(SignedProposalActivate::sign(activate, &author)).unwrap();
+        let activate = ProposalActivate {
+            proposal_id: id.clone(),
+            author: author_peer_id,
+            timestamp: Timestamp::now(),
+        };
+        registry
+            .apply_activate(SignedProposalActivate::sign(activate, &author))
+            .unwrap();
         assert_eq!(registry.get(&id).unwrap().status, ProposalStatus::Activated);
     }
 }

@@ -9,5 +9,12 @@ use openfiat_reputation::ReputationProfile;
 use openfiat_storage::KvStore;
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
-    table.register("getReputation", method_fn(|state: &NodeState<S>, params: WalletParams| -> Result<ReputationProfile, RpcError> { Ok(state.reputation.profile(&decode_peer_id(&params.wallet)?)) }));
+    table.register(
+        "getReputation",
+        method_fn(
+            |state: &NodeState<S>, params: WalletParams| -> Result<ReputationProfile, RpcError> {
+                Ok(state.reputation.profile(&decode_peer_id(&params.wallet)?))
+            },
+        ),
+    );
 }

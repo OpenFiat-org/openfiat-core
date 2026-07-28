@@ -54,7 +54,12 @@ impl Envelope {
     /// Build an unauthenticated envelope. `header.payload_length` and
     /// `header.compressed` are derived, not caller-supplied, so they can
     /// never disagree with the actual payload.
-    pub fn new(ofs_spec: u16, message_type: impl Into<String>, sequence: u64, payload: Vec<u8>) -> Self {
+    pub fn new(
+        ofs_spec: u16,
+        message_type: impl Into<String>,
+        sequence: u64,
+        payload: Vec<u8>,
+    ) -> Self {
         Self {
             header: Header {
                 protocol_version: PROTOCOL_VERSION,
@@ -89,17 +94,27 @@ async fn read_envelope<T: AsyncRead + Unpin + Send>(io: &mut T) -> io::Result<En
     io.read_exact(&mut len_bytes).await?;
     let len = u32::from_be_bytes(len_bytes);
     if len > MAX_ENVELOPE_BYTES {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "envelope exceeds maximum size"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "envelope exceeds maximum size",
+        ));
     }
     let mut buf = vec![0u8; len as usize];
     io.read_exact(&mut buf).await?;
     wire::from_bytes(&buf).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
 }
 
-async fn write_envelope<T: AsyncWrite + Unpin + Send>(io: &mut T, envelope: &Envelope) -> io::Result<()> {
-    let bytes = wire::to_bytes(envelope).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+async fn write_envelope<T: AsyncWrite + Unpin + Send>(
+    io: &mut T,
+    envelope: &Envelope,
+) -> io::Result<()> {
+    let bytes =
+        wire::to_bytes(envelope).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     if bytes.len() > MAX_ENVELOPE_BYTES as usize {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "envelope exceeds maximum size"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "envelope exceeds maximum size",
+        ));
     }
     io.write_all(&(bytes.len() as u32).to_be_bytes()).await?;
     io.write_all(&bytes).await?;
@@ -126,14 +141,24 @@ impl Codec for EnvelopeCodec {
         read_envelope(io).await
     }
 
-    async fn write_request<T>(&mut self, _: &Self::Protocol, io: &mut T, req: Envelope) -> io::Result<()>
+    async fn write_request<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        req: Envelope,
+    ) -> io::Result<()>
     where
         T: AsyncWrite + Unpin + Send,
     {
         write_envelope(io, &req).await
     }
 
-    async fn write_response<T>(&mut self, _: &Self::Protocol, io: &mut T, res: Envelope) -> io::Result<()>
+    async fn write_response<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        res: Envelope,
+    ) -> io::Result<()>
     where
         T: AsyncWrite + Unpin + Send,
     {
@@ -157,7 +182,8 @@ mod tests {
     #[test]
     fn authenticated_with_sets_the_flag_and_signature() {
         let signature = Signature::from_bytes([7u8; 64]);
-        let envelope = Envelope::new(1000, "Heartbeat", 1, vec![]).authenticated_with(signature.clone());
+        let envelope =
+            Envelope::new(1000, "Heartbeat", 1, vec![]).authenticated_with(signature.clone());
         assert!(envelope.header.authenticated);
         assert_eq!(envelope.authentication, Some(signature));
     }

@@ -13,7 +13,9 @@
 use crate::error::RiskError;
 use crate::events::{RiskPublish, SignedRiskPublish};
 use crate::protocol;
-use crate::record::{Confidence, ProviderCategory, RiskOutcome, RiskRecord, RiskRecordId, ScreeningResult, Severity};
+use crate::record::{
+    Confidence, ProviderCategory, RiskOutcome, RiskRecord, RiskRecordId, ScreeningResult, Severity,
+};
 use crate::store::RiskIndex;
 use openfiat_gossip::GossipService;
 use openfiat_registry::Registry;
@@ -77,7 +79,10 @@ impl<S: KvStore + 'static> RiskService<S> {
             expires_at,
         };
         let bytes = wire::to_bytes(&publish).map_err(|_| RiskError::MalformedRecord)?;
-        let signed = SignedRiskPublish { signature: self.gossip.sign(&bytes), publish };
+        let signed = SignedRiskPublish {
+            signature: self.gossip.sign(&bytes),
+            publish,
+        };
         let event_type = match outcome {
             RiskOutcome::Flagged => protocol::EVENT_FLAGGED,
             RiskOutcome::Cleared => protocol::EVENT_CLEARED,
@@ -86,11 +91,22 @@ impl<S: KvStore + 'static> RiskService<S> {
         Ok(signed.publish.id)
     }
 
-    fn originate(&mut self, event_type: &str, payload: &impl serde::Serialize) -> Result<(), RiskError> {
+    fn originate(
+        &mut self,
+        event_type: &str,
+        payload: &impl serde::Serialize,
+    ) -> Result<(), RiskError> {
         let bytes = wire::to_bytes(payload).map_err(|_| RiskError::MalformedRecord)?;
-        let event_type = EventType::new(event_type).expect("risk event names are all valid PascalCase identifiers");
+        let event_type = EventType::new(event_type)
+            .expect("risk event names are all valid PascalCase identifiers");
         self.gossip
-            .originate(event_type, protocol::OFS_SPEC, Priority::Reputation, 8, bytes)
+            .originate(
+                event_type,
+                protocol::OFS_SPEC,
+                Priority::Reputation,
+                8,
+                bytes,
+            )
             .map(|_| ())
             .map_err(|_| RiskError::Unauthorized)
     }

@@ -44,20 +44,48 @@ impl<S: KvStore + 'static> NodeState<S> {
         let store = Rc::new(store);
         let services = Rc::new(ServiceRegistry::new(Rc::clone(&store)));
         let advertisements = Rc::new(AdvertisementRegistry::new(Rc::clone(&store)));
-        let reservations = Rc::new(ReservationRegistry::new(Rc::clone(&store), Rc::clone(&advertisements)));
+        let reservations = Rc::new(ReservationRegistry::new(
+            Rc::clone(&store),
+            Rc::clone(&advertisements),
+        ));
         let settlements = Rc::new(SettlementRegistry::new(Rc::clone(&store)));
-        let disputes = Rc::new(DisputeRegistry::new(Rc::clone(&store), Rc::clone(&settlements)));
+        let disputes = Rc::new(DisputeRegistry::new(
+            Rc::clone(&store),
+            Rc::clone(&settlements),
+        ));
         let trades = TradeView::new(Rc::clone(&reservations), Rc::clone(&settlements));
-        let reputation = ReputationView::new(Rc::clone(&reservations), Rc::clone(&settlements), Rc::clone(&disputes));
+        let reputation = ReputationView::new(
+            Rc::clone(&reservations),
+            Rc::clone(&settlements),
+            Rc::clone(&disputes),
+        );
         let identity = Rc::new(IdentityRegistry::new(Rc::clone(&store)));
         let governance = Rc::new(GovernanceRegistry::new(Rc::clone(&store)));
-        let notifications = Rc::new(NotificationRegistry::new(Rc::clone(&store), Rc::clone(&services)));
+        let notifications = Rc::new(NotificationRegistry::new(
+            Rc::clone(&store),
+            Rc::clone(&services),
+        ));
         let oracles = Rc::new(OracleIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let risk = Rc::new(RiskIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let snapshots = Rc::new(SnapshotIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let sessions = Rc::new(SessionRegistry::new(Rc::clone(&store)));
 
-        Self { advertisements, reservations, settlements, trades, disputes, identity, reputation, governance, services, notifications, oracles, risk, snapshots, sessions }
+        Self {
+            advertisements,
+            reservations,
+            settlements,
+            trades,
+            disputes,
+            identity,
+            reputation,
+            governance,
+            services,
+            notifications,
+            oracles,
+            risk,
+            snapshots,
+            sessions,
+        }
     }
 }
 

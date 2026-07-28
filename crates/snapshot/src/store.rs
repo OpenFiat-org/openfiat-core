@@ -29,32 +29,56 @@ impl<S: KvStore> SnapshotIndex<S> {
     }
 
     pub fn get(&self, id: &SnapshotId) -> Option<SnapshotMetadata> {
-        let bytes = self.store.get(SNAPSHOTS_COLUMN_FAMILY, id.as_str().as_bytes()).ok().flatten()?;
+        let bytes = self
+            .store
+            .get(SNAPSHOTS_COLUMN_FAMILY, id.as_str().as_bytes())
+            .ok()
+            .flatten()?;
         wire::from_bytes(&bytes).ok()
     }
 
     fn put(&self, metadata: &SnapshotMetadata) {
         if let Ok(bytes) = wire::to_bytes(metadata) {
-            let _ = self.store.put(SNAPSHOTS_COLUMN_FAMILY, metadata.id.as_str().as_bytes(), &bytes);
+            let _ = self.store.put(
+                SNAPSHOTS_COLUMN_FAMILY,
+                metadata.id.as_str().as_bytes(),
+                &bytes,
+            );
         }
     }
 
     pub fn all(&self) -> Vec<SnapshotMetadata> {
-        self.store.iter_prefix(SNAPSHOTS_COLUMN_FAMILY, &[]).unwrap_or_default().into_iter().filter_map(|(_, value)| wire::from_bytes(&value).ok()).collect()
+        self.store
+            .iter_prefix(SNAPSHOTS_COLUMN_FAMILY, &[])
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, value)| wire::from_bytes(&value).ok())
+            .collect()
     }
 
     /// §13/§20: the highest-height snapshot this node currently knows
     /// about, from any provider.
     pub fn latest(&self) -> Option<SnapshotMetadata> {
-        self.all().into_iter().max_by_key(|metadata| metadata.height)
+        self.all()
+            .into_iter()
+            .max_by_key(|metadata| metadata.height)
     }
 
     /// §5/§12/§24: only a registered snapshot provider may announce one,
     /// and every Snapshot ID is permanent.
-    pub fn apply_announce(&self, signed: SignedSnapshotAnnounce) -> Result<SnapshotId, SnapshotError> {
+    pub fn apply_announce(
+        &self,
+        signed: SignedSnapshotAnnounce,
+    ) -> Result<SnapshotId, SnapshotError> {
         signed.verify()?;
         let metadata = signed.metadata;
-        if !self.services.all().into_iter().any(|service| service.provider == metadata.producer && matches!(service.service_type, ServiceType::Infrastructure(InfrastructureService::SnapshotProvider))) {
+        if !self.services.all().into_iter().any(|service| {
+            service.provider == metadata.producer
+                && matches!(
+                    service.service_type,
+                    ServiceType::Infrastructure(InfrastructureService::SnapshotProvider)
+                )
+        }) {
             return Err(SnapshotError::Unauthorized);
         }
         if self.get(&metadata.id).is_some() {
@@ -71,7 +95,11 @@ impl<S: KvStore> SnapshotIndex<S> {
     /// activates the snapshot by advancing this node's local checkpoint
     /// (§18: "Snapshot Imported → Request Missing Events → ..."), never
     /// regressing it if a lower/equal-height snapshot is imported later.
-    pub fn import(&self, metadata: &SnapshotMetadata, compressed_bytes: &[u8]) -> Result<Vec<u8>, SnapshotError> {
+    pub fn import(
+        &self,
+        metadata: &SnapshotMetadata,
+        compressed_bytes: &[u8],
+    ) -> Result<Vec<u8>, SnapshotError> {
         if metadata.protocol_version != protocol::SUPPORTED_PROTOCOL_VERSION {
             return Err(SnapshotError::UnsupportedProtocolVersion);
         }
@@ -84,7 +112,11 @@ impl<S: KvStore> SnapshotIndex<S> {
         }
 
         if metadata.height > self.checkpoint_height().unwrap_or(0) {
-            let _ = self.store.put(CHECKPOINT_COLUMN_FAMILY, CHECKPOINT_KEY, &metadata.height.to_le_bytes());
+            let _ = self.store.put(
+                CHECKPOINT_COLUMN_FAMILY,
+                CHECKPOINT_KEY,
+                &metadata.height.to_le_bytes(),
+            );
         }
         Ok(state_bytes)
     }
@@ -93,12 +125,18 @@ impl<S: KvStore> SnapshotIndex<S> {
     /// actually imported — where gossip catch-up replay should resume
     /// from, instead of full history replay.
     pub fn checkpoint_height(&self) -> Option<u64> {
-        let bytes = self.store.get(CHECKPOINT_COLUMN_FAMILY, CHECKPOINT_KEY).ok().flatten()?;
+        let bytes = self
+            .store
+            .get(CHECKPOINT_COLUMN_FAMILY, CHECKPOINT_KEY)
+            .ok()
+            .flatten()?;
         Some(u64::from_le_bytes(bytes.try_into().ok()?))
     }
 
     pub fn apply_event(&self, event: &EventEnvelope) {
-        if event.ofs_spec != protocol::OFS_SPEC || event.event_type.as_str() != protocol::EVENT_ANNOUNCED {
+        if event.ofs_spec != protocol::OFS_SPEC
+            || event.event_type.as_str() != protocol::EVENT_ANNOUNCED
+        {
             return;
         }
         if let Ok(signed) = wire::from_bytes(&event.payload) {
@@ -132,7 +170,9 @@ mod tests {
             pricing: None,
             timestamp: Timestamp::now(),
         };
-        services.apply_registration(SignedRegistration::sign(registration, &keypair)).unwrap();
+        services
+            .apply_registration(SignedRegistration::sign(registration, &keypair))
+            .unwrap();
         (keypair, services)
     }
 
@@ -156,7 +196,10 @@ mod tests {
         let services = Rc::new(Registry::new(MemoryStore::new()));
         let index = SnapshotIndex::new(MemoryStore::new(), services);
         let stranger = Keypair::generate();
-        let result = index.apply_announce(SignedSnapshotAnnounce::sign(announce(&stranger, "snap-1", 100, b"state"), &stranger));
+        let result = index.apply_announce(SignedSnapshotAnnounce::sign(
+            announce(&stranger, "snap-1", 100, b"state"),
+            &stranger,
+        ));
         assert_eq!(result, Err(SnapshotError::Unauthorized));
     }
 
@@ -164,7 +207,12 @@ mod tests {
     fn a_registered_provider_can_announce_and_it_is_queryable() {
         let (provider, services) = registered_provider(1);
         let index = SnapshotIndex::new(MemoryStore::new(), services);
-        let id = index.apply_announce(SignedSnapshotAnnounce::sign(announce(&provider, "snap-1", 100, b"state"), &provider)).unwrap();
+        let id = index
+            .apply_announce(SignedSnapshotAnnounce::sign(
+                announce(&provider, "snap-1", 100, b"state"),
+                &provider,
+            ))
+            .unwrap();
         assert_eq!(index.get(&id).unwrap().height, 100);
     }
 
@@ -172,8 +220,18 @@ mod tests {
     fn latest_picks_the_highest_height() {
         let (provider, services) = registered_provider(1);
         let index = SnapshotIndex::new(MemoryStore::new(), services);
-        index.apply_announce(SignedSnapshotAnnounce::sign(announce(&provider, "snap-1", 100, b"state-1"), &provider)).unwrap();
-        index.apply_announce(SignedSnapshotAnnounce::sign(announce(&provider, "snap-2", 250, b"state-2"), &provider)).unwrap();
+        index
+            .apply_announce(SignedSnapshotAnnounce::sign(
+                announce(&provider, "snap-1", 100, b"state-1"),
+                &provider,
+            ))
+            .unwrap();
+        index
+            .apply_announce(SignedSnapshotAnnounce::sign(
+                announce(&provider, "snap-2", 250, b"state-2"),
+                &provider,
+            ))
+            .unwrap();
         assert_eq!(index.latest().unwrap().height, 250);
     }
 
@@ -182,9 +240,13 @@ mod tests {
         let (provider, services) = registered_provider(1);
         let index = SnapshotIndex::new(MemoryStore::new(), services);
         let metadata = announce(&provider, "snap-1", 4217, b"the full marketplace state");
-        index.apply_announce(SignedSnapshotAnnounce::sign(metadata.clone(), &provider)).unwrap();
+        index
+            .apply_announce(SignedSnapshotAnnounce::sign(metadata.clone(), &provider))
+            .unwrap();
 
-        let state = index.import(&metadata, b"the full marketplace state").unwrap();
+        let state = index
+            .import(&metadata, b"the full marketplace state")
+            .unwrap();
         assert_eq!(state, b"the full marketplace state");
         assert_eq!(index.checkpoint_height(), Some(4217));
     }

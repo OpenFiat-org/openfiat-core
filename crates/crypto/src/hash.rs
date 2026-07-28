@@ -30,6 +30,9 @@ mod tests {
     fn matches_a_known_test_vector() {
         // sha256("") — a standard vector, catches a wrong hasher/encoding.
         let hex: String = sha256(b"").iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            hex,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 }

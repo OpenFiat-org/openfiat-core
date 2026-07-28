@@ -42,7 +42,10 @@ mod tests {
 
     #[test]
     fn subject_equality() {
-        let a = RiskSubject { kind: "address".into(), reference: "abc".into() };
+        let a = RiskSubject {
+            kind: "address".into(),
+            reference: "abc".into(),
+        };
         let b = a.clone();
         assert_eq!(a, b);
     }

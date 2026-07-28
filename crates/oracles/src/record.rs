@@ -17,13 +17,33 @@ pub enum OracleCategory {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OracleData {
     /// §9: e.g. "1 USDC ≈ 129.52 KES".
-    ExchangeRate { base: String, quote: String, rate: f64 },
+    ExchangeRate {
+        base: String,
+        quote: String,
+        rate: f64,
+    },
     /// §10.
-    StablecoinMetadata { symbol: String, name: String, decimals: u8, blockchain: String, mint_address: Option<String>, website: Option<String>, status: String },
+    StablecoinMetadata {
+        symbol: String,
+        name: String,
+        decimals: u8,
+        blockchain: String,
+        mint_address: Option<String>,
+        website: Option<String>,
+        status: String,
+    },
     /// §6's Payment Infrastructure examples.
-    PaymentInfrastructure { rail: String, available: bool, note: Option<String> },
+    PaymentInfrastructure {
+        rail: String,
+        available: bool,
+        note: Option<String>,
+    },
     /// §6's Regional Metadata examples.
-    RegionalMetadata { country: String, supported_fiat: Vec<String>, payment_methods: Vec<String> },
+    RegionalMetadata {
+        country: String,
+        supported_fiat: Vec<String>,
+        payment_methods: Vec<String>,
+    },
 }
 
 impl OracleData {

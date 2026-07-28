@@ -32,7 +32,11 @@ impl Node {
     pub fn new(keypair: &Keypair) -> Result<Self, NetworkError> {
         let swarm = libp2p::SwarmBuilder::with_existing_identity(to_libp2p_keypair(keypair))
             .with_tokio()
-            .with_tcp(tcp::Config::default(), noise::Config::new, yamux::Config::default)
+            .with_tcp(
+                tcp::Config::default(),
+                noise::Config::new,
+                yamux::Config::default,
+            )
             .map_err(|_| NetworkError::Internal)?
             .with_quic()
             .with_behaviour(|key| OpenFiatBehaviour::new(key.public()))
@@ -51,7 +55,10 @@ impl Node {
     }
 
     pub fn listen_on(&mut self, addr: Multiaddr) -> Result<(), NetworkError> {
-        self.swarm.listen_on(addr).map(|_| ()).map_err(|_| NetworkError::Internal)
+        self.swarm
+            .listen_on(addr)
+            .map(|_| ())
+            .map_err(|_| NetworkError::Internal)
     }
 
     pub fn dial(&mut self, addr: Multiaddr) -> Result<(), NetworkError> {
@@ -61,7 +68,10 @@ impl Node {
     /// Send an envelope to `peer` over the negotiated envelope protocol,
     /// returning an ID the eventual `Event::Message` response correlates to.
     pub fn send_envelope(&mut self, peer: Libp2pPeerId, envelope: Envelope) -> OutboundRequestId {
-        self.swarm.behaviour_mut().envelope.send_request(&peer, envelope)
+        self.swarm
+            .behaviour_mut()
+            .envelope
+            .send_request(&peer, envelope)
     }
 
     /// Wait for the next swarm event. Exposed as libp2p's own event type
@@ -76,6 +86,8 @@ impl Node {
     /// responsibility before it calls this; "close transport" happens when
     /// the `Node` is dropped.)
     pub fn graceful_disconnect(&mut self, peer: Libp2pPeerId) -> Result<(), NetworkError> {
-        self.swarm.disconnect_peer_id(peer).map_err(|_| NetworkError::Internal)
+        self.swarm
+            .disconnect_peer_id(peer)
+            .map_err(|_| NetworkError::Internal)
     }
 }

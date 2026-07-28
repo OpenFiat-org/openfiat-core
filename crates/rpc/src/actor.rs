@@ -39,8 +39,16 @@ pub struct RpcHandle {
 impl RpcHandle {
     pub async fn call(&self, method: impl Into<String>, params: Value) -> Result<Value, RpcError> {
         let (respond_to, response) = oneshot::channel();
-        self.sender.send(RpcCommand { method: method.into(), params, respond_to }).map_err(|_| RpcError::Internal("RPC actor is no longer running".to_string()))?;
-        response.await.map_err(|_| RpcError::Internal("RPC actor dropped the response".to_string()))?
+        self.sender
+            .send(RpcCommand {
+                method: method.into(),
+                params,
+                respond_to,
+            })
+            .map_err(|_| RpcError::Internal("RPC actor is no longer running".to_string()))?;
+        response
+            .await
+            .map_err(|_| RpcError::Internal("RPC actor dropped the response".to_string()))?
     }
 
     /// A generic firehose of every successful `sendX` mutation's result,
@@ -63,10 +71,16 @@ where
 {
     let (sender, mut receiver) = mpsc::unbounded_channel::<RpcCommand>();
     let (events, _) = broadcast::channel::<Value>(1024);
-    let handle = RpcHandle { sender, events: events.clone() };
+    let handle = RpcHandle {
+        sender,
+        events: events.clone(),
+    };
 
     std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("failed to start the RPC actor's runtime");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to start the RPC actor's runtime");
         runtime.block_on(async move {
             let state = NodeState::new(build_store());
             let table: MethodTable<S> = crate::methods::build_table();
@@ -76,7 +90,8 @@ where
                 if command.method.starts_with("send")
                     && let Ok(value) = &result
                 {
-                    let _ = events.send(serde_json::json!({ "method": command.method, "result": value }));
+                    let _ = events
+                        .send(serde_json::json!({ "method": command.method, "result": value }));
                 }
                 let _ = command.respond_to.send(result);
             }
@@ -135,10 +150,15 @@ mod tests {
         let signed = SignedSessionCreate::sign(create, &wallet);
         let data = encode_bytes(&openfiat_serialization::wire::to_bytes(&signed).unwrap());
 
-        let result = handle.call("sendSessionEstablish", serde_json::json!({ "data": data })).await.unwrap();
+        let result = handle
+            .call("sendSessionEstablish", serde_json::json!({ "data": data }))
+            .await
+            .unwrap();
         assert_eq!(result, Value::from("sess-1"));
 
-        let notification = subscription.try_recv().expect("expected a notification for a successful sendX call");
+        let notification = subscription
+            .try_recv()
+            .expect("expected a notification for a successful sendX call");
         assert_eq!(notification["method"], Value::from("sendSessionEstablish"));
         assert_eq!(notification["result"], Value::from("sess-1"));
     }

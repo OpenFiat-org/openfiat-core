@@ -63,7 +63,9 @@ impl PeerRecord {
 
     /// Whether this peer supports every OFS specification in `required`.
     pub fn supports(&self, required: &[u16]) -> bool {
-        required.iter().all(|spec| self.supported_ofs.contains(spec))
+        required
+            .iter()
+            .all(|spec| self.supported_ofs.contains(spec))
     }
 }
 

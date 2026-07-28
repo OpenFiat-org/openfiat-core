@@ -21,7 +21,8 @@ impl Wallet {
     }
 
     fn from_keypair(keypair: Keypair) -> Self {
-        let peer_id = peer_id_from_public_key(&keypair.public_key()).expect("a freshly generated keypair's public key always derives a peer id");
+        let peer_id = peer_id_from_public_key(&keypair.public_key())
+            .expect("a freshly generated keypair's public key always derives a peer id");
         Self { keypair, peer_id }
     }
 

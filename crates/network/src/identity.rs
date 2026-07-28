@@ -7,15 +7,18 @@
 //! seed `openfiat_crypto::Keypair` already holds, so a node's transport
 //! identity and its OFNP-level signing identity are always the same key.
 
-use libp2p::identity::{DecodingError, Keypair as Libp2pKeypair, PeerId as Libp2pPeerId, PublicKey as Libp2pPublicKey, ed25519};
+use libp2p::identity::{
+    DecodingError, Keypair as Libp2pKeypair, PeerId as Libp2pPeerId, PublicKey as Libp2pPublicKey,
+    ed25519,
+};
 use openfiat_crypto::Keypair;
 use openfiat_types::{PeerId, PublicKey};
 
 /// Derive libp2p's identity keypair from an `openfiat_crypto::Keypair`.
 pub fn to_libp2p_keypair(keypair: &Keypair) -> Libp2pKeypair {
     let mut seed = keypair.seed();
-    let secret =
-        ed25519::SecretKey::try_from_bytes(&mut seed).expect("a 32-byte seed is always a valid Ed25519 secret key");
+    let secret = ed25519::SecretKey::try_from_bytes(&mut seed)
+        .expect("a 32-byte seed is always a valid Ed25519 secret key");
     Libp2pKeypair::from(ed25519::Keypair::from(secret))
 }
 
@@ -41,7 +44,9 @@ pub fn from_libp2p_peer_id(id: Libp2pPeerId) -> PeerId {
 pub fn peer_id_from_public_key(public_key: &PublicKey) -> Result<PeerId, DecodingError> {
     let ed25519_key = ed25519::PublicKey::try_from_bytes(public_key.as_bytes())?;
     let libp2p_key = Libp2pPublicKey::from(ed25519_key);
-    Ok(from_libp2p_peer_id(Libp2pPeerId::from_public_key(&libp2p_key)))
+    Ok(from_libp2p_peer_id(Libp2pPeerId::from_public_key(
+        &libp2p_key,
+    )))
 }
 
 #[cfg(test)]

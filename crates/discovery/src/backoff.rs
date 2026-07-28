@@ -45,7 +45,11 @@ mod tests {
         let expected_secs = [1, 2, 4, 8, 16, 30, 60, 60];
         for (i, &secs) in expected_secs.iter().enumerate() {
             let attempt = (i + 1) as u32;
-            assert_eq!(base_delay(attempt), Duration::from_secs(secs), "attempt {attempt}");
+            assert_eq!(
+                base_delay(attempt),
+                Duration::from_secs(secs),
+                "attempt {attempt}"
+            );
         }
     }
 

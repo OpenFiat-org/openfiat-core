@@ -82,30 +82,64 @@ impl<S: KvStore + 'static> RegistryService<S> {
 
     fn sign_registration(&self, registration: Registration) -> SignedRegistration {
         let bytes = wire::to_bytes(&registration).expect("Registration always serializes");
-        SignedRegistration { signature: self.gossip.sign(&bytes), registration }
+        SignedRegistration {
+            signature: self.gossip.sign(&bytes),
+            registration,
+        }
     }
 
     /// §11: publish a health update for a service this node itself provides.
-    pub fn publish_health(&mut self, service_id: ServiceId, state: HealthState) -> Result<(), RegistryError> {
-        let update = HealthUpdate { service_id, provider: self.gossip.node.local_peer_id(), state, timestamp: Timestamp::now() };
+    pub fn publish_health(
+        &mut self,
+        service_id: ServiceId,
+        state: HealthState,
+    ) -> Result<(), RegistryError> {
+        let update = HealthUpdate {
+            service_id,
+            provider: self.gossip.node.local_peer_id(),
+            state,
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&update).map_err(|_| RegistryError::MalformedRegistration)?;
-        let signed = SignedHealthUpdate { signature: self.gossip.sign(&bytes), update };
+        let signed = SignedHealthUpdate {
+            signature: self.gossip.sign(&bytes),
+            update,
+        };
         self.originate(protocol::EVENT_UPDATED, &signed)
     }
 
     /// §17: voluntarily withdraw a service this node itself provides.
     pub fn withdraw(&mut self, service_id: ServiceId) -> Result<(), RegistryError> {
-        let withdrawal = Withdrawal { service_id, provider: self.gossip.node.local_peer_id(), timestamp: Timestamp::now() };
-        let bytes = wire::to_bytes(&withdrawal).map_err(|_| RegistryError::MalformedRegistration)?;
-        let signed = SignedWithdrawal { signature: self.gossip.sign(&bytes), withdrawal };
+        let withdrawal = Withdrawal {
+            service_id,
+            provider: self.gossip.node.local_peer_id(),
+            timestamp: Timestamp::now(),
+        };
+        let bytes =
+            wire::to_bytes(&withdrawal).map_err(|_| RegistryError::MalformedRegistration)?;
+        let signed = SignedWithdrawal {
+            signature: self.gossip.sign(&bytes),
+            withdrawal,
+        };
         self.originate(protocol::EVENT_UNREGISTERED, &signed)
     }
 
-    fn originate(&mut self, event_type: &str, payload: &impl serde::Serialize) -> Result<(), RegistryError> {
+    fn originate(
+        &mut self,
+        event_type: &str,
+        payload: &impl serde::Serialize,
+    ) -> Result<(), RegistryError> {
         let bytes = wire::to_bytes(payload).map_err(|_| RegistryError::MalformedRegistration)?;
-        let event_type = EventType::new(event_type).expect("registry event names are all valid PascalCase identifiers");
+        let event_type = EventType::new(event_type)
+            .expect("registry event names are all valid PascalCase identifiers");
         self.gossip
-            .originate(event_type, protocol::OFS_SPEC, Priority::BackgroundSync, 8, bytes)
+            .originate(
+                event_type,
+                protocol::OFS_SPEC,
+                Priority::BackgroundSync,
+                8,
+                bytes,
+            )
             .map(|_| ())
             .map_err(|_| RegistryError::GossipRejected)
     }

@@ -4,9 +4,14 @@
 //! this crate has no registration event of its own, see the crate doc.
 
 use crate::error::NotificationError;
-use crate::events::{DeliveryReport, SignedDeliveryReport, SignedSubscriptionUpdate, SubscriptionUpdate};
+use crate::events::{
+    DeliveryReport, SignedDeliveryReport, SignedSubscriptionUpdate, SubscriptionUpdate,
+};
 use crate::protocol;
-use crate::record::{DeliveryReceipt, DeliveryStatus, NotificationCategory, NotificationId, NotificationTrigger, Subscription};
+use crate::record::{
+    DeliveryReceipt, DeliveryStatus, NotificationCategory, NotificationId, NotificationTrigger,
+    Subscription,
+};
 use crate::store::NotificationRegistry;
 use openfiat_gossip::GossipService;
 use openfiat_registry::Registry;
@@ -43,27 +48,68 @@ impl<S: KvStore + 'static> NotificationService<S> {
     }
 
     /// §11: publish this node's own wallet subscription preferences.
-    pub fn update_subscription(&mut self, enabled_categories: Vec<NotificationCategory>) -> Result<(), NotificationError> {
-        let update = SubscriptionUpdate { wallet: self.gossip.node.local_peer_id(), wallet_public_key: self.gossip.public_key(), enabled_categories, timestamp: Timestamp::now() };
+    pub fn update_subscription(
+        &mut self,
+        enabled_categories: Vec<NotificationCategory>,
+    ) -> Result<(), NotificationError> {
+        let update = SubscriptionUpdate {
+            wallet: self.gossip.node.local_peer_id(),
+            wallet_public_key: self.gossip.public_key(),
+            enabled_categories,
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&update).map_err(|_| NotificationError::MalformedEvent)?;
-        let signed = SignedSubscriptionUpdate { signature: self.gossip.sign(&bytes), update };
+        let signed = SignedSubscriptionUpdate {
+            signature: self.gossip.sign(&bytes),
+            update,
+        };
         self.originate(protocol::EVENT_SUBSCRIPTION_UPDATED, &signed)
     }
 
     /// A provider (this node, registered via `openfiat-registry`) reports
     /// the outcome of one delivery attempt.
-    pub fn report_delivery(&mut self, notification_id: NotificationId, service_id: ServiceId, recipient_wallet: PeerId, trigger: NotificationTrigger, status: DeliveryStatus) -> Result<(), NotificationError> {
-        let report = DeliveryReport { notification_id, service_id, provider: self.gossip.node.local_peer_id(), provider_public_key: self.gossip.public_key(), recipient_wallet, trigger, status, timestamp: Timestamp::now() };
+    pub fn report_delivery(
+        &mut self,
+        notification_id: NotificationId,
+        service_id: ServiceId,
+        recipient_wallet: PeerId,
+        trigger: NotificationTrigger,
+        status: DeliveryStatus,
+    ) -> Result<(), NotificationError> {
+        let report = DeliveryReport {
+            notification_id,
+            service_id,
+            provider: self.gossip.node.local_peer_id(),
+            provider_public_key: self.gossip.public_key(),
+            recipient_wallet,
+            trigger,
+            status,
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&report).map_err(|_| NotificationError::MalformedEvent)?;
-        let signed = SignedDeliveryReport { signature: self.gossip.sign(&bytes), report };
+        let signed = SignedDeliveryReport {
+            signature: self.gossip.sign(&bytes),
+            report,
+        };
         self.originate(status.event_type_name(), &signed)
     }
 
-    fn originate(&mut self, event_type: &str, payload: &impl serde::Serialize) -> Result<(), NotificationError> {
+    fn originate(
+        &mut self,
+        event_type: &str,
+        payload: &impl serde::Serialize,
+    ) -> Result<(), NotificationError> {
         let bytes = wire::to_bytes(payload).map_err(|_| NotificationError::MalformedEvent)?;
-        let event_type = EventType::new(event_type).expect("notification event names are all valid PascalCase identifiers");
+        let event_type = EventType::new(event_type)
+            .expect("notification event names are all valid PascalCase identifiers");
         self.gossip
-            .originate(event_type, protocol::OFS_SPEC, Priority::Reputation, 8, bytes)
+            .originate(
+                event_type,
+                protocol::OFS_SPEC,
+                Priority::Reputation,
+                8,
+                bytes,
+            )
             .map(|_| ())
             .map_err(|_| NotificationError::Unauthorized)
     }

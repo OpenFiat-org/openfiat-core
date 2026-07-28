@@ -30,8 +30,13 @@ pub enum Direction {
 /// this only carries the configuration, not a live price.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PricingModel {
-    Fixed { price: Amount },
-    Floating { oracle_provider: String, premium_bps: i32 },
+    Fixed {
+        price: Amount,
+    },
+    Floating {
+        oracle_provider: String,
+        premium_bps: i32,
+    },
 }
 
 /// §18: automatic-disable / vacation-mode / deletion states. Merchant

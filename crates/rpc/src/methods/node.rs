@@ -14,7 +14,22 @@ pub struct VersionResult {
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
     table.register(
         "getVersion",
-        method_fn(|_state: &NodeState<S>, _params: serde_json::Value| -> Result<VersionResult, RpcError> { Ok(VersionResult { version: crate::version() }) }),
+        method_fn(
+            |_state: &NodeState<S>,
+             _params: serde_json::Value|
+             -> Result<VersionResult, RpcError> {
+                Ok(VersionResult {
+                    version: crate::version(),
+                })
+            },
+        ),
     );
-    table.register("getHealth", method_fn(|_state: &NodeState<S>, _params: serde_json::Value| -> Result<&'static str, RpcError> { Ok("ok") }));
+    table.register(
+        "getHealth",
+        method_fn(
+            |_state: &NodeState<S>, _params: serde_json::Value| -> Result<&'static str, RpcError> {
+                Ok("ok")
+            },
+        ),
+    );
 }

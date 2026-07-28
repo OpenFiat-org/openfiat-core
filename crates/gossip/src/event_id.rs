@@ -12,8 +12,16 @@ use openfiat_types::{EventId, EventType, PeerId, Signature, Timestamp};
 
 /// The bytes an origin signs, and every recipient re-derives to verify —
 /// everything in the envelope except the signature itself.
-pub fn signable_bytes(event_type: &EventType, ofs_spec: u16, origin: &PeerId, timestamp: Timestamp, payload: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(event_type.as_str().len() + 2 + origin.as_bytes().len() + 8 + payload.len());
+pub fn signable_bytes(
+    event_type: &EventType,
+    ofs_spec: u16,
+    origin: &PeerId,
+    timestamp: Timestamp,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(
+        event_type.as_str().len() + 2 + origin.as_bytes().len() + 8 + payload.len(),
+    );
     bytes.extend_from_slice(event_type.as_str().as_bytes());
     bytes.extend_from_slice(&ofs_spec.to_be_bytes());
     bytes.extend_from_slice(origin.as_bytes());
@@ -23,8 +31,16 @@ pub fn signable_bytes(event_type: &EventType, ofs_spec: u16, origin: &PeerId, ti
 }
 
 /// Compute the Event ID for a not-yet-assembled event.
-pub fn compute(event_type: &EventType, payload: &[u8], timestamp: Timestamp, origin: &PeerId, signature: &Signature) -> EventId {
-    let mut input = Vec::with_capacity(event_type.as_str().len() + payload.len() + 8 + origin.as_bytes().len() + 64);
+pub fn compute(
+    event_type: &EventType,
+    payload: &[u8],
+    timestamp: Timestamp,
+    origin: &PeerId,
+    signature: &Signature,
+) -> EventId {
+    let mut input = Vec::with_capacity(
+        event_type.as_str().len() + payload.len() + 8 + origin.as_bytes().len() + 64,
+    );
     input.extend_from_slice(event_type.as_str().as_bytes());
     input.extend_from_slice(payload);
     input.extend_from_slice(&timestamp.as_millis().to_be_bytes());

@@ -146,7 +146,10 @@ mod tests {
     #[test]
     fn codes_and_names_match_the_registry() {
         assert_eq!(ErrorCode::InsufficientAvailableLiquidity.code(), 4004);
-        assert_eq!(ErrorCode::InsufficientAvailableLiquidity.name(), "INSUFFICIENT_AVAILABLE_LIQUIDITY");
+        assert_eq!(
+            ErrorCode::InsufficientAvailableLiquidity.name(),
+            "INSUFFICIENT_AVAILABLE_LIQUIDITY"
+        );
     }
 
     #[test]
@@ -178,7 +181,11 @@ mod tests {
             (ErrorCode::DatabaseError, 9000, 9999),
         ];
         for (code, low, high) in ranges {
-            assert!((*low..=*high).contains(&code.code()), "{} out of range", code.name());
+            assert!(
+                (*low..=*high).contains(&code.code()),
+                "{} out of range",
+                code.name()
+            );
         }
     }
 }

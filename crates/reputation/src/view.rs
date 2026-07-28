@@ -34,8 +34,16 @@ pub struct ReputationView<S> {
 }
 
 impl<S: KvStore> ReputationView<S> {
-    pub fn new(reservations: Rc<ReservationRegistry<S>>, settlements: Rc<SettlementRegistry<S>>, disputes: Rc<DisputeRegistry<S>>) -> Self {
-        Self { reservations, settlements, disputes }
+    pub fn new(
+        reservations: Rc<ReservationRegistry<S>>,
+        settlements: Rc<SettlementRegistry<S>>,
+        disputes: Rc<DisputeRegistry<S>>,
+    ) -> Self {
+        Self {
+            reservations,
+            settlements,
+            disputes,
+        }
     }
 
     /// Computed on demand — O(reservations + settlements + disputes) per
@@ -59,10 +67,19 @@ impl<S: KvStore> ReputationView<S> {
                 SettlementState::Approved | SettlementState::Completed => {
                     profile.trades_completed += 1;
                     profile.record_volume(settlement.amount);
-                    profile.record_completed_duration(settlement.updated_at.as_millis().saturating_sub(settlement.created_at.as_millis()));
+                    profile.record_completed_duration(
+                        settlement
+                            .updated_at
+                            .as_millis()
+                            .saturating_sub(settlement.created_at.as_millis()),
+                    );
                 }
-                SettlementState::Cancelled | SettlementState::Rejected => profile.trades_cancelled += 1,
-                SettlementState::AwaitingPayment | SettlementState::PaymentSubmitted | SettlementState::Disputed => {}
+                SettlementState::Cancelled | SettlementState::Rejected => {
+                    profile.trades_cancelled += 1
+                }
+                SettlementState::AwaitingPayment
+                | SettlementState::PaymentSubmitted
+                | SettlementState::Disputed => {}
             }
         }
 

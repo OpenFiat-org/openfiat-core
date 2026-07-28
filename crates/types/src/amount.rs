@@ -18,7 +18,10 @@ pub struct Amount {
 impl Amount {
     /// Construct from a raw base-unit count and the asset's decimal precision.
     pub const fn new(base_units: u64, decimals: u8) -> Self {
-        Self { base_units, decimals }
+        Self {
+            base_units,
+            decimals,
+        }
     }
 
     /// The raw base-unit count.
@@ -58,7 +61,13 @@ impl fmt::Display for Amount {
             return write!(f, "{}", self.base_units);
         }
         let divisor = 10u64.pow(self.decimals as u32);
-        write!(f, "{}.{:0width$}", self.base_units / divisor, self.base_units % divisor, width = self.decimals as usize)
+        write!(
+            f,
+            "{}.{:0width$}",
+            self.base_units / divisor,
+            self.base_units % divisor,
+            width = self.decimals as usize
+        )
     }
 }
 
@@ -77,7 +86,10 @@ mod tests {
         let usdc = Amount::new(1_000_000, 6);
         let sol = Amount::new(1_000_000_000, 9);
         assert_eq!(usdc.checked_add(sol), None);
-        assert_eq!(usdc.checked_add(Amount::new(1, 6)), Some(Amount::new(1_000_001, 6)));
+        assert_eq!(
+            usdc.checked_add(Amount::new(1, 6)),
+            Some(Amount::new(1_000_001, 6))
+        );
     }
 
     #[test]

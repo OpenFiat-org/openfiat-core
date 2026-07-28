@@ -2,7 +2,9 @@
 //! replicated across multiple peers... No single node owns a session").
 
 use crate::error::SessionError;
-use crate::events::{SignedSessionCreate, SignedSessionMigrate, SignedSessionRenew, SignedSessionRevoke};
+use crate::events::{
+    SignedSessionCreate, SignedSessionMigrate, SignedSessionRenew, SignedSessionRevoke,
+};
 use crate::protocol;
 use crate::record::{Session, SessionId};
 use openfiat_crypto::verify;
@@ -22,24 +24,38 @@ impl<S: KvStore> SessionRegistry<S> {
     }
 
     pub fn get(&self, id: &SessionId) -> Option<Session> {
-        let bytes = self.store.get(COLUMN_FAMILY, id.as_str().as_bytes()).ok().flatten()?;
+        let bytes = self
+            .store
+            .get(COLUMN_FAMILY, id.as_str().as_bytes())
+            .ok()
+            .flatten()?;
         wire::from_bytes(&bytes).ok()
     }
 
     fn put(&self, session: &Session) {
         if let Ok(bytes) = wire::to_bytes(session) {
-            let _ = self.store.put(COLUMN_FAMILY, session.id.as_str().as_bytes(), &bytes);
+            let _ = self
+                .store
+                .put(COLUMN_FAMILY, session.id.as_str().as_bytes(), &bytes);
         }
     }
 
     pub fn all(&self) -> Vec<Session> {
-        self.store.iter_prefix(COLUMN_FAMILY, &[]).unwrap_or_default().into_iter().filter_map(|(_, value)| wire::from_bytes(&value).ok()).collect()
+        self.store
+            .iter_prefix(COLUMN_FAMILY, &[])
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, value)| wire::from_bytes(&value).ok())
+            .collect()
     }
 
     /// §20: every session for a wallet, including its own concurrent
     /// devices/clients.
     pub fn find_by_wallet(&self, wallet: &PeerId) -> Vec<Session> {
-        self.all().into_iter().filter(|session| &session.wallet == wallet).collect()
+        self.all()
+            .into_iter()
+            .filter(|session| &session.wallet == wallet)
+            .collect()
     }
 
     pub fn apply_create(&self, signed: SignedSessionCreate) -> Result<SessionId, SessionError> {
@@ -67,12 +83,15 @@ impl<S: KvStore> SessionRegistry<S> {
     /// §15/§18: extends `expires_at`; rejected if already revoked, or if
     /// `version` doesn't move the session strictly forward.
     pub fn apply_renew(&self, signed: SignedSessionRenew) -> Result<(), SessionError> {
-        let mut session = self.get(&signed.renew.session_id).ok_or(SessionError::SessionNotFound)?;
+        let mut session = self
+            .get(&signed.renew.session_id)
+            .ok_or(SessionError::SessionNotFound)?;
         if session.wallet != signed.renew.wallet {
             return Err(SessionError::Unauthorized);
         }
         let bytes = wire::to_bytes(&signed.renew).map_err(|_| SessionError::MalformedSession)?;
-        verify(&session.wallet_public_key, &bytes, &signed.signature).map_err(|_| SessionError::InvalidSignature)?;
+        verify(&session.wallet_public_key, &bytes, &signed.signature)
+            .map_err(|_| SessionError::InvalidSignature)?;
         if session.revoked {
             return Err(SessionError::AlreadyRevoked);
         }
@@ -88,12 +107,15 @@ impl<S: KvStore> SessionRegistry<S> {
 
     /// §16: permanent — a revoked session stays revoked.
     pub fn apply_revoke(&self, signed: SignedSessionRevoke) -> Result<(), SessionError> {
-        let mut session = self.get(&signed.revoke.session_id).ok_or(SessionError::SessionNotFound)?;
+        let mut session = self
+            .get(&signed.revoke.session_id)
+            .ok_or(SessionError::SessionNotFound)?;
         if session.wallet != signed.revoke.wallet {
             return Err(SessionError::Unauthorized);
         }
         let bytes = wire::to_bytes(&signed.revoke).map_err(|_| SessionError::MalformedSession)?;
-        verify(&session.wallet_public_key, &bytes, &signed.signature).map_err(|_| SessionError::InvalidSignature)?;
+        verify(&session.wallet_public_key, &bytes, &signed.signature)
+            .map_err(|_| SessionError::InvalidSignature)?;
         if session.revoked {
             return Err(SessionError::AlreadyRevoked);
         }
@@ -105,12 +127,15 @@ impl<S: KvStore> SessionRegistry<S> {
 
     /// §12: seamless migration to a new Primary Session Host.
     pub fn apply_migrate(&self, signed: SignedSessionMigrate) -> Result<(), SessionError> {
-        let mut session = self.get(&signed.migrate.session_id).ok_or(SessionError::SessionNotFound)?;
+        let mut session = self
+            .get(&signed.migrate.session_id)
+            .ok_or(SessionError::SessionNotFound)?;
         if session.wallet != signed.migrate.wallet {
             return Err(SessionError::Unauthorized);
         }
         let bytes = wire::to_bytes(&signed.migrate).map_err(|_| SessionError::MalformedSession)?;
-        verify(&session.wallet_public_key, &bytes, &signed.signature).map_err(|_| SessionError::InvalidSignature)?;
+        verify(&session.wallet_public_key, &bytes, &signed.signature)
+            .map_err(|_| SessionError::InvalidSignature)?;
         if session.revoked {
             return Err(SessionError::AlreadyRevoked);
         }
@@ -181,7 +206,12 @@ mod tests {
         let registry = SessionRegistry::new(MemoryStore::new());
         let wallet = Keypair::generate();
         let host = peer_id_from_public_key(&Keypair::generate().public_key()).unwrap();
-        let id = registry.apply_create(SignedSessionCreate::sign(create_event(&wallet, "sess-1", &host), &wallet)).unwrap();
+        let id = registry
+            .apply_create(SignedSessionCreate::sign(
+                create_event(&wallet, "sess-1", &host),
+                &wallet,
+            ))
+            .unwrap();
         assert!(registry.get(&id).unwrap().is_current(Timestamp::now()));
     }
 
@@ -190,8 +220,16 @@ mod tests {
         let registry = SessionRegistry::new(MemoryStore::new());
         let wallet = Keypair::generate();
         let host = peer_id_from_public_key(&Keypair::generate().public_key()).unwrap();
-        registry.apply_create(SignedSessionCreate::sign(create_event(&wallet, "sess-1", &host), &wallet)).unwrap();
-        let result = registry.apply_create(SignedSessionCreate::sign(create_event(&wallet, "sess-1", &host), &wallet));
+        registry
+            .apply_create(SignedSessionCreate::sign(
+                create_event(&wallet, "sess-1", &host),
+                &wallet,
+            ))
+            .unwrap();
+        let result = registry.apply_create(SignedSessionCreate::sign(
+            create_event(&wallet, "sess-1", &host),
+            &wallet,
+        ));
         assert_eq!(result, Err(SessionError::DuplicateSessionId));
     }
 
@@ -201,9 +239,20 @@ mod tests {
         let wallet = Keypair::generate();
         let attacker = Keypair::generate();
         let host = peer_id_from_public_key(&Keypair::generate().public_key()).unwrap();
-        let id = registry.apply_create(SignedSessionCreate::sign(create_event(&wallet, "sess-1", &host), &wallet)).unwrap();
+        let id = registry
+            .apply_create(SignedSessionCreate::sign(
+                create_event(&wallet, "sess-1", &host),
+                &wallet,
+            ))
+            .unwrap();
 
-        let renew = SessionRenew { session_id: id, wallet: peer_id_from_public_key(&wallet.public_key()).unwrap(), new_expires_at: Timestamp::now(), version: 1, timestamp: Timestamp::now() };
+        let renew = SessionRenew {
+            session_id: id,
+            wallet: peer_id_from_public_key(&wallet.public_key()).unwrap(),
+            new_expires_at: Timestamp::now(),
+            version: 1,
+            timestamp: Timestamp::now(),
+        };
         let result = registry.apply_renew(SignedSessionRenew::sign(renew, &attacker));
         assert_eq!(result, Err(SessionError::InvalidSignature));
     }
@@ -213,11 +262,25 @@ mod tests {
         let registry = SessionRegistry::new(MemoryStore::new());
         let wallet = Keypair::generate();
         let host = peer_id_from_public_key(&Keypair::generate().public_key()).unwrap();
-        let id = registry.apply_create(SignedSessionCreate::sign(create_event(&wallet, "sess-1", &host), &wallet)).unwrap();
+        let id = registry
+            .apply_create(SignedSessionCreate::sign(
+                create_event(&wallet, "sess-1", &host),
+                &wallet,
+            ))
+            .unwrap();
 
-        let new_expiry = Timestamp::from_millis(registry.get(&id).unwrap().expires_at.as_millis() + 3_600_000);
-        let renew = SessionRenew { session_id: id.clone(), wallet: peer_id_from_public_key(&wallet.public_key()).unwrap(), new_expires_at: new_expiry, version: 1, timestamp: Timestamp::now() };
-        registry.apply_renew(SignedSessionRenew::sign(renew, &wallet)).unwrap();
+        let new_expiry =
+            Timestamp::from_millis(registry.get(&id).unwrap().expires_at.as_millis() + 3_600_000);
+        let renew = SessionRenew {
+            session_id: id.clone(),
+            wallet: peer_id_from_public_key(&wallet.public_key()).unwrap(),
+            new_expires_at: new_expiry,
+            version: 1,
+            timestamp: Timestamp::now(),
+        };
+        registry
+            .apply_renew(SignedSessionRenew::sign(renew, &wallet))
+            .unwrap();
 
         let session = registry.get(&id).unwrap();
         assert_eq!(session.expires_at, new_expiry);
@@ -229,17 +292,42 @@ mod tests {
         let registry = SessionRegistry::new(MemoryStore::new());
         let wallet = Keypair::generate();
         let host = peer_id_from_public_key(&Keypair::generate().public_key()).unwrap();
-        let id1 = registry.apply_create(SignedSessionCreate::sign(create_event(&wallet, "sess-1", &host), &wallet)).unwrap();
-        let id2 = registry.apply_create(SignedSessionCreate::sign(create_event(&wallet, "sess-2", &host), &wallet)).unwrap();
+        let id1 = registry
+            .apply_create(SignedSessionCreate::sign(
+                create_event(&wallet, "sess-1", &host),
+                &wallet,
+            ))
+            .unwrap();
+        let id2 = registry
+            .apply_create(SignedSessionCreate::sign(
+                create_event(&wallet, "sess-2", &host),
+                &wallet,
+            ))
+            .unwrap();
 
-        let revoke = SessionRevoke { session_id: id1.clone(), wallet: peer_id_from_public_key(&wallet.public_key()).unwrap(), timestamp: Timestamp::now() };
-        registry.apply_revoke(SignedSessionRevoke::sign(revoke, &wallet)).unwrap();
+        let revoke = SessionRevoke {
+            session_id: id1.clone(),
+            wallet: peer_id_from_public_key(&wallet.public_key()).unwrap(),
+            timestamp: Timestamp::now(),
+        };
+        registry
+            .apply_revoke(SignedSessionRevoke::sign(revoke, &wallet))
+            .unwrap();
 
         assert!(!registry.get(&id1).unwrap().is_current(Timestamp::now()));
         assert!(registry.get(&id2).unwrap().is_current(Timestamp::now()));
-        assert_eq!(registry.find_by_wallet(&peer_id_from_public_key(&wallet.public_key()).unwrap()).len(), 2);
+        assert_eq!(
+            registry
+                .find_by_wallet(&peer_id_from_public_key(&wallet.public_key()).unwrap())
+                .len(),
+            2
+        );
 
-        let revoke_again = SessionRevoke { session_id: id1, wallet: peer_id_from_public_key(&wallet.public_key()).unwrap(), timestamp: Timestamp::now() };
+        let revoke_again = SessionRevoke {
+            session_id: id1,
+            wallet: peer_id_from_public_key(&wallet.public_key()).unwrap(),
+            timestamp: Timestamp::now(),
+        };
         let result = registry.apply_revoke(SignedSessionRevoke::sign(revoke_again, &wallet));
         assert_eq!(result, Err(SessionError::AlreadyRevoked));
     }
@@ -250,10 +338,23 @@ mod tests {
         let wallet = Keypair::generate();
         let host_a = peer_id_from_public_key(&Keypair::generate().public_key()).unwrap();
         let host_b = peer_id_from_public_key(&Keypair::generate().public_key()).unwrap();
-        let id = registry.apply_create(SignedSessionCreate::sign(create_event(&wallet, "sess-1", &host_a), &wallet)).unwrap();
+        let id = registry
+            .apply_create(SignedSessionCreate::sign(
+                create_event(&wallet, "sess-1", &host_a),
+                &wallet,
+            ))
+            .unwrap();
 
-        let migrate = SessionMigrate { session_id: id.clone(), wallet: peer_id_from_public_key(&wallet.public_key()).unwrap(), new_host_node: host_b.clone(), version: 1, timestamp: Timestamp::now() };
-        registry.apply_migrate(SignedSessionMigrate::sign(migrate, &wallet)).unwrap();
+        let migrate = SessionMigrate {
+            session_id: id.clone(),
+            wallet: peer_id_from_public_key(&wallet.public_key()).unwrap(),
+            new_host_node: host_b.clone(),
+            version: 1,
+            timestamp: Timestamp::now(),
+        };
+        registry
+            .apply_migrate(SignedSessionMigrate::sign(migrate, &wallet))
+            .unwrap();
 
         let session = registry.get(&id).unwrap();
         assert_eq!(session.host_node, host_b);

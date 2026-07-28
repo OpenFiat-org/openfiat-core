@@ -37,7 +37,9 @@ pub struct Trade {
 impl Trade {
     pub fn status(&self) -> TradeStatus {
         match (self.reservation.state, &self.settlement) {
-            (ReservationState::Cancelled, _) | (ReservationState::Expired, _) => TradeStatus::Cancelled,
+            (ReservationState::Cancelled, _) | (ReservationState::Expired, _) => {
+                TradeStatus::Cancelled
+            }
             (ReservationState::EscrowLocked, None) => TradeStatus::EscrowLocked,
             (ReservationState::EscrowLocked, Some(settlement)) => match settlement.state {
                 SettlementState::AwaitingPayment => TradeStatus::AwaitingPayment,
@@ -64,14 +66,27 @@ pub struct TradeView<S> {
 }
 
 impl<S: KvStore> TradeView<S> {
-    pub fn new(reservations: Rc<ReservationRegistry<S>>, settlements: Rc<SettlementRegistry<S>>) -> Self {
-        Self { reservations, settlements }
+    pub fn new(
+        reservations: Rc<ReservationRegistry<S>>,
+        settlements: Rc<SettlementRegistry<S>>,
+    ) -> Self {
+        Self {
+            reservations,
+            settlements,
+        }
     }
 
     pub fn get(&self, reservation_id: &ReservationId) -> Option<Trade> {
         let reservation = self.reservations.get(reservation_id)?;
-        let settlement = self.settlements.all().into_iter().find(|settlement| &settlement.reservation_id == reservation_id);
-        Some(Trade { reservation, settlement })
+        let settlement = self
+            .settlements
+            .all()
+            .into_iter()
+            .find(|settlement| &settlement.reservation_id == reservation_id);
+        Some(Trade {
+            reservation,
+            settlement,
+        })
     }
 
     /// Every trade this node currently knows about.
@@ -85,8 +100,14 @@ impl<S: KvStore> TradeView<S> {
             .all()
             .into_iter()
             .map(|reservation| {
-                let settlement = settlements.iter().find(|settlement| settlement.reservation_id == reservation.id).cloned();
-                Trade { reservation, settlement }
+                let settlement = settlements
+                    .iter()
+                    .find(|settlement| settlement.reservation_id == reservation.id)
+                    .cloned();
+                Trade {
+                    reservation,
+                    settlement,
+                }
             })
             .collect()
     }

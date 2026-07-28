@@ -21,11 +21,19 @@ impl<S: KvStore> EventStore<S> {
     }
 
     pub fn contains(&self, id: &EventId) -> bool {
-        self.store.get(COLUMN_FAMILY, id.as_bytes()).ok().flatten().is_some()
+        self.store
+            .get(COLUMN_FAMILY, id.as_bytes())
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     pub fn get(&self, id: &EventId) -> Option<EventEnvelope> {
-        let bytes = self.store.get(COLUMN_FAMILY, id.as_bytes()).ok().flatten()?;
+        let bytes = self
+            .store
+            .get(COLUMN_FAMILY, id.as_bytes())
+            .ok()
+            .flatten()?;
         wire::from_bytes(&bytes).ok()
     }
 
@@ -38,13 +46,21 @@ impl<S: KvStore> EventStore<S> {
     }
 
     pub fn all(&self) -> Vec<EventEnvelope> {
-        self.store.iter_prefix(COLUMN_FAMILY, &[]).unwrap_or_default().into_iter().filter_map(|(_, value)| wire::from_bytes(&value).ok()).collect()
+        self.store
+            .iter_prefix(COLUMN_FAMILY, &[])
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, value)| wire::from_bytes(&value).ok())
+            .collect()
     }
 
     /// Every stored event on a channel `subscription` accepts — the set a
     /// newly (re)connected peer needs to catch up on (§17, §22).
     pub fn all_for_subscription(&self, subscription: &Subscription) -> Vec<EventEnvelope> {
-        self.all().into_iter().filter(|event| subscription.accepts(Channel::for_ofs_spec(event.ofs_spec))).collect()
+        self.all()
+            .into_iter()
+            .filter(|event| subscription.accepts(Channel::for_ofs_spec(event.ofs_spec)))
+            .collect()
     }
 }
 

@@ -25,15 +25,25 @@ pub struct MethodTable<S> {
 
 impl<S: KvStore + 'static> MethodTable<S> {
     pub fn new() -> Self {
-        Self { methods: HashMap::new() }
+        Self {
+            methods: HashMap::new(),
+        }
     }
 
     pub fn register(&mut self, name: &'static str, method: MethodFn<S>) {
         let previous = self.methods.insert(name, method);
-        assert!(previous.is_none(), "duplicate RPC method registration: {name}");
+        assert!(
+            previous.is_none(),
+            "duplicate RPC method registration: {name}"
+        );
     }
 
-    pub fn dispatch(&self, state: &NodeState<S>, method: &str, params: Value) -> Result<Value, RpcError> {
+    pub fn dispatch(
+        &self,
+        state: &NodeState<S>,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, RpcError> {
         match self.methods.get(method) {
             Some(handler) => handler(state, params),
             None => Err(RpcError::MethodNotFound(method.to_string())),
@@ -51,14 +61,17 @@ impl<S: KvStore + 'static> MethodTable<S> {
 /// [`MethodFn`] that deserializes its params as `P` and serializes `f`'s
 /// result back to JSON, mapping deserialization failure to
 /// [`RpcError::InvalidParams`].
-pub fn method_fn<S, P, R>(f: impl Fn(&NodeState<S>, P) -> Result<R, RpcError> + 'static) -> MethodFn<S>
+pub fn method_fn<S, P, R>(
+    f: impl Fn(&NodeState<S>, P) -> Result<R, RpcError> + 'static,
+) -> MethodFn<S>
 where
     S: 'static,
     P: DeserializeOwned + 'static,
     R: Serialize + 'static,
 {
     Box::new(move |state, params| {
-        let params: P = serde_json::from_value(params).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+        let params: P =
+            serde_json::from_value(params).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
         let result = f(state, params)?;
         serde_json::to_value(result).map_err(|e| RpcError::Internal(e.to_string()))
     })
@@ -69,7 +82,9 @@ pub fn encode_bytes(bytes: &[u8]) -> String {
 }
 
 pub fn decode_bytes(encoded: &str) -> Result<Vec<u8>, RpcError> {
-    BASE64.decode(encoded).map_err(|e| RpcError::InvalidParams(format!("invalid base64: {e}")))
+    BASE64
+        .decode(encoded)
+        .map_err(|e| RpcError::InvalidParams(format!("invalid base64: {e}")))
 }
 
 pub fn decode_peer_id(encoded: &str) -> Result<PeerId, RpcError> {
@@ -118,9 +133,14 @@ mod tests {
     #[test]
     fn a_registered_method_dispatches_and_round_trips_json() {
         let mut table: MethodTable<MemoryStore> = MethodTable::new();
-        table.register("echo", method_fn(|_state: &NodeState<MemoryStore>, params: IdParams| Ok(params.id)));
+        table.register(
+            "echo",
+            method_fn(|_state: &NodeState<MemoryStore>, params: IdParams| Ok(params.id)),
+        );
         let state = NodeState::new(MemoryStore::new());
-        let result = table.dispatch(&state, "echo", serde_json::json!({ "id": "hello" })).unwrap();
+        let result = table
+            .dispatch(&state, "echo", serde_json::json!({ "id": "hello" }))
+            .unwrap();
         assert_eq!(result, Value::from("hello"));
     }
 
@@ -128,8 +148,14 @@ mod tests {
     #[should_panic(expected = "duplicate RPC method registration")]
     fn registering_the_same_method_name_twice_panics() {
         let mut table: MethodTable<MemoryStore> = MethodTable::new();
-        table.register("dup", method_fn(|_state: &NodeState<MemoryStore>, _: IdParams| Ok(())));
-        table.register("dup", method_fn(|_state: &NodeState<MemoryStore>, _: IdParams| Ok(())));
+        table.register(
+            "dup",
+            method_fn(|_state: &NodeState<MemoryStore>, _: IdParams| Ok(())),
+        );
+        table.register(
+            "dup",
+            method_fn(|_state: &NodeState<MemoryStore>, _: IdParams| Ok(())),
+        );
     }
 
     #[test]

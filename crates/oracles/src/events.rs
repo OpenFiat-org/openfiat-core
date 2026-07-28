@@ -30,16 +30,23 @@ pub struct SignedOraclePublish {
 
 impl SignedOraclePublish {
     pub fn sign(publish: OraclePublish, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&publish).expect("OraclePublish always serializes");
-        Self { signature: keypair.sign(&bytes), publish }
+        let bytes = openfiat_serialization::wire::to_bytes(&publish)
+            .expect("OraclePublish always serializes");
+        Self {
+            signature: keypair.sign(&bytes),
+            publish,
+        }
     }
 
     pub fn verify(&self) -> Result<(), OracleError> {
-        let expected = peer_id_from_public_key(&self.publish.provider_public_key).map_err(|_| OracleError::InvalidSignature)?;
+        let expected = peer_id_from_public_key(&self.publish.provider_public_key)
+            .map_err(|_| OracleError::InvalidSignature)?;
         if expected != self.publish.provider {
             return Err(OracleError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.publish).map_err(|_| OracleError::MalformedRecord)?;
-        verify(&self.publish.provider_public_key, &bytes, &self.signature).map_err(|_| OracleError::InvalidSignature)
+        let bytes = openfiat_serialization::wire::to_bytes(&self.publish)
+            .map_err(|_| OracleError::MalformedRecord)?;
+        verify(&self.publish.provider_public_key, &bytes, &self.signature)
+            .map_err(|_| OracleError::InvalidSignature)
     }
 }

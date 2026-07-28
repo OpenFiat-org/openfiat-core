@@ -41,13 +41,22 @@ pub enum NotificationTrigger {
 impl NotificationTrigger {
     pub const fn category(self) -> NotificationCategory {
         match self {
-            Self::ReservationCreated | Self::ReservationExpiring | Self::PaymentSubmitted | Self::SettlementApproved | Self::EscrowReleased | Self::TradeCompleted => {
-                NotificationCategory::Trading
+            Self::ReservationCreated
+            | Self::ReservationExpiring
+            | Self::PaymentSubmitted
+            | Self::SettlementApproved
+            | Self::EscrowReleased
+            | Self::TradeCompleted => NotificationCategory::Trading,
+            Self::AdvertisementDisabled | Self::ReputationUpdated => {
+                NotificationCategory::Marketplace
             }
-            Self::AdvertisementDisabled | Self::ReputationUpdated => NotificationCategory::Marketplace,
             Self::EvidenceRequested | Self::ResolutionIssued => NotificationCategory::Disputes,
-            Self::ProposalPublished | Self::VotingStarted | Self::ProposalActivated => NotificationCategory::Governance,
-            Self::SnapshotAvailable | Self::NodeMaintenance | Self::ProviderOffline => NotificationCategory::Infrastructure,
+            Self::ProposalPublished | Self::VotingStarted | Self::ProposalActivated => {
+                NotificationCategory::Governance
+            }
+            Self::SnapshotAvailable | Self::NodeMaintenance | Self::ProviderOffline => {
+                NotificationCategory::Infrastructure
+            }
         }
     }
 }

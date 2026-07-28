@@ -21,7 +21,10 @@ pub mod store;
 
 pub use error::NotificationError;
 pub use provider::{NotificationPayload, NotificationProvider};
-pub use record::{DeliveryReceipt, DeliveryStatus, NotificationCategory, NotificationId, NotificationTrigger, Subscription};
+pub use record::{
+    DeliveryReceipt, DeliveryStatus, NotificationCategory, NotificationId, NotificationTrigger,
+    Subscription,
+};
 pub use service::NotificationService;
 pub use store::NotificationRegistry;
 

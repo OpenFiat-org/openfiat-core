@@ -9,23 +9,49 @@ use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
-    table.register("getProposal", method_fn(|state: &NodeState<S>, params: IdParams| -> Result<Option<Proposal>, RpcError> { Ok(state.governance.get(&ProposalId::new(params.id))) }));
-    table.register("getProposals", method_fn(|state: &NodeState<S>, _params: serde_json::Value| -> Result<Vec<Proposal>, RpcError> { Ok(state.governance.all()) }));
+    table.register(
+        "getProposal",
+        method_fn(
+            |state: &NodeState<S>, params: IdParams| -> Result<Option<Proposal>, RpcError> {
+                Ok(state.governance.get(&ProposalId::new(params.id)))
+            },
+        ),
+    );
+    table.register(
+        "getProposals",
+        method_fn(
+            |state: &NodeState<S>, _params: serde_json::Value| -> Result<Vec<Proposal>, RpcError> {
+                Ok(state.governance.all())
+            },
+        ),
+    );
     table.register(
         "sendProposalCreate",
-        method_fn(|state: &NodeState<S>, params: SendEventParams| -> Result<String, RpcError> {
-            let bytes = decode_bytes(&params.data)?;
-            let signed: SignedProposalCreate = wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-            let id = state.governance.apply_create(signed).map_err(|e| RpcError::Application(e.code()))?;
-            Ok(id.as_str().to_string())
-        }),
+        method_fn(
+            |state: &NodeState<S>, params: SendEventParams| -> Result<String, RpcError> {
+                let bytes = decode_bytes(&params.data)?;
+                let signed: SignedProposalCreate =
+                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let id = state
+                    .governance
+                    .apply_create(signed)
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                Ok(id.as_str().to_string())
+            },
+        ),
     );
     table.register(
         "sendVoteCast",
-        method_fn(|state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
-            let bytes = decode_bytes(&params.data)?;
-            let signed: SignedVoteCast = wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-            state.governance.apply_vote(signed).map_err(|e| RpcError::Application(e.code()))
-        }),
+        method_fn(
+            |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
+                let bytes = decode_bytes(&params.data)?;
+                let signed: SignedVoteCast =
+                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                state
+                    .governance
+                    .apply_vote(signed)
+                    .map_err(|e| RpcError::Application(e.code()))
+            },
+        ),
     );
 }

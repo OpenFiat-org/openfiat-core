@@ -10,5 +10,8 @@
 
 fn main() {
     let document = openfiat_api::openrpc::build_document();
-    println!("{}", serde_json::to_string_pretty(&document).expect("OpenRPC document always serializes"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&document).expect("OpenRPC document always serializes")
+    );
 }

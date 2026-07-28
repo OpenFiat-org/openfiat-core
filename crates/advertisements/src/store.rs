@@ -3,7 +3,9 @@
 //! by consuming gossip events (§23).
 
 use crate::error::AdvertisementError;
-use crate::events::{SignedAdvertisementCreate, SignedAdvertisementDisable, SignedAdvertisementPriceUpdate};
+use crate::events::{
+    SignedAdvertisementCreate, SignedAdvertisementDisable, SignedAdvertisementPriceUpdate,
+};
 use crate::protocol;
 use crate::record::{Advertisement, AdvertisementId, AdvertisementStatus, Direction};
 use openfiat_crypto::verify;
@@ -23,27 +25,44 @@ impl<S: KvStore> AdvertisementRegistry<S> {
     }
 
     pub fn get(&self, id: &AdvertisementId) -> Option<Advertisement> {
-        let bytes = self.store.get(COLUMN_FAMILY, id.as_str().as_bytes()).ok().flatten()?;
+        let bytes = self
+            .store
+            .get(COLUMN_FAMILY, id.as_str().as_bytes())
+            .ok()
+            .flatten()?;
         wire::from_bytes(&bytes).ok()
     }
 
     fn put(&self, ad: &Advertisement) {
         if let Ok(bytes) = wire::to_bytes(ad) {
-            let _ = self.store.put(COLUMN_FAMILY, ad.id.as_str().as_bytes(), &bytes);
+            let _ = self
+                .store
+                .put(COLUMN_FAMILY, ad.id.as_str().as_bytes(), &bytes);
         }
     }
 
     pub fn all(&self) -> Vec<Advertisement> {
-        self.store.iter_prefix(COLUMN_FAMILY, &[]).unwrap_or_default().into_iter().filter_map(|(_, value)| wire::from_bytes(&value).ok()).collect()
+        self.store
+            .iter_prefix(COLUMN_FAMILY, &[])
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, value)| wire::from_bytes(&value).ok())
+            .collect()
     }
 
     /// Only advertisements currently visible for trading (§8, §16, §18 —
     /// active, not vacationing, not disabled or deleted).
     pub fn find_active(&self, direction: Direction) -> Vec<Advertisement> {
-        self.all().into_iter().filter(|ad| ad.direction == direction && ad.status == AdvertisementStatus::Active).collect()
+        self.all()
+            .into_iter()
+            .filter(|ad| ad.direction == direction && ad.status == AdvertisementStatus::Active)
+            .collect()
     }
 
-    pub fn apply_create(&self, signed: SignedAdvertisementCreate) -> Result<AdvertisementId, AdvertisementError> {
+    pub fn apply_create(
+        &self,
+        signed: SignedAdvertisementCreate,
+    ) -> Result<AdvertisementId, AdvertisementError> {
         signed.verify()?;
         let id = signed.create.id.clone();
         if self.get(&id).is_some() {
@@ -70,13 +89,20 @@ impl<S: KvStore> AdvertisementRegistry<S> {
     }
 
     /// §21/§24: only the original merchant may disable their own ad.
-    pub fn apply_disable(&self, signed: SignedAdvertisementDisable) -> Result<(), AdvertisementError> {
-        let mut ad = self.get(&signed.disable.id).ok_or(AdvertisementError::AdvertisementNotFound)?;
+    pub fn apply_disable(
+        &self,
+        signed: SignedAdvertisementDisable,
+    ) -> Result<(), AdvertisementError> {
+        let mut ad = self
+            .get(&signed.disable.id)
+            .ok_or(AdvertisementError::AdvertisementNotFound)?;
         if ad.merchant != signed.disable.merchant {
             return Err(AdvertisementError::UnauthorizedUpdate);
         }
-        let bytes = wire::to_bytes(&signed.disable).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
-        verify(&ad.merchant_public_key, &bytes, &signed.signature).map_err(|_| AdvertisementError::InvalidSignature)?;
+        let bytes = wire::to_bytes(&signed.disable)
+            .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        verify(&ad.merchant_public_key, &bytes, &signed.signature)
+            .map_err(|_| AdvertisementError::InvalidSignature)?;
 
         ad.status = AdvertisementStatus::Disabled;
         ad.updated_at = signed.disable.timestamp;
@@ -84,13 +110,20 @@ impl<S: KvStore> AdvertisementRegistry<S> {
         Ok(())
     }
 
-    pub fn apply_pricing_update(&self, signed: SignedAdvertisementPriceUpdate) -> Result<(), AdvertisementError> {
-        let mut ad = self.get(&signed.update.id).ok_or(AdvertisementError::AdvertisementNotFound)?;
+    pub fn apply_pricing_update(
+        &self,
+        signed: SignedAdvertisementPriceUpdate,
+    ) -> Result<(), AdvertisementError> {
+        let mut ad = self
+            .get(&signed.update.id)
+            .ok_or(AdvertisementError::AdvertisementNotFound)?;
         if ad.merchant != signed.update.merchant {
             return Err(AdvertisementError::UnauthorizedUpdate);
         }
-        let bytes = wire::to_bytes(&signed.update).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
-        verify(&ad.merchant_public_key, &bytes, &signed.signature).map_err(|_| AdvertisementError::InvalidSignature)?;
+        let bytes = wire::to_bytes(&signed.update)
+            .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        verify(&ad.merchant_public_key, &bytes, &signed.signature)
+            .map_err(|_| AdvertisementError::InvalidSignature)?;
 
         ad.pricing = signed.update.pricing;
         ad.updated_at = signed.update.timestamp;
@@ -103,9 +136,18 @@ impl<S: KvStore> AdvertisementRegistry<S> {
     /// a signed merchant action; driven by protocol events from whichever
     /// crate manages reservations. Automatically disables the ad if this
     /// exhausts its liquidity (§18).
-    pub fn reserve_liquidity(&self, id: &AdvertisementId, amount: Amount) -> Result<(), AdvertisementError> {
-        let mut ad = self.get(id).ok_or(AdvertisementError::AdvertisementNotFound)?;
-        let remaining = ad.available_liquidity.checked_sub(amount).ok_or(AdvertisementError::InsufficientLiquidity)?;
+    pub fn reserve_liquidity(
+        &self,
+        id: &AdvertisementId,
+        amount: Amount,
+    ) -> Result<(), AdvertisementError> {
+        let mut ad = self
+            .get(id)
+            .ok_or(AdvertisementError::AdvertisementNotFound)?;
+        let remaining = ad
+            .available_liquidity
+            .checked_sub(amount)
+            .ok_or(AdvertisementError::InsufficientLiquidity)?;
         ad.available_liquidity = remaining;
         if remaining.base_units() == 0 {
             ad.status = AdvertisementStatus::Disabled;
@@ -117,9 +159,18 @@ impl<S: KvStore> AdvertisementRegistry<S> {
 
     /// The inverse of [`Self::reserve_liquidity`] — a cancelled or
     /// expired reservation returns its amount to the pool (§10).
-    pub fn release_liquidity(&self, id: &AdvertisementId, amount: Amount) -> Result<(), AdvertisementError> {
-        let mut ad = self.get(id).ok_or(AdvertisementError::AdvertisementNotFound)?;
-        ad.available_liquidity = ad.available_liquidity.checked_add(amount).ok_or(AdvertisementError::MalformedAdvertisement)?;
+    pub fn release_liquidity(
+        &self,
+        id: &AdvertisementId,
+        amount: Amount,
+    ) -> Result<(), AdvertisementError> {
+        let mut ad = self
+            .get(id)
+            .ok_or(AdvertisementError::AdvertisementNotFound)?;
+        ad.available_liquidity = ad
+            .available_liquidity
+            .checked_add(amount)
+            .ok_or(AdvertisementError::MalformedAdvertisement)?;
         ad.updated_at = Timestamp::now();
         self.put(&ad);
         Ok(())
@@ -171,7 +222,9 @@ mod tests {
             min_trade: Amount::new(10_000_000, 6),
             max_trade: Amount::new(10_000_000_000, 6),
             initial_liquidity: Amount::new(liquidity, 6),
-            pricing: PricingModel::Fixed { price: Amount::new(129_000_000, 6) },
+            pricing: PricingModel::Fixed {
+                price: Amount::new(129_000_000, 6),
+            },
             payment_methods: vec!["Mobile Money".to_string()],
             timestamp: Timestamp::now(),
         }
@@ -181,7 +234,12 @@ mod tests {
     fn a_created_advertisement_is_active_and_queryable() {
         let registry = AdvertisementRegistry::new(MemoryStore::new());
         let keypair = Keypair::generate();
-        let id = registry.apply_create(SignedAdvertisementCreate::sign(create(&keypair, "ad-1", 10_000_000_000), &keypair)).unwrap();
+        let id = registry
+            .apply_create(SignedAdvertisementCreate::sign(
+                create(&keypair, "ad-1", 10_000_000_000),
+                &keypair,
+            ))
+            .unwrap();
         let ad = registry.get(&id).unwrap();
         assert_eq!(ad.status, AdvertisementStatus::Active);
         assert_eq!(registry.find_active(Direction::Sell), vec![ad]);
@@ -191,20 +249,35 @@ mod tests {
     fn reserving_more_than_available_liquidity_is_rejected() {
         let registry = AdvertisementRegistry::new(MemoryStore::new());
         let keypair = Keypair::generate();
-        let id = registry.apply_create(SignedAdvertisementCreate::sign(create(&keypair, "ad-1", 1_000_000), &keypair)).unwrap();
+        let id = registry
+            .apply_create(SignedAdvertisementCreate::sign(
+                create(&keypair, "ad-1", 1_000_000),
+                &keypair,
+            ))
+            .unwrap();
 
         let result = registry.reserve_liquidity(&id, Amount::new(2_000_000, 6));
         assert_eq!(result, Err(AdvertisementError::InsufficientLiquidity));
-        assert_eq!(registry.get(&id).unwrap().available_liquidity, Amount::new(1_000_000, 6));
+        assert_eq!(
+            registry.get(&id).unwrap().available_liquidity,
+            Amount::new(1_000_000, 6)
+        );
     }
 
     #[test]
     fn exhausting_liquidity_automatically_disables_the_advertisement() {
         let registry = AdvertisementRegistry::new(MemoryStore::new());
         let keypair = Keypair::generate();
-        let id = registry.apply_create(SignedAdvertisementCreate::sign(create(&keypair, "ad-1", 1_000_000), &keypair)).unwrap();
+        let id = registry
+            .apply_create(SignedAdvertisementCreate::sign(
+                create(&keypair, "ad-1", 1_000_000),
+                &keypair,
+            ))
+            .unwrap();
 
-        registry.reserve_liquidity(&id, Amount::new(1_000_000, 6)).unwrap();
+        registry
+            .reserve_liquidity(&id, Amount::new(1_000_000, 6))
+            .unwrap();
         let ad = registry.get(&id).unwrap();
         assert_eq!(ad.available_liquidity, Amount::new(0, 6));
         assert_eq!(ad.status, AdvertisementStatus::Disabled);
@@ -215,22 +288,43 @@ mod tests {
     fn releasing_liquidity_restores_it() {
         let registry = AdvertisementRegistry::new(MemoryStore::new());
         let keypair = Keypair::generate();
-        let id = registry.apply_create(SignedAdvertisementCreate::sign(create(&keypair, "ad-1", 5_000_000), &keypair)).unwrap();
+        let id = registry
+            .apply_create(SignedAdvertisementCreate::sign(
+                create(&keypair, "ad-1", 5_000_000),
+                &keypair,
+            ))
+            .unwrap();
 
-        registry.reserve_liquidity(&id, Amount::new(2_000_000, 6)).unwrap();
-        registry.release_liquidity(&id, Amount::new(2_000_000, 6)).unwrap();
-        assert_eq!(registry.get(&id).unwrap().available_liquidity, Amount::new(5_000_000, 6));
+        registry
+            .reserve_liquidity(&id, Amount::new(2_000_000, 6))
+            .unwrap();
+        registry
+            .release_liquidity(&id, Amount::new(2_000_000, 6))
+            .unwrap();
+        assert_eq!(
+            registry.get(&id).unwrap().available_liquidity,
+            Amount::new(5_000_000, 6)
+        );
     }
 
     #[test]
     fn disabling_from_a_different_merchant_is_rejected() {
         let registry = AdvertisementRegistry::new(MemoryStore::new());
         let owner = Keypair::generate();
-        let id = registry.apply_create(SignedAdvertisementCreate::sign(create(&owner, "ad-1", 1_000_000), &owner)).unwrap();
+        let id = registry
+            .apply_create(SignedAdvertisementCreate::sign(
+                create(&owner, "ad-1", 1_000_000),
+                &owner,
+            ))
+            .unwrap();
 
         let attacker = Keypair::generate();
         let signed = crate::events::SignedAdvertisementDisable::sign(
-            crate::events::AdvertisementDisable { id, merchant: peer_id_from_public_key(&owner.public_key()).unwrap(), timestamp: Timestamp::now() },
+            crate::events::AdvertisementDisable {
+                id,
+                merchant: peer_id_from_public_key(&owner.public_key()).unwrap(),
+                timestamp: Timestamp::now(),
+            },
             &attacker,
         );
         let result = registry.apply_disable(signed);

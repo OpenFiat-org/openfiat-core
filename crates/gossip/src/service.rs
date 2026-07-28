@@ -8,7 +8,10 @@ use crate::authorization;
 use crate::channel::Subscription;
 use crate::error::GossipError;
 use crate::event_id;
-use crate::protocol::{MESSAGE_TYPE_PUSH, MESSAGE_TYPE_RECOVERY_REQUEST, MESSAGE_TYPE_RECOVERY_RESPONSE, OFS_SPEC, RecoveryRequest, RecoveryResponse};
+use crate::protocol::{
+    MESSAGE_TYPE_PUSH, MESSAGE_TYPE_RECOVERY_REQUEST, MESSAGE_TYPE_RECOVERY_RESPONSE, OFS_SPEC,
+    RecoveryRequest, RecoveryResponse,
+};
 use crate::store::EventStore;
 use libp2p::request_response::{self, Message, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
@@ -17,7 +20,9 @@ use openfiat_network::behaviour::OpenFiatBehaviourEvent;
 use openfiat_network::{Envelope, Node, PeerId as Libp2pPeerId};
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
-use openfiat_types::{EventEnvelope, EventId, EventType, NodeRole, PeerId, Priority, PublicKey, Timestamp};
+use openfiat_types::{
+    EventEnvelope, EventId, EventType, NodeRole, PeerId, Priority, PublicKey, Timestamp,
+};
 use std::collections::{HashMap, HashSet};
 
 /// What happened when an event was offered to [`GossipService::receive_event`].
@@ -57,7 +62,13 @@ pub struct GossipService<S> {
 type EventHandler = Box<dyn FnMut(&EventEnvelope)>;
 
 impl<S: KvStore> GossipService<S> {
-    pub fn new(node: Node, store: EventStore<S>, keypair: Keypair, self_roles: Vec<NodeRole>, subscription: Subscription) -> Self {
+    pub fn new(
+        node: Node,
+        store: EventStore<S>,
+        keypair: Keypair,
+        self_roles: Vec<NodeRole>,
+        subscription: Subscription,
+    ) -> Self {
         let self_peer_id = node.local_peer_id();
         Self {
             node,
@@ -125,15 +136,34 @@ impl<S: KvStore> GossipService<S> {
     /// Originate a new event (§8: Created → Local Validation → Signed →
     /// Stored → Broadcast). Only the origin's own broadcast carries the
     /// full `ttl` unchanged; every subsequent hop decrements it (§12).
-    pub fn originate(&mut self, event_type: EventType, ofs_spec: u16, priority: Priority, ttl: u8, payload: Vec<u8>) -> Result<EventId, GossipError> {
+    pub fn originate(
+        &mut self,
+        event_type: EventType,
+        ofs_spec: u16,
+        priority: Priority,
+        ttl: u8,
+        payload: Vec<u8>,
+    ) -> Result<EventId, GossipError> {
         if !authorization::is_authorized(&self.self_roles, &event_type) {
             return Err(GossipError::UnauthorizedOrigination);
         }
 
         let timestamp = Timestamp::now();
-        let signable = event_id::signable_bytes(&event_type, ofs_spec, &self.self_peer_id, timestamp, &payload);
+        let signable = event_id::signable_bytes(
+            &event_type,
+            ofs_spec,
+            &self.self_peer_id,
+            timestamp,
+            &payload,
+        );
         let signature = self.keypair.sign(&signable);
-        let id = event_id::compute(&event_type, &payload, timestamp, &self.self_peer_id, &signature);
+        let id = event_id::compute(
+            &event_type,
+            &payload,
+            timestamp,
+            &self.self_peer_id,
+            &signature,
+        );
 
         let envelope = EventEnvelope {
             id,
@@ -162,7 +192,11 @@ impl<S: KvStore> GossipService<S> {
 
     /// Offer a received event for validation, dedup, storage, and
     /// TTL-bounded re-forwarding (§8-13).
-    pub fn receive_event(&mut self, from: Option<Libp2pPeerId>, event: EventEnvelope) -> ReceiveOutcome {
+    pub fn receive_event(
+        &mut self,
+        from: Option<Libp2pPeerId>,
+        event: EventEnvelope,
+    ) -> ReceiveOutcome {
         if self.store.contains(&event.id) {
             return ReceiveOutcome::Duplicate;
         }
@@ -185,8 +219,17 @@ impl<S: KvStore> GossipService<S> {
         if event.version != 1 {
             return Err(GossipError::ProtocolVersionMismatch);
         }
-        let public_key = self.peer_keys.get(&event.origin).ok_or(GossipError::InvalidSignature)?;
-        let signable = event_id::signable_bytes(&event.event_type, event.ofs_spec, &event.origin, event.timestamp, &event.payload);
+        let public_key = self
+            .peer_keys
+            .get(&event.origin)
+            .ok_or(GossipError::InvalidSignature)?;
+        let signable = event_id::signable_bytes(
+            &event.event_type,
+            event.ofs_spec,
+            &event.origin,
+            event.timestamp,
+            &event.payload,
+        );
         verify(public_key, &signable, &event.signature).map_err(|_| GossipError::InvalidSignature)
     }
 
@@ -207,7 +250,10 @@ impl<S: KvStore> GossipService<S> {
             if Some(peer) == exclude {
                 continue;
             }
-            self.node.send_envelope(peer, Envelope::new(OFS_SPEC, MESSAGE_TYPE_PUSH, 1, payload.clone()));
+            self.node.send_envelope(
+                peer,
+                Envelope::new(OFS_SPEC, MESSAGE_TYPE_PUSH, 1, payload.clone()),
+            );
         }
     }
 
@@ -225,12 +271,14 @@ impl<S: KvStore> GossipService<S> {
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 self.connected.remove(&peer_id);
             }
-            SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Envelope(request_response::Event::Message { peer, message, .. })) => {
-                match message {
-                    Message::Request { request, channel, .. } => self.on_request(peer, request, channel),
-                    Message::Response { response, .. } => self.on_response(response),
-                }
-            }
+            SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Envelope(
+                request_response::Event::Message { peer, message, .. },
+            )) => match message {
+                Message::Request {
+                    request, channel, ..
+                } => self.on_request(peer, request, channel),
+                Message::Response { response, .. } => self.on_response(response),
+            },
             _ => {}
         }
     }
@@ -239,11 +287,22 @@ impl<S: KvStore> GossipService<S> {
     /// — sent on every fresh connection, which doubles as §17's partition
     /// recovery ("connectivity restored → missing events exchanged").
     fn request_recovery(&mut self, peer: Libp2pPeerId) {
-        let payload = wire::to_bytes(&RecoveryRequest { subscription: self.subscription.clone() }).expect("RecoveryRequest always serializes");
-        self.node.send_envelope(peer, Envelope::new(OFS_SPEC, MESSAGE_TYPE_RECOVERY_REQUEST, 1, payload));
+        let payload = wire::to_bytes(&RecoveryRequest {
+            subscription: self.subscription.clone(),
+        })
+        .expect("RecoveryRequest always serializes");
+        self.node.send_envelope(
+            peer,
+            Envelope::new(OFS_SPEC, MESSAGE_TYPE_RECOVERY_REQUEST, 1, payload),
+        );
     }
 
-    fn on_request(&mut self, peer: Libp2pPeerId, envelope: Envelope, channel: ResponseChannel<Envelope>) {
+    fn on_request(
+        &mut self,
+        peer: Libp2pPeerId,
+        envelope: Envelope,
+        channel: ResponseChannel<Envelope>,
+    ) {
         match envelope.header.message_type.as_str() {
             MESSAGE_TYPE_PUSH => {
                 if let Ok(event) = wire::from_bytes::<EventEnvelope>(&envelope.payload) {
@@ -255,9 +314,16 @@ impl<S: KvStore> GossipService<S> {
             MESSAGE_TYPE_RECOVERY_REQUEST => {
                 if let Ok(request) = wire::from_bytes::<RecoveryRequest>(&envelope.payload) {
                     let events = self.store.all_for_subscription(&request.subscription);
-                    let payload = wire::to_bytes(&RecoveryResponse { events }).expect("RecoveryResponse always serializes");
-                    let response = Envelope::new(OFS_SPEC, MESSAGE_TYPE_RECOVERY_RESPONSE, 1, payload);
-                    let _ = self.node.swarm.behaviour_mut().envelope.send_response(channel, response);
+                    let payload = wire::to_bytes(&RecoveryResponse { events })
+                        .expect("RecoveryResponse always serializes");
+                    let response =
+                        Envelope::new(OFS_SPEC, MESSAGE_TYPE_RECOVERY_RESPONSE, 1, payload);
+                    let _ = self
+                        .node
+                        .swarm
+                        .behaviour_mut()
+                        .envelope
+                        .send_response(channel, response);
                 }
             }
             _ => {}

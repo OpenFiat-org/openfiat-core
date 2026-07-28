@@ -5,10 +5,10 @@
 use libp2p::request_response::{self, Message};
 use libp2p::swarm::SwarmEvent;
 use libp2p::{Multiaddr, PeerId};
+use openfiat_crypto::Keypair;
 use openfiat_network::behaviour::OpenFiatBehaviourEvent;
 use openfiat_network::sequence::SequenceTracker;
 use openfiat_network::{Envelope, Node};
-use openfiat_crypto::Keypair;
 use std::time::Duration;
 
 #[tokio::test]
@@ -16,7 +16,9 @@ async fn two_nodes_handshake_exchange_envelopes_reject_replays_and_shut_down_gra
     let mut node_a = Node::new(&Keypair::generate()).unwrap();
     let mut node_b = Node::new(&Keypair::generate()).unwrap();
 
-    node_a.listen_on("/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap()).unwrap();
+    node_a
+        .listen_on("/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap())
+        .unwrap();
 
     let mut listen_addr: Option<Multiaddr> = None;
     let mut dialed = false;
@@ -120,9 +122,23 @@ async fn two_nodes_handshake_exchange_envelopes_reject_replays_and_shut_down_gra
     .await
     .expect("handshake/exchange/shutdown sequence timed out");
 
-    assert!(peer_of_a.is_some() && peer_of_b.is_some(), "both sides must learn the other's peer ID");
-    assert_eq!(first_accept, Some(true), "the first sequence number must be accepted");
-    assert_eq!(duplicate_rejected, Some(true), "the replayed sequence number must be rejected");
+    assert!(
+        peer_of_a.is_some() && peer_of_b.is_some(),
+        "both sides must learn the other's peer ID"
+    );
+    assert_eq!(
+        first_accept,
+        Some(true),
+        "the first sequence number must be accepted"
+    );
+    assert_eq!(
+        duplicate_rejected,
+        Some(true),
+        "the replayed sequence number must be rejected"
+    );
     assert_eq!(b_response_count, 2, "both requests must receive a response");
-    assert!(a_disconnected && b_disconnected, "both sides must observe the graceful disconnect");
+    assert!(
+        a_disconnected && b_disconnected,
+        "both sides must observe the graceful disconnect"
+    );
 }

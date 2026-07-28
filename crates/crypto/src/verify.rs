@@ -29,11 +29,17 @@ impl std::error::Error for VerifyError {}
 
 /// Verify that `signature` over `message` was produced by the holder of
 /// `public_key`'s private key.
-pub fn verify(public_key: &PublicKey, message: &[u8], signature: &Signature) -> Result<(), VerifyError> {
+pub fn verify(
+    public_key: &PublicKey,
+    message: &[u8],
+    signature: &Signature,
+) -> Result<(), VerifyError> {
     let verifying_key = VerifyingKey::from_bytes(public_key.as_bytes()).map_err(|_| VerifyError)?;
     let signature_bytes = signature.as_bytes().ok_or(VerifyError)?;
     let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
-    verifying_key.verify(message, &signature).map_err(|_| VerifyError)
+    verifying_key
+        .verify(message, &signature)
+        .map_err(|_| VerifyError)
 }
 
 #[cfg(test)]

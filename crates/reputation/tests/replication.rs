@@ -7,13 +7,19 @@ use openfiat_advertisements::events::{AdvertisementCreate, SignedAdvertisementCr
 use openfiat_advertisements::{AdvertisementId, AdvertisementRegistry, Direction, PricingModel};
 use openfiat_crypto::Keypair;
 use openfiat_disputes::commitment;
-use openfiat_disputes::events::{ArbitratorJoin, DisputeOpen, SignedArbitratorJoin, SignedDisputeOpen, SignedVoteCommit, SignedVoteReveal, VoteCommit, VoteReveal};
+use openfiat_disputes::events::{
+    ArbitratorJoin, DisputeOpen, SignedArbitratorJoin, SignedDisputeOpen, SignedVoteCommit,
+    SignedVoteReveal, VoteCommit, VoteReveal,
+};
 use openfiat_disputes::{DisputeId, DisputeRegistry, Vote};
 use openfiat_network::identity::peer_id_from_public_key;
 use openfiat_reputation::{MerchantTier, ReputationView};
 use openfiat_reservations::events::{ReservationRequest, SignedReservationRequest};
 use openfiat_reservations::{ReservationId, ReservationRegistry};
-use openfiat_settlement::events::{PaymentSubmitted, SettlementApproved, SettlementInitiate, SignedPaymentSubmitted, SignedSettlementApproved, SignedSettlementInitiate};
+use openfiat_settlement::events::{
+    PaymentSubmitted, SettlementApproved, SettlementInitiate, SignedPaymentSubmitted,
+    SignedSettlementApproved, SignedSettlementInitiate,
+};
 use openfiat_settlement::{SettlementId, SettlementRegistry};
 use openfiat_storage::mem::MemoryStore;
 use openfiat_types::{Amount, Timestamp};
@@ -23,10 +29,20 @@ use std::time::Duration;
 #[test]
 fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
     let advertisements = Rc::new(AdvertisementRegistry::new(MemoryStore::new()));
-    let reservations = Rc::new(ReservationRegistry::new(MemoryStore::new(), Rc::clone(&advertisements)));
+    let reservations = Rc::new(ReservationRegistry::new(
+        MemoryStore::new(),
+        Rc::clone(&advertisements),
+    ));
     let settlements = Rc::new(SettlementRegistry::new(MemoryStore::new()));
-    let disputes = Rc::new(DisputeRegistry::new(MemoryStore::new(), Rc::clone(&settlements)));
-    let reputation = ReputationView::new(Rc::clone(&reservations), Rc::clone(&settlements), Rc::clone(&disputes));
+    let disputes = Rc::new(DisputeRegistry::new(
+        MemoryStore::new(),
+        Rc::clone(&settlements),
+    ));
+    let reputation = ReputationView::new(
+        Rc::clone(&reservations),
+        Rc::clone(&settlements),
+        Rc::clone(&disputes),
+    );
 
     let merchant = Keypair::generate();
     let merchant_id = peer_id_from_public_key(&merchant.public_key()).unwrap();
@@ -43,7 +59,9 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
                 min_trade: Amount::new(1_000_000, 6),
                 max_trade: Amount::new(5_000_000, 6),
                 initial_liquidity: Amount::new(50_000_000, 6),
-                pricing: PricingModel::Fixed { price: Amount::new(129_000_000, 6) },
+                pricing: PricingModel::Fixed {
+                    price: Amount::new(129_000_000, 6),
+                },
                 payment_methods: vec!["Mobile Money".to_string()],
                 timestamp: Timestamp::now(),
             },
@@ -52,45 +70,60 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
         .unwrap();
 
     // Two buyers each complete a trade against the merchant.
-    let complete_trade = |buyer: &Keypair, reservation_id: &str, settlement_id: &str, amount: Amount| {
-        let buyer_id = peer_id_from_public_key(&buyer.public_key()).unwrap();
-        let reservation = ReservationRequest {
-            id: ReservationId::new(reservation_id),
-            advertisement_id: ad_id.clone(),
-            requester: buyer_id.clone(),
-            requester_public_key: buyer.public_key(),
-            amount,
-            timestamp: Timestamp::now(),
-        };
-        reservations.apply_request(SignedReservationRequest::sign(reservation, buyer)).unwrap();
+    let complete_trade =
+        |buyer: &Keypair, reservation_id: &str, settlement_id: &str, amount: Amount| {
+            let buyer_id = peer_id_from_public_key(&buyer.public_key()).unwrap();
+            let reservation = ReservationRequest {
+                id: ReservationId::new(reservation_id),
+                advertisement_id: ad_id.clone(),
+                requester: buyer_id.clone(),
+                requester_public_key: buyer.public_key(),
+                amount,
+                timestamp: Timestamp::now(),
+            };
+            reservations
+                .apply_request(SignedReservationRequest::sign(reservation, buyer))
+                .unwrap();
 
-        let settlement_id = SettlementId::new(settlement_id);
-        settlements
-            .apply_initiate(SignedSettlementInitiate::sign(
-                SettlementInitiate {
-                    id: settlement_id.clone(),
-                    reservation_id: ReservationId::new(reservation_id),
-                    buyer: buyer_id.clone(),
-                    buyer_public_key: buyer.public_key(),
-                    seller: merchant_id.clone(),
-                    seller_public_key: merchant.public_key(),
-                    amount,
-                    timestamp: Timestamp::now(),
-                },
-                buyer,
-            ))
-            .unwrap();
-        settlements
-            .apply_payment_submitted(SignedPaymentSubmitted::sign(
-                PaymentSubmitted { settlement_id: settlement_id.clone(), buyer: buyer_id, payment_reference: Some("TXN".to_string()), timestamp: Timestamp::now() },
-                buyer,
-            ))
-            .unwrap();
-        settlements
-            .apply_approved(SignedSettlementApproved::sign(SettlementApproved { settlement_id: settlement_id.clone(), seller: merchant_id.clone(), timestamp: Timestamp::now() }, &merchant))
-            .unwrap();
-        settlement_id
-    };
+            let settlement_id = SettlementId::new(settlement_id);
+            settlements
+                .apply_initiate(SignedSettlementInitiate::sign(
+                    SettlementInitiate {
+                        id: settlement_id.clone(),
+                        reservation_id: ReservationId::new(reservation_id),
+                        buyer: buyer_id.clone(),
+                        buyer_public_key: buyer.public_key(),
+                        seller: merchant_id.clone(),
+                        seller_public_key: merchant.public_key(),
+                        amount,
+                        timestamp: Timestamp::now(),
+                    },
+                    buyer,
+                ))
+                .unwrap();
+            settlements
+                .apply_payment_submitted(SignedPaymentSubmitted::sign(
+                    PaymentSubmitted {
+                        settlement_id: settlement_id.clone(),
+                        buyer: buyer_id,
+                        payment_reference: Some("TXN".to_string()),
+                        timestamp: Timestamp::now(),
+                    },
+                    buyer,
+                ))
+                .unwrap();
+            settlements
+                .apply_approved(SignedSettlementApproved::sign(
+                    SettlementApproved {
+                        settlement_id: settlement_id.clone(),
+                        seller: merchant_id.clone(),
+                        timestamp: Timestamp::now(),
+                    },
+                    &merchant,
+                ))
+                .unwrap();
+            settlement_id
+        };
 
     let buyer1 = Keypair::generate();
     let buyer2 = Keypair::generate();
@@ -133,24 +166,52 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
     let dispute_id = DisputeId::new("dispute-1");
     disputes
         .apply_open(SignedDisputeOpen::sign(
-            DisputeOpen { id: dispute_id.clone(), settlement_id: disputed_settlement_id, opener: buyer3_id.clone(), opener_public_key: buyer3.public_key(), reason: "no payment".to_string(), timestamp: Timestamp::now() },
+            DisputeOpen {
+                id: dispute_id.clone(),
+                settlement_id: disputed_settlement_id,
+                opener: buyer3_id.clone(),
+                opener_public_key: buyer3.public_key(),
+                reason: "no payment".to_string(),
+                timestamp: Timestamp::now(),
+            },
             &buyer3,
         ))
         .unwrap();
     let arbitrators: Vec<Keypair> = (0..3).map(|_| Keypair::generate()).collect();
     for arbitrator in &arbitrators {
-        let join = ArbitratorJoin { dispute_id: dispute_id.clone(), arbitrator: peer_id_from_public_key(&arbitrator.public_key()).unwrap(), arbitrator_public_key: arbitrator.public_key(), timestamp: Timestamp::now() };
-        disputes.apply_arbitrator_join(SignedArbitratorJoin::sign(join, arbitrator)).unwrap();
+        let join = ArbitratorJoin {
+            dispute_id: dispute_id.clone(),
+            arbitrator: peer_id_from_public_key(&arbitrator.public_key()).unwrap(),
+            arbitrator_public_key: arbitrator.public_key(),
+            timestamp: Timestamp::now(),
+        };
+        disputes
+            .apply_arbitrator_join(SignedArbitratorJoin::sign(join, arbitrator))
+            .unwrap();
     }
     let secret = [7u8; 32];
     for arbitrator in &arbitrators {
-        let commit =
-            VoteCommit { dispute_id: dispute_id.clone(), arbitrator: peer_id_from_public_key(&arbitrator.public_key()).unwrap(), commitment: commitment::compute(Vote::BuyerWins, &secret), timestamp: Timestamp::now() };
-        disputes.apply_vote_commit(SignedVoteCommit::sign(commit, arbitrator)).unwrap();
+        let commit = VoteCommit {
+            dispute_id: dispute_id.clone(),
+            arbitrator: peer_id_from_public_key(&arbitrator.public_key()).unwrap(),
+            commitment: commitment::compute(Vote::BuyerWins, &secret),
+            timestamp: Timestamp::now(),
+        };
+        disputes
+            .apply_vote_commit(SignedVoteCommit::sign(commit, arbitrator))
+            .unwrap();
     }
     for arbitrator in &arbitrators {
-        let reveal = VoteReveal { dispute_id: dispute_id.clone(), arbitrator: peer_id_from_public_key(&arbitrator.public_key()).unwrap(), vote: Vote::BuyerWins, secret, timestamp: Timestamp::now() };
-        disputes.apply_vote_reveal(SignedVoteReveal::sign(reveal, arbitrator)).unwrap();
+        let reveal = VoteReveal {
+            dispute_id: dispute_id.clone(),
+            arbitrator: peer_id_from_public_key(&arbitrator.public_key()).unwrap(),
+            vote: Vote::BuyerWins,
+            secret,
+            timestamp: Timestamp::now(),
+        };
+        disputes
+            .apply_vote_reveal(SignedVoteReveal::sign(reveal, arbitrator))
+            .unwrap();
     }
 
     let profile = reputation.profile(&merchant_id);
@@ -169,7 +230,14 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
     let buyer4_id = peer_id_from_public_key(&buyer4.public_key()).unwrap();
     reservations
         .apply_request(SignedReservationRequest::sign(
-            ReservationRequest { id: ReservationId::new("res-4"), advertisement_id: ad_id, requester: buyer4_id.clone(), requester_public_key: buyer4.public_key(), amount: Amount::new(1_000_000, 6), timestamp: Timestamp::from_millis(1_000) },
+            ReservationRequest {
+                id: ReservationId::new("res-4"),
+                advertisement_id: ad_id,
+                requester: buyer4_id.clone(),
+                requester_public_key: buyer4.public_key(),
+                amount: Amount::new(1_000_000, 6),
+                timestamp: Timestamp::from_millis(1_000),
+            },
             &buyer4,
         ))
         .unwrap();

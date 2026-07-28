@@ -31,17 +31,24 @@ pub struct SignedReservationRequest {
 
 impl SignedReservationRequest {
     pub fn sign(request: ReservationRequest, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&request).expect("ReservationRequest always serializes");
-        Self { signature: keypair.sign(&bytes), request }
+        let bytes = openfiat_serialization::wire::to_bytes(&request)
+            .expect("ReservationRequest always serializes");
+        Self {
+            signature: keypair.sign(&bytes),
+            request,
+        }
     }
 
     pub fn verify(&self) -> Result<(), ReservationError> {
-        let expected = peer_id_from_public_key(&self.request.requester_public_key).map_err(|_| ReservationError::InvalidSignature)?;
+        let expected = peer_id_from_public_key(&self.request.requester_public_key)
+            .map_err(|_| ReservationError::InvalidSignature)?;
         if expected != self.request.requester {
             return Err(ReservationError::UnauthorizedUpdate);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.request).map_err(|_| ReservationError::MalformedReservation)?;
-        verify(&self.request.requester_public_key, &bytes, &self.signature).map_err(|_| ReservationError::InvalidSignature)
+        let bytes = openfiat_serialization::wire::to_bytes(&self.request)
+            .map_err(|_| ReservationError::MalformedReservation)?;
+        verify(&self.request.requester_public_key, &bytes, &self.signature)
+            .map_err(|_| ReservationError::InvalidSignature)
     }
 }
 
@@ -60,7 +67,11 @@ pub struct SignedReservationCancel {
 
 impl SignedReservationCancel {
     pub fn sign(cancel: ReservationCancel, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&cancel).expect("ReservationCancel always serializes");
-        Self { signature: keypair.sign(&bytes), cancel }
+        let bytes = openfiat_serialization::wire::to_bytes(&cancel)
+            .expect("ReservationCancel always serializes");
+        Self {
+            signature: keypair.sign(&bytes),
+            cancel,
+        }
     }
 }

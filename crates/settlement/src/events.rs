@@ -32,17 +32,24 @@ pub struct SignedSettlementInitiate {
 
 impl SignedSettlementInitiate {
     pub fn sign(initiate: SettlementInitiate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&initiate).expect("SettlementInitiate always serializes");
-        Self { signature: keypair.sign(&bytes), initiate }
+        let bytes = openfiat_serialization::wire::to_bytes(&initiate)
+            .expect("SettlementInitiate always serializes");
+        Self {
+            signature: keypair.sign(&bytes),
+            initiate,
+        }
     }
 
     pub fn verify(&self) -> Result<(), SettlementError> {
-        let expected = peer_id_from_public_key(&self.initiate.buyer_public_key).map_err(|_| SettlementError::InvalidSignature)?;
+        let expected = peer_id_from_public_key(&self.initiate.buyer_public_key)
+            .map_err(|_| SettlementError::InvalidSignature)?;
         if expected != self.initiate.buyer {
             return Err(SettlementError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.initiate).map_err(|_| SettlementError::MalformedSettlement)?;
-        openfiat_crypto::verify(&self.initiate.buyer_public_key, &bytes, &self.signature).map_err(|_| SettlementError::InvalidSignature)
+        let bytes = openfiat_serialization::wire::to_bytes(&self.initiate)
+            .map_err(|_| SettlementError::MalformedSettlement)?;
+        openfiat_crypto::verify(&self.initiate.buyer_public_key, &bytes, &self.signature)
+            .map_err(|_| SettlementError::InvalidSignature)
     }
 }
 
@@ -72,6 +79,18 @@ macro_rules! settlement_action {
 
 settlement_action!(PaymentSubmitted, SignedPaymentSubmitted { buyer: PeerId, payment_reference: Option<String> });
 settlement_action!(PaymentReversed, SignedPaymentReversed { buyer: PeerId });
-settlement_action!(SettlementApproved, SignedSettlementApproved { seller: PeerId });
-settlement_action!(SettlementRejected, SignedSettlementRejected { seller: PeerId, reason: String });
-settlement_action!(SettlementCancelled, SignedSettlementCancelled { canceller: PeerId });
+settlement_action!(
+    SettlementApproved,
+    SignedSettlementApproved { seller: PeerId }
+);
+settlement_action!(
+    SettlementRejected,
+    SignedSettlementRejected {
+        seller: PeerId,
+        reason: String
+    }
+);
+settlement_action!(
+    SettlementCancelled,
+    SignedSettlementCancelled { canceller: PeerId }
+);

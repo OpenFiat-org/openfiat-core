@@ -6,7 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 /// A fixed-width integer rather than `SystemTime` so it serializes
 /// identically across every language an SDK might be written in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct Timestamp(u64);
 
 impl Timestamp {

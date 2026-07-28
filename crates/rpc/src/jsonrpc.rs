@@ -36,11 +36,19 @@ pub enum Outcome {
 
 impl JsonRpcResponse {
     pub fn success(id: Value, result: Value) -> Self {
-        Self { jsonrpc: "2.0", id, outcome: Outcome::Result { result } }
+        Self {
+            jsonrpc: "2.0",
+            id,
+            outcome: Outcome::Result { result },
+        }
     }
 
     pub fn failure(id: Value, error: JsonRpcError) -> Self {
-        Self { jsonrpc: "2.0", id, outcome: Outcome::Error { error } }
+        Self {
+            jsonrpc: "2.0",
+            id,
+            outcome: Outcome::Error { error },
+        }
     }
 }
 
@@ -66,7 +74,11 @@ impl JsonRpcError {
     pub const APPLICATION_ERROR: i64 = -32000;
 
     pub fn new(code: i64, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), data: None }
+        Self {
+            code,
+            message: message.into(),
+            data: None,
+        }
     }
 
     pub fn with_data(mut self, data: Value) -> Self {
@@ -89,9 +101,15 @@ mod tests {
 
     #[test]
     fn failure_response_serializes_without_a_result_field() {
-        let response = JsonRpcResponse::failure(Value::from(1), JsonRpcError::new(JsonRpcError::METHOD_NOT_FOUND, "not found"));
+        let response = JsonRpcResponse::failure(
+            Value::from(1),
+            JsonRpcError::new(JsonRpcError::METHOD_NOT_FOUND, "not found"),
+        );
         let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["error"]["code"], Value::from(JsonRpcError::METHOD_NOT_FOUND));
+        assert_eq!(
+            json["error"]["code"],
+            Value::from(JsonRpcError::METHOD_NOT_FOUND)
+        );
         assert!(json.get("result").is_none());
     }
 }

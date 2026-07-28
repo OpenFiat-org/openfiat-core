@@ -18,16 +18,23 @@ pub struct SignedSnapshotAnnounce {
 
 impl SignedSnapshotAnnounce {
     pub fn sign(metadata: SnapshotMetadata, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&metadata).expect("SnapshotMetadata always serializes");
-        Self { signature: keypair.sign(&bytes), metadata }
+        let bytes = openfiat_serialization::wire::to_bytes(&metadata)
+            .expect("SnapshotMetadata always serializes");
+        Self {
+            signature: keypair.sign(&bytes),
+            metadata,
+        }
     }
 
     pub fn verify(&self) -> Result<(), SnapshotError> {
-        let expected = peer_id_from_public_key(&self.metadata.producer_public_key).map_err(|_| SnapshotError::InvalidSignature)?;
+        let expected = peer_id_from_public_key(&self.metadata.producer_public_key)
+            .map_err(|_| SnapshotError::InvalidSignature)?;
         if expected != self.metadata.producer {
             return Err(SnapshotError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.metadata).map_err(|_| SnapshotError::MalformedRecord)?;
-        verify(&self.metadata.producer_public_key, &bytes, &self.signature).map_err(|_| SnapshotError::InvalidSignature)
+        let bytes = openfiat_serialization::wire::to_bytes(&self.metadata)
+            .map_err(|_| SnapshotError::MalformedRecord)?;
+        verify(&self.metadata.producer_public_key, &bytes, &self.signature)
+            .map_err(|_| SnapshotError::InvalidSignature)
     }
 }

@@ -100,6 +100,9 @@ pub struct Dispute {
 
 impl Dispute {
     pub fn arbitrator_key(&self, arbitrator: &PeerId) -> Option<&PublicKey> {
-        self.arbitrator_keys.iter().find(|(id, _)| id == arbitrator).map(|(_, key)| key)
+        self.arbitrator_keys
+            .iter()
+            .find(|(id, _)| id == arbitrator)
+            .map(|(_, key)| key)
     }
 }

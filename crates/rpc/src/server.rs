@@ -21,22 +21,42 @@ struct AppState {
 
 pub fn router(rpc: RpcHandle, metrics: Arc<MetricsRegistry>) -> Router {
     let state = AppState { rpc, metrics };
-    Router::new().route("/rpc", post(handle_rpc)).route("/ws", get(handle_ws)).route("/health", get(handle_health)).route("/metrics", get(handle_metrics)).with_state(state)
+    Router::new()
+        .route("/rpc", post(handle_rpc))
+        .route("/ws", get(handle_ws))
+        .route("/health", get(handle_health))
+        .route("/metrics", get(handle_metrics))
+        .with_state(state)
 }
 
 async fn handle_rpc(State(state): State<AppState>, body: axum::body::Bytes) -> Response {
-    state.metrics.counter("rpc_requests_total", "Total JSON-RPC requests received").inc();
+    state
+        .metrics
+        .counter("rpc_requests_total", "Total JSON-RPC requests received")
+        .inc();
 
     let request: JsonRpcRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
-        Err(e) => return axum::Json(JsonRpcResponse::failure(serde_json::Value::Null, JsonRpcError::new(JsonRpcError::PARSE_ERROR, e.to_string()))).into_response(),
+        Err(e) => {
+            return axum::Json(JsonRpcResponse::failure(
+                serde_json::Value::Null,
+                JsonRpcError::new(JsonRpcError::PARSE_ERROR, e.to_string()),
+            ))
+            .into_response();
+        }
     };
 
     let id = request.id.clone();
     match state.rpc.call(request.method, request.params).await {
         Ok(result) => axum::Json(JsonRpcResponse::success(id, result)).into_response(),
         Err(error) => {
-            state.metrics.counter("rpc_errors_total", "Total JSON-RPC requests that returned an error").inc();
+            state
+                .metrics
+                .counter(
+                    "rpc_errors_total",
+                    "Total JSON-RPC requests that returned an error",
+                )
+                .inc();
             axum::Json(JsonRpcResponse::failure(id, error.into_json_rpc_error())).into_response()
         }
     }
@@ -63,7 +83,11 @@ async fn stream_events(mut socket: WebSocket, rpc: RpcHandle) {
     loop {
         match subscription.recv().await {
             Ok(event) => {
-                if socket.send(Message::Text(event.to_string().into())).await.is_err() {
+                if socket
+                    .send(Message::Text(event.to_string().into()))
+                    .await
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -82,12 +106,23 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_router() -> Router {
-        router(spawn_actor(MemoryStore::new), Arc::new(MetricsRegistry::new()))
+        router(
+            spawn_actor(MemoryStore::new),
+            Arc::new(MetricsRegistry::new()),
+        )
     }
 
     #[tokio::test]
     async fn health_returns_ok() {
-        let response = test_router().oneshot(axum::http::Request::builder().uri("/health").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        let response = test_router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&body[..], b"ok");
@@ -95,9 +130,17 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_dispatches_get_version() {
-        let request_body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "getVersion", "params": {} });
+        let request_body =
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "getVersion", "params": {} });
         let response = test_router()
-            .oneshot(axum::http::Request::builder().method("POST").uri("/rpc").header("content-type", "application/json").body(axum::body::Body::from(request_body.to_string())).unwrap())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/rpc")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(request_body.to_string()))
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -111,21 +154,50 @@ mod tests {
     async fn rpc_reports_method_not_found_as_a_json_rpc_error() {
         let request_body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "doesNotExist", "params": {} });
         let response = test_router()
-            .oneshot(axum::http::Request::builder().method("POST").uri("/rpc").header("content-type", "application/json").body(axum::body::Body::from(request_body.to_string())).unwrap())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/rpc")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(request_body.to_string()))
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], serde_json::Value::from(JsonRpcError::METHOD_NOT_FOUND));
+        assert_eq!(
+            json["error"]["code"],
+            serde_json::Value::from(JsonRpcError::METHOD_NOT_FOUND)
+        );
     }
 
     #[tokio::test]
     async fn metrics_reflects_requests_handled() {
         let router = test_router();
-        let request_body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "getVersion", "params": {} });
-        router.clone().oneshot(axum::http::Request::builder().method("POST").uri("/rpc").body(axum::body::Body::from(request_body.to_string())).unwrap()).await.unwrap();
+        let request_body =
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "getVersion", "params": {} });
+        router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/rpc")
+                    .body(axum::body::Body::from(request_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
 
-        let response = router.oneshot(axum::http::Request::builder().uri("/metrics").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/metrics")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("rpc_requests_total 1"));

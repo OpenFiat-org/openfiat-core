@@ -5,12 +5,12 @@
 
 use futures::future::select_all;
 use openfiat_crypto::Keypair;
-use openfiat_gossip::channel::Subscription;
 use openfiat_gossip::EventStore;
+use openfiat_gossip::channel::Subscription;
 use openfiat_network::identity::{peer_id, to_libp2p_keypair};
 use openfiat_network::{Multiaddr, Node};
-use openfiat_registry::health::HealthState;
 use openfiat_registry::RegistryService;
+use openfiat_registry::health::HealthState;
 use openfiat_storage::mem::MemoryStore;
 use openfiat_types::{InfrastructureService, PeerId, PublicKey, ServiceType};
 use std::future::Future;
@@ -21,7 +21,8 @@ fn make_service(seed: u8) -> RegistryService<MemoryStore> {
     let keypair = Keypair::from_seed([seed; 32]);
     let node = Node::new(&keypair).unwrap();
     let event_store = EventStore::new(MemoryStore::new());
-    let gossip = openfiat_gossip::GossipService::new(node, event_store, keypair, vec![], Subscription::All);
+    let gossip =
+        openfiat_gossip::GossipService::new(node, event_store, keypair, vec![], Subscription::All);
     RegistryService::new(gossip, MemoryStore::new())
 }
 
@@ -30,11 +31,16 @@ fn identity(seed: u8) -> (PeerId, PublicKey) {
     (peer_id(&to_libp2p_keypair(&keypair)), keypair.public_key())
 }
 
-async fn drive_until(services: &mut [RegistryService<MemoryStore>], mut condition: impl FnMut(&[RegistryService<MemoryStore>]) -> bool) {
+async fn drive_until(
+    services: &mut [RegistryService<MemoryStore>],
+    mut condition: impl FnMut(&[RegistryService<MemoryStore>]) -> bool,
+) {
     tokio::time::timeout(Duration::from_secs(15), async {
         while !condition(services) {
-            let futures: Vec<Pin<Box<dyn Future<Output = ()> + '_>>> =
-                services.iter_mut().map(|s| Box::pin(s.drive_once()) as Pin<Box<dyn Future<Output = ()> + '_>>).collect();
+            let futures: Vec<Pin<Box<dyn Future<Output = ()> + '_>>> = services
+                .iter_mut()
+                .map(|s| Box::pin(s.drive_once()) as Pin<Box<dyn Future<Output = ()> + '_>>)
+                .collect();
             select_all(futures).await;
         }
     })
@@ -43,9 +49,15 @@ async fn drive_until(services: &mut [RegistryService<MemoryStore>], mut conditio
 }
 
 async fn listen_addr(service: &mut RegistryService<MemoryStore>) -> Multiaddr {
-    service.gossip.node.listen_on("/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap()).unwrap();
+    service
+        .gossip
+        .node
+        .listen_on("/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap())
+        .unwrap();
     loop {
-        if let libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } = service.gossip.node.next_event().await {
+        if let libp2p::swarm::SwarmEvent::NewListenAddr { address, .. } =
+            service.gossip.node.next_event().await
+        {
             return address;
         }
     }
@@ -69,12 +81,19 @@ async fn registration_and_health_changes_replicate_and_stale_services_expire_eve
     for (i, service) in all.iter_mut().enumerate() {
         for (j, (peer_id, public_key)) in identities.iter().enumerate() {
             if i != j {
-                service.gossip.register_peer_key(peer_id.clone(), *public_key);
+                service
+                    .gossip
+                    .register_peer_key(peer_id.clone(), *public_key);
             }
         }
     }
 
-    drive_until(&mut all, |services| services.iter().all(|s| s.gossip.connected_peer_count() >= 1)).await;
+    drive_until(&mut all, |services| {
+        services
+            .iter()
+            .all(|s| s.gossip.connected_peer_count() >= 1)
+    })
+    .await;
 
     // Leaf 0 (index 1) registers a service.
     let service_id = all[1]
@@ -89,7 +108,10 @@ async fn registration_and_health_changes_replicate_and_stale_services_expire_eve
         )
         .unwrap();
 
-    drive_until(&mut all, |services| services.iter().all(|s| s.get(&service_id).is_some())).await;
+    drive_until(&mut all, |services| {
+        services.iter().all(|s| s.get(&service_id).is_some())
+    })
+    .await;
 
     for service in &all {
         let record = service.get(&service_id).unwrap();
@@ -98,8 +120,15 @@ async fn registration_and_health_changes_replicate_and_stale_services_expire_eve
     }
 
     // The same node publishes a health change; it must reach every node.
-    all[1].publish_health(service_id.clone(), HealthState::Degraded).unwrap();
-    drive_until(&mut all, |services| services.iter().all(|s| s.get(&service_id).unwrap().health == HealthState::Degraded)).await;
+    all[1]
+        .publish_health(service_id.clone(), HealthState::Degraded)
+        .unwrap();
+    drive_until(&mut all, |services| {
+        services
+            .iter()
+            .all(|s| s.get(&service_id).unwrap().health == HealthState::Degraded)
+    })
+    .await;
 
     // Auto-expiration (§18) is purely local bookkeeping — every node runs
     // it independently against its own replica. A zero-duration threshold

@@ -47,10 +47,7 @@ impl EventType {
     /// Validate and wrap an event name.
     pub fn new(name: impl Into<String>) -> Result<Self, InvalidEventType> {
         let name = name.into();
-        let is_pascal_case = name
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_uppercase())
+        let is_pascal_case = name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
             && name.chars().all(|c| c.is_ascii_alphanumeric());
         if is_pascal_case {
             Ok(Self(name))

@@ -2,7 +2,10 @@
 //! automatically and provides the operations that originate new ones.
 
 use crate::error::SessionError;
-use crate::events::{SessionCreate, SessionMigrate, SessionRenew, SessionRevoke, SignedSessionCreate, SignedSessionMigrate, SignedSessionRenew, SignedSessionRevoke};
+use crate::events::{
+    SessionCreate, SessionMigrate, SessionRenew, SessionRevoke, SignedSessionCreate,
+    SignedSessionMigrate, SignedSessionRenew, SignedSessionRevoke,
+};
 use crate::protocol;
 use crate::record::{Session, SessionId};
 use crate::store::SessionRegistry;
@@ -41,7 +44,13 @@ impl<S: KvStore + 'static> SessionService<S> {
     /// §5: establishes a new session under this node's own wallet
     /// identity, hosted on this node, using the default lifetime unless
     /// `lifetime` is given.
-    pub fn establish(&mut self, id: impl Into<String>, client: impl Into<String>, permissions: Vec<String>, lifetime: Option<Duration>) -> Result<SessionId, SessionError> {
+    pub fn establish(
+        &mut self,
+        id: impl Into<String>,
+        client: impl Into<String>,
+        permissions: Vec<String>,
+        lifetime: Option<Duration>,
+    ) -> Result<SessionId, SessionError> {
         let now = Timestamp::now();
         let lifetime = lifetime.unwrap_or(protocol::DEFAULT_SESSION_LIFETIME);
         let create = SessionCreate {
@@ -55,39 +64,88 @@ impl<S: KvStore + 'static> SessionService<S> {
             expires_at: Timestamp::from_millis(now.as_millis() + lifetime.as_millis() as u64),
         };
         let bytes = wire::to_bytes(&create).map_err(|_| SessionError::MalformedSession)?;
-        let signed = SignedSessionCreate { signature: self.gossip.sign(&bytes), create };
+        let signed = SignedSessionCreate {
+            signature: self.gossip.sign(&bytes),
+            create,
+        };
         self.originate(protocol::EVENT_ESTABLISHED, &signed)?;
         Ok(signed.create.id)
     }
 
-    pub fn renew(&mut self, session_id: SessionId, version: u64, lifetime: Option<Duration>) -> Result<(), SessionError> {
+    pub fn renew(
+        &mut self,
+        session_id: SessionId,
+        version: u64,
+        lifetime: Option<Duration>,
+    ) -> Result<(), SessionError> {
         let lifetime = lifetime.unwrap_or(protocol::DEFAULT_SESSION_LIFETIME);
         let now = Timestamp::now();
-        let renew = SessionRenew { session_id, wallet: self.gossip.node.local_peer_id(), new_expires_at: Timestamp::from_millis(now.as_millis() + lifetime.as_millis() as u64), version, timestamp: now };
+        let renew = SessionRenew {
+            session_id,
+            wallet: self.gossip.node.local_peer_id(),
+            new_expires_at: Timestamp::from_millis(now.as_millis() + lifetime.as_millis() as u64),
+            version,
+            timestamp: now,
+        };
         let bytes = wire::to_bytes(&renew).map_err(|_| SessionError::MalformedSession)?;
-        let signed = SignedSessionRenew { signature: self.gossip.sign(&bytes), renew };
+        let signed = SignedSessionRenew {
+            signature: self.gossip.sign(&bytes),
+            renew,
+        };
         self.originate(protocol::EVENT_RENEWED, &signed)
     }
 
     pub fn revoke(&mut self, session_id: SessionId) -> Result<(), SessionError> {
-        let revoke = SessionRevoke { session_id, wallet: self.gossip.node.local_peer_id(), timestamp: Timestamp::now() };
+        let revoke = SessionRevoke {
+            session_id,
+            wallet: self.gossip.node.local_peer_id(),
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&revoke).map_err(|_| SessionError::MalformedSession)?;
-        let signed = SignedSessionRevoke { signature: self.gossip.sign(&bytes), revoke };
+        let signed = SignedSessionRevoke {
+            signature: self.gossip.sign(&bytes),
+            revoke,
+        };
         self.originate(protocol::EVENT_REVOKED, &signed)
     }
 
-    pub fn migrate(&mut self, session_id: SessionId, new_host_node: PeerId, version: u64) -> Result<(), SessionError> {
-        let migrate = SessionMigrate { session_id, wallet: self.gossip.node.local_peer_id(), new_host_node, version, timestamp: Timestamp::now() };
+    pub fn migrate(
+        &mut self,
+        session_id: SessionId,
+        new_host_node: PeerId,
+        version: u64,
+    ) -> Result<(), SessionError> {
+        let migrate = SessionMigrate {
+            session_id,
+            wallet: self.gossip.node.local_peer_id(),
+            new_host_node,
+            version,
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&migrate).map_err(|_| SessionError::MalformedSession)?;
-        let signed = SignedSessionMigrate { signature: self.gossip.sign(&bytes), migrate };
+        let signed = SignedSessionMigrate {
+            signature: self.gossip.sign(&bytes),
+            migrate,
+        };
         self.originate(protocol::EVENT_MIGRATED, &signed)
     }
 
-    fn originate(&mut self, event_type: &str, payload: &impl serde::Serialize) -> Result<(), SessionError> {
+    fn originate(
+        &mut self,
+        event_type: &str,
+        payload: &impl serde::Serialize,
+    ) -> Result<(), SessionError> {
         let bytes = wire::to_bytes(payload).map_err(|_| SessionError::MalformedSession)?;
-        let event_type = EventType::new(event_type).expect("session event names are all valid PascalCase identifiers");
+        let event_type = EventType::new(event_type)
+            .expect("session event names are all valid PascalCase identifiers");
         self.gossip
-            .originate(event_type, protocol::OFS_SPEC, Priority::SessionReservationSettlement, 8, bytes)
+            .originate(
+                event_type,
+                protocol::OFS_SPEC,
+                Priority::SessionReservationSettlement,
+                8,
+                bytes,
+            )
             .map(|_| ())
             .map_err(|_| SessionError::Unauthorized)
     }

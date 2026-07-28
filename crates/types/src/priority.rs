@@ -11,7 +11,9 @@
 /// Stake-weighted ordering (SWQoS) applies *within* a class, never across
 /// classes — a `SessionReservationSettlement` message from a low-stake node
 /// still outranks a `TradeEscrow` message from a high-stake one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[repr(u8)]
 pub enum Priority {
     /// Session Control, Reservation, Settlement.

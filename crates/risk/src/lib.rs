@@ -21,7 +21,9 @@ pub mod store;
 
 pub use error::RiskError;
 pub use provider::{ProviderError, RiskAssessment, RiskProvider, RiskSubject};
-pub use record::{Confidence, ProviderCategory, RiskOutcome, RiskRecord, RiskRecordId, ScreeningResult, Severity};
+pub use record::{
+    Confidence, ProviderCategory, RiskOutcome, RiskRecord, RiskRecordId, ScreeningResult, Severity,
+};
 pub use service::RiskService;
 pub use store::RiskIndex;
 

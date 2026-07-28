@@ -62,6 +62,9 @@ mod tests {
 
     #[test]
     fn duplicate_sequence_maps_to_replay_attack_detected() {
-        assert_eq!(NetworkError::DuplicateSequence.code(), ErrorCode::ReplayAttackDetected);
+        assert_eq!(
+            NetworkError::DuplicateSequence.code(),
+            ErrorCode::ReplayAttackDetected
+        );
     }
 }

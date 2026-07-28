@@ -2,7 +2,10 @@
 //! automatically and provides the operations that originate new ones.
 
 use crate::error::IdentityError;
-use crate::events::{ClaimPublish, ClaimRevoke, ClaimVerify, SignedClaimPublish, SignedClaimRevoke, SignedClaimVerify};
+use crate::events::{
+    ClaimPublish, ClaimRevoke, ClaimVerify, SignedClaimPublish, SignedClaimRevoke,
+    SignedClaimVerify,
+};
 use crate::protocol;
 use crate::record::{Claim, ClaimId, ClaimType};
 use crate::store::IdentityRegistry;
@@ -65,30 +68,58 @@ impl<S: KvStore + 'static> IdentityService<S> {
             timestamp: Timestamp::now(),
         };
         let bytes = wire::to_bytes(&publish).map_err(|_| IdentityError::MalformedClaim)?;
-        let signed = SignedClaimPublish { signature: self.gossip.sign(&bytes), publish };
+        let signed = SignedClaimPublish {
+            signature: self.gossip.sign(&bytes),
+            publish,
+        };
         self.originate(protocol::EVENT_CREATED, &signed)?;
         Ok(signed.publish.id)
     }
 
     pub fn verify(&mut self, claim_id: ClaimId) -> Result<(), IdentityError> {
-        let verify = ClaimVerify { claim_id, wallet: self.gossip.node.local_peer_id(), timestamp: Timestamp::now() };
+        let verify = ClaimVerify {
+            claim_id,
+            wallet: self.gossip.node.local_peer_id(),
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&verify).map_err(|_| IdentityError::MalformedClaim)?;
-        let signed = SignedClaimVerify { signature: self.gossip.sign(&bytes), verify };
+        let signed = SignedClaimVerify {
+            signature: self.gossip.sign(&bytes),
+            verify,
+        };
         self.originate(protocol::EVENT_VERIFIED, &signed)
     }
 
     pub fn revoke(&mut self, claim_id: ClaimId) -> Result<(), IdentityError> {
-        let revoke = ClaimRevoke { claim_id, wallet: self.gossip.node.local_peer_id(), timestamp: Timestamp::now() };
+        let revoke = ClaimRevoke {
+            claim_id,
+            wallet: self.gossip.node.local_peer_id(),
+            timestamp: Timestamp::now(),
+        };
         let bytes = wire::to_bytes(&revoke).map_err(|_| IdentityError::MalformedClaim)?;
-        let signed = SignedClaimRevoke { signature: self.gossip.sign(&bytes), revoke };
+        let signed = SignedClaimRevoke {
+            signature: self.gossip.sign(&bytes),
+            revoke,
+        };
         self.originate(protocol::EVENT_REVOKED, &signed)
     }
 
-    fn originate(&mut self, event_type: &str, payload: &impl serde::Serialize) -> Result<(), IdentityError> {
+    fn originate(
+        &mut self,
+        event_type: &str,
+        payload: &impl serde::Serialize,
+    ) -> Result<(), IdentityError> {
         let bytes = wire::to_bytes(payload).map_err(|_| IdentityError::MalformedClaim)?;
-        let event_type = EventType::new(event_type).expect("identity event names are all valid PascalCase identifiers");
+        let event_type = EventType::new(event_type)
+            .expect("identity event names are all valid PascalCase identifiers");
         self.gossip
-            .originate(event_type, protocol::OFS_SPEC, Priority::Reputation, 8, bytes)
+            .originate(
+                event_type,
+                protocol::OFS_SPEC,
+                Priority::Reputation,
+                8,
+                bytes,
+            )
             .map(|_| ())
             .map_err(|_| IdentityError::Unauthorized)
     }

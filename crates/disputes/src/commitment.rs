@@ -30,17 +30,26 @@ mod tests {
     #[test]
     fn matches_when_recomputed_with_the_same_inputs() {
         let secret = [7u8; 32];
-        assert_eq!(compute(Vote::BuyerWins, &secret), compute(Vote::BuyerWins, &secret));
+        assert_eq!(
+            compute(Vote::BuyerWins, &secret),
+            compute(Vote::BuyerWins, &secret)
+        );
     }
 
     #[test]
     fn differs_for_a_different_vote_with_the_same_secret() {
         let secret = [7u8; 32];
-        assert_ne!(compute(Vote::BuyerWins, &secret), compute(Vote::MerchantWins, &secret));
+        assert_ne!(
+            compute(Vote::BuyerWins, &secret),
+            compute(Vote::MerchantWins, &secret)
+        );
     }
 
     #[test]
     fn differs_for_a_different_secret_with_the_same_vote() {
-        assert_ne!(compute(Vote::BuyerWins, &[1u8; 32]), compute(Vote::BuyerWins, &[2u8; 32]));
+        assert_ne!(
+            compute(Vote::BuyerWins, &[1u8; 32]),
+            compute(Vote::BuyerWins, &[2u8; 32])
+        );
     }
 }

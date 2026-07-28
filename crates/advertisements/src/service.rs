@@ -3,7 +3,10 @@
 //! create/disable/update-pricing operations that originate new ones.
 
 use crate::error::AdvertisementError;
-use crate::events::{AdvertisementCreate, AdvertisementDisable, AdvertisementPriceUpdate, SignedAdvertisementCreate, SignedAdvertisementDisable, SignedAdvertisementPriceUpdate};
+use crate::events::{
+    AdvertisementCreate, AdvertisementDisable, AdvertisementPriceUpdate, SignedAdvertisementCreate,
+    SignedAdvertisementDisable, SignedAdvertisementPriceUpdate,
+};
 use crate::protocol;
 use crate::record::{Advertisement, AdvertisementId, Direction, PricingModel};
 use crate::store::AdvertisementRegistry;
@@ -47,11 +50,19 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
     /// index. Real wiring is "consume a reservation-opened gossip event
     /// once `openfiat-reservations` exists"; exposed directly for now so
     /// this crate's liquidity bookkeeping is usable and testable today.
-    pub fn reserve_liquidity(&self, id: &AdvertisementId, amount: Amount) -> Result<(), AdvertisementError> {
+    pub fn reserve_liquidity(
+        &self,
+        id: &AdvertisementId,
+        amount: Amount,
+    ) -> Result<(), AdvertisementError> {
         self.registry.reserve_liquidity(id, amount)
     }
 
-    pub fn release_liquidity(&self, id: &AdvertisementId, amount: Amount) -> Result<(), AdvertisementError> {
+    pub fn release_liquidity(
+        &self,
+        id: &AdvertisementId,
+        amount: Amount,
+    ) -> Result<(), AdvertisementError> {
         self.registry.release_liquidity(id, amount)
     }
 
@@ -83,30 +94,66 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
             timestamp: Timestamp::now(),
         };
         let bytes = wire::to_bytes(&create).expect("AdvertisementCreate always serializes");
-        let signed = SignedAdvertisementCreate { signature: self.gossip.sign(&bytes), create };
+        let signed = SignedAdvertisementCreate {
+            signature: self.gossip.sign(&bytes),
+            create,
+        };
         self.originate(protocol::EVENT_CREATED, &signed)?;
         Ok(signed.create.id)
     }
 
     pub fn disable(&mut self, id: AdvertisementId) -> Result<(), AdvertisementError> {
-        let disable = AdvertisementDisable { id, merchant: self.gossip.node.local_peer_id(), timestamp: Timestamp::now() };
-        let bytes = wire::to_bytes(&disable).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
-        let signed = SignedAdvertisementDisable { signature: self.gossip.sign(&bytes), disable };
+        let disable = AdvertisementDisable {
+            id,
+            merchant: self.gossip.node.local_peer_id(),
+            timestamp: Timestamp::now(),
+        };
+        let bytes =
+            wire::to_bytes(&disable).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        let signed = SignedAdvertisementDisable {
+            signature: self.gossip.sign(&bytes),
+            disable,
+        };
         self.originate(protocol::EVENT_DISABLED, &signed)
     }
 
-    pub fn update_pricing(&mut self, id: AdvertisementId, pricing: PricingModel) -> Result<(), AdvertisementError> {
-        let update = AdvertisementPriceUpdate { id, merchant: self.gossip.node.local_peer_id(), pricing, timestamp: Timestamp::now() };
-        let bytes = wire::to_bytes(&update).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
-        let signed = SignedAdvertisementPriceUpdate { signature: self.gossip.sign(&bytes), update };
+    pub fn update_pricing(
+        &mut self,
+        id: AdvertisementId,
+        pricing: PricingModel,
+    ) -> Result<(), AdvertisementError> {
+        let update = AdvertisementPriceUpdate {
+            id,
+            merchant: self.gossip.node.local_peer_id(),
+            pricing,
+            timestamp: Timestamp::now(),
+        };
+        let bytes =
+            wire::to_bytes(&update).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        let signed = SignedAdvertisementPriceUpdate {
+            signature: self.gossip.sign(&bytes),
+            update,
+        };
         self.originate(protocol::EVENT_PRICING_UPDATED, &signed)
     }
 
-    fn originate(&mut self, event_type: &str, payload: &impl serde::Serialize) -> Result<(), AdvertisementError> {
-        let bytes = wire::to_bytes(payload).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
-        let event_type = EventType::new(event_type).expect("advertisement event names are all valid PascalCase identifiers");
+    fn originate(
+        &mut self,
+        event_type: &str,
+        payload: &impl serde::Serialize,
+    ) -> Result<(), AdvertisementError> {
+        let bytes =
+            wire::to_bytes(payload).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        let event_type = EventType::new(event_type)
+            .expect("advertisement event names are all valid PascalCase identifiers");
         self.gossip
-            .originate(event_type, protocol::OFS_SPEC, Priority::Advertisement, 8, bytes)
+            .originate(
+                event_type,
+                protocol::OFS_SPEC,
+                Priority::Advertisement,
+                8,
+                bytes,
+            )
             .map(|_| ())
             .map_err(|_| AdvertisementError::UnauthorizedUpdate)
     }

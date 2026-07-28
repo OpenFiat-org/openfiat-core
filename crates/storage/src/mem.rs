@@ -26,18 +26,33 @@ impl KvStore for MemoryStore {
     type Error = Infallible;
 
     fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Infallible> {
-        let column_families = self.column_families.lock().expect("MemoryStore mutex poisoned");
-        Ok(column_families.get(cf).and_then(|entries| entries.get(key)).cloned())
+        let column_families = self
+            .column_families
+            .lock()
+            .expect("MemoryStore mutex poisoned");
+        Ok(column_families
+            .get(cf)
+            .and_then(|entries| entries.get(key))
+            .cloned())
     }
 
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), Infallible> {
-        let mut column_families = self.column_families.lock().expect("MemoryStore mutex poisoned");
-        column_families.entry(cf.to_string()).or_default().insert(key.to_vec(), value.to_vec());
+        let mut column_families = self
+            .column_families
+            .lock()
+            .expect("MemoryStore mutex poisoned");
+        column_families
+            .entry(cf.to_string())
+            .or_default()
+            .insert(key.to_vec(), value.to_vec());
         Ok(())
     }
 
     fn delete(&self, cf: &str, key: &[u8]) -> Result<(), Infallible> {
-        let mut column_families = self.column_families.lock().expect("MemoryStore mutex poisoned");
+        let mut column_families = self
+            .column_families
+            .lock()
+            .expect("MemoryStore mutex poisoned");
         if let Some(entries) = column_families.get_mut(cf) {
             entries.remove(key);
         }
@@ -45,7 +60,10 @@ impl KvStore for MemoryStore {
     }
 
     fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<Entry>, Infallible> {
-        let column_families = self.column_families.lock().expect("MemoryStore mutex poisoned");
+        let column_families = self
+            .column_families
+            .lock()
+            .expect("MemoryStore mutex poisoned");
         let Some(entries) = column_families.get(cf) else {
             return Ok(Vec::new());
         };
@@ -65,7 +83,10 @@ mod tests {
     fn round_trips_a_value() {
         let store = MemoryStore::new();
         store.put("events", b"key", b"value").unwrap();
-        assert_eq!(store.get("events", b"key").unwrap(), Some(b"value".to_vec()));
+        assert_eq!(
+            store.get("events", b"key").unwrap(),
+            Some(b"value".to_vec())
+        );
     }
 
     #[test]
@@ -93,6 +114,12 @@ mod tests {
         store.put("events", b"other:1", b"excluded").unwrap();
 
         let matches = store.iter_prefix("events", b"evt:").unwrap();
-        assert_eq!(matches, vec![(b"evt:1".to_vec(), b"first".to_vec()), (b"evt:2".to_vec(), b"second".to_vec())]);
+        assert_eq!(
+            matches,
+            vec![
+                (b"evt:1".to_vec(), b"first".to_vec()),
+                (b"evt:2".to_vec(), b"second".to_vec())
+            ]
+        );
     }
 }

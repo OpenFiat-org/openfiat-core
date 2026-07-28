@@ -16,7 +16,9 @@ pub enum ProviderCategory {
 /// §8's tiers, declared ascending so `Ord`/`max` treat `Critical` as the
 /// most severe — the order that actually matters for aggregation (§11,
 /// §13), not the descending order the spec lists them in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Severity {
     /// Watchlist, ongoing investigation, monitoring only.
     Informational,
@@ -89,7 +91,8 @@ pub struct RiskRecord {
 impl RiskRecord {
     /// §12: "Expired data SHOULD NOT be treated as current."
     pub fn is_current(&self, now: Timestamp) -> bool {
-        self.expires_at.is_none_or(|expiry| now.as_millis() < expiry.as_millis())
+        self.expires_at
+            .is_none_or(|expiry| now.as_millis() < expiry.as_millis())
     }
 }
 

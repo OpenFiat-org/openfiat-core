@@ -68,7 +68,9 @@ impl Database {
     }
 
     fn cf_handle(&self, cf: &str) -> Result<&rocksdb::ColumnFamily, DatabaseError> {
-        self.db.cf_handle(cf).ok_or_else(|| DatabaseError::UnknownColumnFamily(cf.to_string()))
+        self.db
+            .cf_handle(cf)
+            .ok_or_else(|| DatabaseError::UnknownColumnFamily(cf.to_string()))
     }
 }
 
@@ -153,7 +155,13 @@ mod tests {
         db.put("events", b"other:1", b"excluded").unwrap();
 
         let matches = db.iter_prefix("events", b"evt:").unwrap();
-        assert_eq!(matches, vec![(b"evt:1".to_vec(), b"first".to_vec()), (b"evt:2".to_vec(), b"second".to_vec())]);
+        assert_eq!(
+            matches,
+            vec![
+                (b"evt:1".to_vec(), b"first".to_vec()),
+                (b"evt:2".to_vec(), b"second".to_vec())
+            ]
+        );
     }
 
     #[test]

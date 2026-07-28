@@ -19,8 +19,15 @@ use openfiat_rpc::methods::build_table;
 use openfiat_storage::mem::MemoryStore;
 use serde_json::{Value, json};
 
-const WALLET_PARAM_METHODS: &[&str] =
-    &["getIdentityClaimsByWallet", "getReputation", "getSubscription", "getDeliveryReceiptsByWallet", "getRiskRecordsByWallet", "getWalletScreening", "getSessionsByWallet"];
+const WALLET_PARAM_METHODS: &[&str] = &[
+    "getIdentityClaimsByWallet",
+    "getReputation",
+    "getSubscription",
+    "getDeliveryReceiptsByWallet",
+    "getRiskRecordsByWallet",
+    "getWalletScreening",
+    "getSessionsByWallet",
+];
 
 const NO_PARAM_METHODS: &[&str] = &[
     "getVersion",
@@ -119,17 +126,34 @@ mod tests {
     fn every_dispatch_table_method_appears_in_the_document() {
         let table = build_table::<MemoryStore>();
         let document = build_document();
-        let documented: Vec<&str> = document["methods"].as_array().unwrap().iter().map(|m| m["name"].as_str().unwrap()).collect();
+        let documented: Vec<&str> = document["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].as_str().unwrap())
+            .collect();
         for name in table.method_names() {
-            assert!(documented.contains(&name), "{name} is dispatchable but not documented");
+            assert!(
+                documented.contains(&name),
+                "{name} is dispatchable but not documented"
+            );
         }
-        assert_eq!(documented.len(), table.method_names().len(), "documented method count must match the dispatch table exactly — no orphaned entries");
+        assert_eq!(
+            documented.len(),
+            table.method_names().len(),
+            "documented method count must match the dispatch table exactly — no orphaned entries"
+        );
     }
 
     #[test]
     fn send_methods_document_the_base64_payload_shape() {
         let document = build_document();
-        let send_method = document["methods"].as_array().unwrap().iter().find(|m| m["name"] == "sendAdvertisementCreate").unwrap();
+        let send_method = document["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "sendAdvertisementCreate")
+            .unwrap();
         assert!(send_method["params"][0]["schema"]["properties"]["data"].is_object());
     }
 }

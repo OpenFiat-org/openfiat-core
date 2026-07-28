@@ -11,7 +11,9 @@ use axum::routing::get;
 const REFERENCE_PAGE: &str = include_str!("../assets/reference.html");
 
 pub fn router() -> Router {
-    Router::new().route("/openrpc.json", get(handle_openrpc_document)).route("/docs", get(handle_reference_page))
+    Router::new()
+        .route("/openrpc.json", get(handle_openrpc_document))
+        .route("/docs", get(handle_reference_page))
 }
 
 async fn handle_openrpc_document() -> axum::Json<serde_json::Value> {
@@ -30,7 +32,15 @@ mod tests {
 
     #[tokio::test]
     async fn openrpc_document_is_served_as_json() {
-        let response = router().oneshot(axum::http::Request::builder().uri("/openrpc.json").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        let response = router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/openrpc.json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -39,7 +49,15 @@ mod tests {
 
     #[tokio::test]
     async fn reference_page_is_served_as_html() {
-        let response = router().oneshot(axum::http::Request::builder().uri("/docs").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        let response = router()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/docs")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("OpenFiat Node API Reference"));

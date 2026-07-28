@@ -11,5 +11,12 @@ pub const OFS_SPEC: u16 = 6000;
 
 pub const EVENT_SUBSCRIPTION_UPDATED: &str = "SubscriptionUpdated";
 
-pub const DELIVERY_EVENT_NAMES: [&str; 7] =
-    ["NotificationQueued", "NotificationSent", "NotificationDelivered", "NotificationRead", "NotificationFailed", "NotificationRetried", "NotificationExpired"];
+pub const DELIVERY_EVENT_NAMES: [&str; 7] = [
+    "NotificationQueued",
+    "NotificationSent",
+    "NotificationDelivered",
+    "NotificationRead",
+    "NotificationFailed",
+    "NotificationRetried",
+    "NotificationExpired",
+];

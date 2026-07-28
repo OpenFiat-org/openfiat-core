@@ -32,17 +32,24 @@ pub struct SignedClaimPublish {
 
 impl SignedClaimPublish {
     pub fn sign(publish: ClaimPublish, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&publish).expect("ClaimPublish always serializes");
-        Self { signature: keypair.sign(&bytes), publish }
+        let bytes = openfiat_serialization::wire::to_bytes(&publish)
+            .expect("ClaimPublish always serializes");
+        Self {
+            signature: keypair.sign(&bytes),
+            publish,
+        }
     }
 
     pub fn verify(&self) -> Result<(), IdentityError> {
-        let expected = peer_id_from_public_key(&self.publish.wallet_public_key).map_err(|_| IdentityError::InvalidSignature)?;
+        let expected = peer_id_from_public_key(&self.publish.wallet_public_key)
+            .map_err(|_| IdentityError::InvalidSignature)?;
         if expected != self.publish.wallet {
             return Err(IdentityError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.publish).map_err(|_| IdentityError::MalformedClaim)?;
-        verify(&self.publish.wallet_public_key, &bytes, &self.signature).map_err(|_| IdentityError::InvalidSignature)
+        let bytes = openfiat_serialization::wire::to_bytes(&self.publish)
+            .map_err(|_| IdentityError::MalformedClaim)?;
+        verify(&self.publish.wallet_public_key, &bytes, &self.signature)
+            .map_err(|_| IdentityError::InvalidSignature)
     }
 }
 
@@ -61,8 +68,12 @@ pub struct SignedClaimVerify {
 
 impl SignedClaimVerify {
     pub fn sign(verify: ClaimVerify, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&verify).expect("ClaimVerify always serializes");
-        Self { signature: keypair.sign(&bytes), verify }
+        let bytes =
+            openfiat_serialization::wire::to_bytes(&verify).expect("ClaimVerify always serializes");
+        Self {
+            signature: keypair.sign(&bytes),
+            verify,
+        }
     }
 }
 
@@ -81,7 +92,11 @@ pub struct SignedClaimRevoke {
 
 impl SignedClaimRevoke {
     pub fn sign(revoke: ClaimRevoke, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&revoke).expect("ClaimRevoke always serializes");
-        Self { signature: keypair.sign(&bytes), revoke }
+        let bytes =
+            openfiat_serialization::wire::to_bytes(&revoke).expect("ClaimRevoke always serializes");
+        Self {
+            signature: keypair.sign(&bytes),
+            revoke,
+        }
     }
 }

@@ -37,7 +37,10 @@ mod tests {
     fn a_signed_request_round_trips() {
         let wallet = Wallet::generate();
         let signed = wallet.sign_request("do the thing".to_string(), 1).unwrap();
-        assert_eq!(verify_request(&signed, Timestamp::now(), Duration::from_secs(30)), Ok(()));
+        assert_eq!(
+            verify_request(&signed, Timestamp::now(), Duration::from_secs(30)),
+            Ok(())
+        );
     }
 
     #[test]
@@ -46,15 +49,23 @@ mod tests {
         let attacker = Wallet::generate();
         let mut signed = wallet.sign_request("do the thing".to_string(), 1).unwrap();
         signed.signature = attacker.sign(b"forged");
-        assert_eq!(verify_request(&signed, Timestamp::now(), Duration::from_secs(30)), Err(WalletError::InvalidSignature));
+        assert_eq!(
+            verify_request(&signed, Timestamp::now(), Duration::from_secs(30)),
+            Err(WalletError::InvalidSignature)
+        );
     }
 
     #[test]
     fn a_stale_request_is_rejected() {
         let wallet = Wallet::generate();
         let signed = wallet.sign_request("do the thing".to_string(), 1).unwrap();
-        let far_future = Timestamp::from_millis(signed.envelope.timestamp.as_millis() + Duration::from_secs(60).as_millis() as u64);
-        assert_eq!(verify_request(&signed, far_future, Duration::from_secs(30)), Err(WalletError::RequestExpired));
+        let far_future = Timestamp::from_millis(
+            signed.envelope.timestamp.as_millis() + Duration::from_secs(60).as_millis() as u64,
+        );
+        assert_eq!(
+            verify_request(&signed, far_future, Duration::from_secs(30)),
+            Err(WalletError::RequestExpired)
+        );
     }
 
     #[test]
@@ -63,6 +74,9 @@ mod tests {
         let other = Wallet::generate();
         let mut signed = wallet.sign_request("do the thing".to_string(), 1).unwrap();
         signed.envelope.wallet = other.peer_id();
-        assert_eq!(verify_request(&signed, Timestamp::now(), Duration::from_secs(30)), Err(WalletError::InvalidSignature));
+        assert_eq!(
+            verify_request(&signed, Timestamp::now(), Duration::from_secs(30)),
+            Err(WalletError::InvalidSignature)
+        );
     }
 }

@@ -31,12 +31,40 @@ async fn the_merged_router_serves_both_rpc_and_documentation() {
         .unwrap();
     assert_eq!(rpc_response.status(), axum::http::StatusCode::OK);
 
-    let docs_response = router.clone().oneshot(axum::http::Request::builder().uri("/openrpc.json").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+    let docs_response = router
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/openrpc.json")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(docs_response.status(), axum::http::StatusCode::OK);
-    let body = docs_response.into_body().collect().await.unwrap().to_bytes();
+    let body = docs_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
     let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(document["methods"].as_array().unwrap().iter().any(|m| m["name"] == "getVersion"));
+    assert!(
+        document["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "getVersion")
+    );
 
-    let reference_response = router.oneshot(axum::http::Request::builder().uri("/docs").body(axum::body::Body::empty()).unwrap()).await.unwrap();
+    let reference_response = router
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/docs")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(reference_response.status(), axum::http::StatusCode::OK);
 }

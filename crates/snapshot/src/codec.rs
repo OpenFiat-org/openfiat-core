@@ -13,14 +13,18 @@ pub fn state_root(state_bytes: &[u8]) -> [u8; 32] {
 pub fn compress(state_bytes: &[u8], method: CompressionMethod) -> Result<Vec<u8>, SnapshotError> {
     match method {
         CompressionMethod::None => Ok(state_bytes.to_vec()),
-        CompressionMethod::Zstd | CompressionMethod::Gzip => Err(SnapshotError::UnsupportedCompression),
+        CompressionMethod::Zstd | CompressionMethod::Gzip => {
+            Err(SnapshotError::UnsupportedCompression)
+        }
     }
 }
 
 pub fn decompress(compressed: &[u8], method: CompressionMethod) -> Result<Vec<u8>, SnapshotError> {
     match method {
         CompressionMethod::None => Ok(compressed.to_vec()),
-        CompressionMethod::Zstd | CompressionMethod::Gzip => Err(SnapshotError::UnsupportedCompression),
+        CompressionMethod::Zstd | CompressionMethod::Gzip => {
+            Err(SnapshotError::UnsupportedCompression)
+        }
     }
 }
 
@@ -37,12 +41,21 @@ mod tests {
     #[test]
     fn none_compression_round_trips() {
         let compressed = compress(b"some state", CompressionMethod::None).unwrap();
-        assert_eq!(decompress(&compressed, CompressionMethod::None).unwrap(), b"some state");
+        assert_eq!(
+            decompress(&compressed, CompressionMethod::None).unwrap(),
+            b"some state"
+        );
     }
 
     #[test]
     fn zstd_is_rejected_as_unsupported() {
-        assert_eq!(compress(b"x", CompressionMethod::Zstd), Err(SnapshotError::UnsupportedCompression));
-        assert_eq!(decompress(b"x", CompressionMethod::Gzip), Err(SnapshotError::UnsupportedCompression));
+        assert_eq!(
+            compress(b"x", CompressionMethod::Zstd),
+            Err(SnapshotError::UnsupportedCompression)
+        );
+        assert_eq!(
+            decompress(b"x", CompressionMethod::Gzip),
+            Err(SnapshotError::UnsupportedCompression)
+        );
     }
 }

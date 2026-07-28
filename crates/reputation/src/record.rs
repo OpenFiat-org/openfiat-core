@@ -7,7 +7,9 @@ use openfiat_types::{Amount, PeerId, Timestamp};
 /// [`ReputationProfile::tier`] uses today are placeholder defaults
 /// `[PROPOSED — NEEDS SIGN-OFF]`, the same pattern this workspace uses for
 /// every other protocol parameter the specs leave to implementations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum MerchantTier {
     Explorer,
     Verified,
@@ -68,12 +70,14 @@ impl ReputationProfile {
 
     /// §9: disputed trades ÷ completed trades.
     pub fn dispute_rate(&self) -> Option<f64> {
-        (self.trades_completed > 0).then(|| self.disputes_involved as f64 / self.trades_completed as f64)
+        (self.trades_completed > 0)
+            .then(|| self.disputes_involved as f64 / self.trades_completed as f64)
     }
 
     /// §7: mean time from settlement start to completion, in milliseconds.
     pub fn average_settlement_duration_ms(&self) -> Option<f64> {
-        (self.trades_completed > 0).then(|| self.completed_duration_sum_ms as f64 / self.trades_completed as f64)
+        (self.trades_completed > 0)
+            .then(|| self.completed_duration_sum_ms as f64 / self.trades_completed as f64)
     }
 
     /// §11: mean completed-trade size, per volume bucket.
@@ -81,12 +85,21 @@ impl ReputationProfile {
         if self.trades_completed == 0 {
             return Vec::new();
         }
-        self.total_volume.iter().map(|total| (*total, total.base_units() as f64 / self.trades_completed as f64)).collect()
+        self.total_volume
+            .iter()
+            .map(|total| {
+                (
+                    *total,
+                    total.base_units() as f64 / self.trades_completed as f64,
+                )
+            })
+            .collect()
     }
 
     /// §12: time since this wallet's first observed trade.
     pub fn merchant_age_ms(&self, now: Timestamp) -> Option<u64> {
-        self.first_active_at.map(|first| now.as_millis().saturating_sub(first.as_millis()))
+        self.first_active_at
+            .map(|first| now.as_millis().saturating_sub(first.as_millis()))
     }
 
     /// §18 — see the type-level doc: thresholds are a placeholder pending
@@ -102,7 +115,11 @@ impl ReputationProfile {
     }
 
     pub(crate) fn record_volume(&mut self, amount: Amount) {
-        match self.total_volume.iter_mut().find(|existing| existing.decimals() == amount.decimals()) {
+        match self
+            .total_volume
+            .iter_mut()
+            .find(|existing| existing.decimals() == amount.decimals())
+        {
             Some(existing) => {
                 if let Some(sum) = existing.checked_add(amount) {
                     *existing = sum;

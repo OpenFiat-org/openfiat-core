@@ -18,10 +18,15 @@ pub enum RpcError {
 impl RpcError {
     pub fn into_json_rpc_error(self) -> JsonRpcError {
         match self {
-            Self::MethodNotFound(method) => JsonRpcError::new(JsonRpcError::METHOD_NOT_FOUND, format!("method not found: {method}")),
+            Self::MethodNotFound(method) => JsonRpcError::new(
+                JsonRpcError::METHOD_NOT_FOUND,
+                format!("method not found: {method}"),
+            ),
             Self::InvalidParams(reason) => JsonRpcError::new(JsonRpcError::INVALID_PARAMS, reason),
             Self::Application(code) => {
-                JsonRpcError::new(JsonRpcError::APPLICATION_ERROR, code.name()).with_data(serde_json::json!({ "ofsErrorCode": code.code(), "ofsErrorName": code.name() }))
+                JsonRpcError::new(JsonRpcError::APPLICATION_ERROR, code.name()).with_data(
+                    serde_json::json!({ "ofsErrorCode": code.code(), "ofsErrorName": code.name() }),
+                )
             }
             Self::Internal(reason) => JsonRpcError::new(JsonRpcError::INTERNAL_ERROR, reason),
         }
@@ -36,6 +41,9 @@ mod tests {
     fn an_application_error_carries_the_ofs_8000_code_in_data() {
         let error = RpcError::Application(ErrorCode::AdvertisementNotFound).into_json_rpc_error();
         assert_eq!(error.code, JsonRpcError::APPLICATION_ERROR);
-        assert_eq!(error.data.unwrap()["ofsErrorCode"], serde_json::Value::from(ErrorCode::AdvertisementNotFound.code()));
+        assert_eq!(
+            error.data.unwrap()["ofsErrorCode"],
+            serde_json::Value::from(ErrorCode::AdvertisementNotFound.code())
+        );
     }
 }

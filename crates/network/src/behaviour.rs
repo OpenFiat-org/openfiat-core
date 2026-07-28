@@ -24,18 +24,26 @@ pub struct OpenFiatBehaviour {
 
 impl OpenFiatBehaviour {
     pub fn new(local_public_key: libp2p::identity::PublicKey) -> Self {
-        let identify = identify::Behaviour::new(identify::Config::new(
-            "/openfiat/id/1.0.0".to_string(),
-            local_public_key,
-        ).with_agent_version(AGENT_VERSION.to_string()));
-
-        let ping = ping::Behaviour::new(
-            ping::Config::new().with_interval(heartbeat::INTERVAL).with_timeout(heartbeat::TIMEOUT),
+        let identify = identify::Behaviour::new(
+            identify::Config::new("/openfiat/id/1.0.0".to_string(), local_public_key)
+                .with_agent_version(AGENT_VERSION.to_string()),
         );
 
-        let envelope =
-            request_response::Behaviour::new(iter::once((PROTOCOL, ProtocolSupport::Full)), request_response::Config::default());
+        let ping = ping::Behaviour::new(
+            ping::Config::new()
+                .with_interval(heartbeat::INTERVAL)
+                .with_timeout(heartbeat::TIMEOUT),
+        );
 
-        Self { identify, ping, envelope }
+        let envelope = request_response::Behaviour::new(
+            iter::once((PROTOCOL, ProtocolSupport::Full)),
+            request_response::Config::default(),
+        );
+
+        Self {
+            identify,
+            ping,
+            envelope,
+        }
     }
 }

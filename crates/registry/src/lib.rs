@@ -35,9 +35,15 @@ pub(crate) enum RegistryEvent {
 
 pub(crate) fn parse_event(event: &EventEnvelope) -> Option<RegistryEvent> {
     match event.event_type.as_str() {
-        protocol::EVENT_REGISTERED => wire::from_bytes(&event.payload).ok().map(RegistryEvent::Registered),
-        protocol::EVENT_UPDATED => wire::from_bytes(&event.payload).ok().map(RegistryEvent::Updated),
-        protocol::EVENT_UNREGISTERED => wire::from_bytes(&event.payload).ok().map(RegistryEvent::Unregistered),
+        protocol::EVENT_REGISTERED => wire::from_bytes(&event.payload)
+            .ok()
+            .map(RegistryEvent::Registered),
+        protocol::EVENT_UPDATED => wire::from_bytes(&event.payload)
+            .ok()
+            .map(RegistryEvent::Updated),
+        protocol::EVENT_UNREGISTERED => wire::from_bytes(&event.payload)
+            .ok()
+            .map(RegistryEvent::Unregistered),
         _ => None,
     }
 }

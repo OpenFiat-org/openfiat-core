@@ -71,6 +71,9 @@ impl Claim {
     /// §10: a claim consumers should actually trust right now — not
     /// revoked (§12) and not past its optional expiration.
     pub fn is_valid(&self, now: Timestamp) -> bool {
-        !self.revoked && self.expires_at.is_none_or(|expiry| now.as_millis() < expiry.as_millis())
+        !self.revoked
+            && self
+                .expires_at
+                .is_none_or(|expiry| now.as_millis() < expiry.as_millis())
     }
 }
