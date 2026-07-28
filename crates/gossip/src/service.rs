@@ -42,12 +42,50 @@ pub struct GossipService<S> {
     /// discovery's storage backing.
     peer_keys: HashMap<PeerId, PublicKey>,
     connected: HashSet<Libp2pPeerId>,
+    /// Invoked for every event this node stores — whether self-originated
+    /// or received (pushed, or recovered) — so a crate built on top of
+    /// gossip (registry, advertisements, ...) can react without gossip
+    /// needing to know anything about what's built on it.
+    event_handler: Option<EventHandler>,
 }
+
+/// A callback notified of every event a [`GossipService`] stores.
+type EventHandler = Box<dyn FnMut(&EventEnvelope)>;
 
 impl<S: KvStore> GossipService<S> {
     pub fn new(node: Node, store: EventStore<S>, keypair: Keypair, self_roles: Vec<NodeRole>, subscription: Subscription) -> Self {
         let self_peer_id = node.local_peer_id();
-        Self { node, store, keypair, self_peer_id, self_roles, subscription, peer_keys: HashMap::new(), connected: HashSet::new() }
+        Self {
+            node,
+            store,
+            keypair,
+            self_peer_id,
+            self_roles,
+            subscription,
+            peer_keys: HashMap::new(),
+            connected: HashSet::new(),
+            event_handler: None,
+        }
+    }
+
+    /// This node's public key, for crates built on top of gossip that need
+    /// to embed it in their own signed payloads (e.g. a Service Registry
+    /// registration).
+    pub fn public_key(&self) -> PublicKey {
+        self.keypair.public_key()
+    }
+
+    /// Sign a message with this node's identity keypair — for crates built
+    /// on top of gossip that need their own signed payloads authenticated
+    /// by the same node identity, without exposing the keypair itself.
+    pub fn sign(&self, message: &[u8]) -> openfiat_types::Signature {
+        self.keypair.sign(message)
+    }
+
+    /// Set the handler notified of every event this node stores (see the
+    /// `event_handler` field doc). Replaces any previously set handler.
+    pub fn set_event_handler(&mut self, handler: impl FnMut(&EventEnvelope) + 'static) {
+        self.event_handler = Some(Box::new(handler));
     }
 
     /// Register a peer's public key so events it originates can be
@@ -106,8 +144,15 @@ impl<S: KvStore> GossipService<S> {
         };
 
         self.store.put(&envelope);
+        self.notify(&envelope);
         self.broadcast(&envelope, None);
         Ok(id)
+    }
+
+    fn notify(&mut self, event: &EventEnvelope) {
+        if let Some(handler) = &mut self.event_handler {
+            handler(event);
+        }
     }
 
     /// Offer a received event for validation, dedup, storage, and
@@ -120,6 +165,7 @@ impl<S: KvStore> GossipService<S> {
             return ReceiveOutcome::Rejected(err);
         }
         self.store.put(&event);
+        self.notify(&event);
         self.forward(from, &event);
         ReceiveOutcome::Stored
     }
