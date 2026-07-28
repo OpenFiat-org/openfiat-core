@@ -2269,12 +2269,13 @@ dependencies = [
 name = "openfiat-cli"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "openfiat-api",
- "openfiat-config",
  "openfiat-database",
  "openfiat-metrics",
- "openfiat-network",
  "openfiat-rpc",
+ "openfiat-wallet",
+ "tokio",
 ]
 
 [[package]]
