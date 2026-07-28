@@ -10,3 +10,13 @@ repository = "https://github.com/OpenFiat-org/openfiat-core"
 openfiat-network = { path = "../network", version = "0.1.0" }
 openfiat-types = { path = "../types", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
+openfiat-crypto = { path = "../crypto", version = "0.1.0" }
+openfiat-gossip = { path = "../gossip", version = "0.1.0" }
+openfiat-registry = { path = "../registry", version = "0.1.0" }
+openfiat-storage = { path = "../storage", version = "0.1.0" }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
+libp2p = { version = "0.56.0", features = ["request-response"] }
