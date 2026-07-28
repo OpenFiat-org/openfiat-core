@@ -53,6 +53,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-audit --locked
+      # RUSTSEC-2026-0118/0119 (hickory-proto): pinned in Cargo.lock only
+      # because it's an optional dependency of libp2p-mdns, itself an
+      # optional dependency of the libp2p meta-crate — cargo resolves a
+      # version for every optional dependency a crate could activate,
+      # whether or not it actually is. No crate here enables libp2p's
+      # `mdns` or `dns` feature (same reasoning as decision #3a for `dns`,
+      # see docs/architecture.md), so this code is never compiled or
+      # linked into anything we ship.
+      - run: cargo audit --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119
