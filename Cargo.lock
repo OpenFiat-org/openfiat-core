@@ -2554,7 +2554,10 @@ name = "openfiat-wallet"
 version = "0.1.0"
 dependencies = [
  "openfiat-crypto",
+ "openfiat-network",
+ "openfiat-serialization",
  "openfiat-types",
+ "serde",
 ]
 
 [[package]]

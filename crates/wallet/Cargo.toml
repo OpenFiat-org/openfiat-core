@@ -9,3 +9,6 @@ repository = "https://github.com/OpenFiat-org/openfiat-core"
 [dependencies]
 openfiat-crypto = { path = "../crypto", version = "0.1.0" }
 openfiat-types = { path = "../types", version = "0.1.0" }
+openfiat-network = { path = "../network", version = "0.1.0" }
+openfiat-serialization = { path = "../serialization", version = "0.1.0" }
+serde = { version = "1.0.229", features = ["derive"] }
