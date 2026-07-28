@@ -1,17 +1,30 @@
 # openfiat-cli
 
 The `openfiat-node` binary — the composition root wiring every crate above
-into one running node. Currently prints each linked crate's version only;
-real startup (config loading, opening the RocksDB `Database`, wiring
-`GossipService` to every domain registry the way `openfiat-apps/explorer/
-indexer` already does, serving `rpc`+`api`) is Phase 12 territory in the
-workspace's implementation plan.
+into one running node: a real RocksDB-backed store (`CLI_DATA_DIR`), a
+Solana wallet.json node identity (`CLI_WALLET_PATH`), and the merged
+`rpc`+`api` axum server bound to a real HTTP port (`CLI_HTTP_ADDR`).
+
+```sh
+CLI_DATA_DIR=./data CLI_HTTP_ADDR=127.0.0.1:8080 cargo run -p openfiat-cli
+```
+
+serves `POST /rpc`, `GET /ws`, `GET /health`, `GET /metrics` (from
+`openfiat-rpc`) and `GET /openrpc.json`, `GET /docs` (from `openfiat-api`)
+— the exact surface OFS-8200 describes.
+
+This binary does not yet run real libp2p/gossip networking: `openfiat-rpc`'s
+`sendX` handlers apply a caller's signed payload straight to the local
+registry (see `crates/rpc/src/state.rs`'s own doc comment) rather than
+originating it over `openfiat-gossip` for other nodes to pick up. That's an
+intentional, already-documented scope boundary of the RPC layer, not
+something new — multi-node propagation of RPC-submitted writes is a real,
+separately-scoped follow-up.
 
 ## Depends on
 
-- `openfiat-config` — loads a node's configuration.
 - `openfiat-database` — opens the real RocksDB-backed store.
-- `openfiat-network` — the P2P transport.
+- `openfiat-wallet` — loads the node's Solana wallet.json identity.
 - `openfiat-rpc`, `openfiat-api` — the JSON-RPC + documentation surface
   this binary serves.
 - `openfiat-metrics` — node-level telemetry.
