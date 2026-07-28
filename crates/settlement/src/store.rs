@@ -10,6 +10,7 @@ use crate::events::{
 use crate::protocol;
 use crate::record::{Settlement, SettlementId, SettlementState};
 use openfiat_crypto::verify;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::EventEnvelope;
@@ -90,7 +91,7 @@ impl<S: KvStore> SettlementRegistry<S> {
             return Err(SettlementError::Unauthorized);
         }
         let bytes =
-            wire::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
+            json::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
         verify(&settlement.buyer_public_key, &bytes, &signed.signature)
             .map_err(|_| SettlementError::InvalidSignature)?;
         if settlement.state != SettlementState::AwaitingPayment {
@@ -116,7 +117,7 @@ impl<S: KvStore> SettlementRegistry<S> {
             return Err(SettlementError::Unauthorized);
         }
         let bytes =
-            wire::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
+            json::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
         verify(&settlement.buyer_public_key, &bytes, &signed.signature)
             .map_err(|_| SettlementError::InvalidSignature)?;
         if settlement.state != SettlementState::PaymentSubmitted {
@@ -142,7 +143,7 @@ impl<S: KvStore> SettlementRegistry<S> {
             return Err(SettlementError::Unauthorized);
         }
         let bytes =
-            wire::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
+            json::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
         verify(&settlement.seller_public_key, &bytes, &signed.signature)
             .map_err(|_| SettlementError::InvalidSignature)?;
         if settlement.state != SettlementState::PaymentSubmitted {
@@ -163,7 +164,7 @@ impl<S: KvStore> SettlementRegistry<S> {
             return Err(SettlementError::Unauthorized);
         }
         let bytes =
-            wire::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
+            json::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
         verify(&settlement.seller_public_key, &bytes, &signed.signature)
             .map_err(|_| SettlementError::InvalidSignature)?;
         if settlement.state != SettlementState::PaymentSubmitted {
@@ -193,7 +194,7 @@ impl<S: KvStore> SettlementRegistry<S> {
             return Err(SettlementError::Unauthorized);
         };
         let bytes =
-            wire::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
+            json::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
         verify(&canceller_key, &bytes, &signed.signature)
             .map_err(|_| SettlementError::InvalidSignature)?;
         if settlement.state != SettlementState::AwaitingPayment {

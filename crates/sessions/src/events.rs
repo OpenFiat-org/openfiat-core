@@ -30,7 +30,7 @@ pub struct SignedSessionCreate {
 
 impl SignedSessionCreate {
     pub fn sign(create: SessionCreate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&create)
+        let bytes = openfiat_serialization::json::to_bytes(&create)
             .expect("SessionCreate always serializes");
         Self {
             signature: keypair.sign(&bytes),
@@ -44,7 +44,7 @@ impl SignedSessionCreate {
         if expected != self.create.wallet {
             return Err(SessionError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.create)
+        let bytes = openfiat_serialization::json::to_bytes(&self.create)
             .map_err(|_| SessionError::MalformedSession)?;
         verify(&self.create.wallet_public_key, &bytes, &self.signature)
             .map_err(|_| SessionError::InvalidSignature)
@@ -69,7 +69,7 @@ pub struct SignedSessionRenew {
 impl SignedSessionRenew {
     pub fn sign(renew: SessionRenew, keypair: &Keypair) -> Self {
         let bytes =
-            openfiat_serialization::wire::to_bytes(&renew).expect("SessionRenew always serializes");
+            openfiat_serialization::json::to_bytes(&renew).expect("SessionRenew always serializes");
         Self {
             signature: keypair.sign(&bytes),
             renew,
@@ -92,7 +92,7 @@ pub struct SignedSessionRevoke {
 
 impl SignedSessionRevoke {
     pub fn sign(revoke: SessionRevoke, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&revoke)
+        let bytes = openfiat_serialization::json::to_bytes(&revoke)
             .expect("SessionRevoke always serializes");
         Self {
             signature: keypair.sign(&bytes),
@@ -118,7 +118,7 @@ pub struct SignedSessionMigrate {
 
 impl SignedSessionMigrate {
     pub fn sign(migrate: SessionMigrate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&migrate)
+        let bytes = openfiat_serialization::json::to_bytes(&migrate)
             .expect("SessionMigrate always serializes");
         Self {
             signature: keypair.sign(&bytes),

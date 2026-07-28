@@ -31,7 +31,7 @@ pub struct SignedReservationRequest {
 
 impl SignedReservationRequest {
     pub fn sign(request: ReservationRequest, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&request)
+        let bytes = openfiat_serialization::json::to_bytes(&request)
             .expect("ReservationRequest always serializes");
         Self {
             signature: keypair.sign(&bytes),
@@ -45,7 +45,7 @@ impl SignedReservationRequest {
         if expected != self.request.requester {
             return Err(ReservationError::UnauthorizedUpdate);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.request)
+        let bytes = openfiat_serialization::json::to_bytes(&self.request)
             .map_err(|_| ReservationError::MalformedReservation)?;
         verify(&self.request.requester_public_key, &bytes, &self.signature)
             .map_err(|_| ReservationError::InvalidSignature)
@@ -67,7 +67,7 @@ pub struct SignedReservationCancel {
 
 impl SignedReservationCancel {
     pub fn sign(cancel: ReservationCancel, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&cancel)
+        let bytes = openfiat_serialization::json::to_bytes(&cancel)
             .expect("ReservationCancel always serializes");
         Self {
             signature: keypair.sign(&bytes),

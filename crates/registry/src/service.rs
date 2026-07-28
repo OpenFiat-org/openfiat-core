@@ -11,6 +11,7 @@ use crate::registration::{Registration, SignedRegistration};
 use crate::store::Registry;
 use crate::withdrawal::{SignedWithdrawal, Withdrawal};
 use openfiat_gossip::GossipService;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, Priority, ServiceId, ServiceType, Timestamp};
@@ -81,7 +82,7 @@ impl<S: KvStore + 'static> RegistryService<S> {
     }
 
     fn sign_registration(&self, registration: Registration) -> SignedRegistration {
-        let bytes = wire::to_bytes(&registration).expect("Registration always serializes");
+        let bytes = json::to_bytes(&registration).expect("Registration always serializes");
         SignedRegistration {
             signature: self.gossip.sign(&bytes),
             registration,
@@ -100,7 +101,7 @@ impl<S: KvStore + 'static> RegistryService<S> {
             state,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&update).map_err(|_| RegistryError::MalformedRegistration)?;
+        let bytes = json::to_bytes(&update).map_err(|_| RegistryError::MalformedRegistration)?;
         let signed = SignedHealthUpdate {
             signature: self.gossip.sign(&bytes),
             update,
@@ -116,7 +117,7 @@ impl<S: KvStore + 'static> RegistryService<S> {
             timestamp: Timestamp::now(),
         };
         let bytes =
-            wire::to_bytes(&withdrawal).map_err(|_| RegistryError::MalformedRegistration)?;
+            json::to_bytes(&withdrawal).map_err(|_| RegistryError::MalformedRegistration)?;
         let signed = SignedWithdrawal {
             signature: self.gossip.sign(&bytes),
             withdrawal,

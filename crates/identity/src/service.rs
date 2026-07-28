@@ -10,6 +10,7 @@ use crate::protocol;
 use crate::record::{Claim, ClaimId, ClaimType};
 use crate::store::IdentityRegistry;
 use openfiat_gossip::GossipService;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, PeerId, Priority, Timestamp};
@@ -67,7 +68,7 @@ impl<S: KvStore + 'static> IdentityService<S> {
             expires_at,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&publish).map_err(|_| IdentityError::MalformedClaim)?;
+        let bytes = json::to_bytes(&publish).map_err(|_| IdentityError::MalformedClaim)?;
         let signed = SignedClaimPublish {
             signature: self.gossip.sign(&bytes),
             publish,
@@ -82,7 +83,7 @@ impl<S: KvStore + 'static> IdentityService<S> {
             wallet: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&verify).map_err(|_| IdentityError::MalformedClaim)?;
+        let bytes = json::to_bytes(&verify).map_err(|_| IdentityError::MalformedClaim)?;
         let signed = SignedClaimVerify {
             signature: self.gossip.sign(&bytes),
             verify,
@@ -96,7 +97,7 @@ impl<S: KvStore + 'static> IdentityService<S> {
             wallet: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&revoke).map_err(|_| IdentityError::MalformedClaim)?;
+        let bytes = json::to_bytes(&revoke).map_err(|_| IdentityError::MalformedClaim)?;
         let signed = SignedClaimRevoke {
             signature: self.gossip.sign(&bytes),
             revoke,

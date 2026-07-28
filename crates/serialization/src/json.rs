@@ -62,6 +62,20 @@ pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T, DecodeError> {
     serde_json::from_str(s).map_err(DecodeError)
 }
 
+/// Encode a value as JSON bytes — the byte-oriented counterpart to
+/// [`to_string`], matching [`crate::wire::to_bytes`]'s shape for callers
+/// that want `Vec<u8>` directly (every domain event's `sign`, and any
+/// base64-wrapped `sendX` payload at the RPC boundary).
+pub fn to_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, EncodeError> {
+    serde_json::to_vec(value).map_err(EncodeError)
+}
+
+/// Decode a value from JSON bytes — the byte-oriented counterpart to
+/// [`from_str`].
+pub fn from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DecodeError> {
+    serde_json::from_slice(bytes).map_err(DecodeError)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

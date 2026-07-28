@@ -35,7 +35,7 @@ pub struct SignedRiskPublish {
 
 impl SignedRiskPublish {
     pub fn sign(publish: RiskPublish, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&publish)
+        let bytes = openfiat_serialization::json::to_bytes(&publish)
             .expect("RiskPublish always serializes");
         Self {
             signature: keypair.sign(&bytes),
@@ -49,7 +49,7 @@ impl SignedRiskPublish {
         if expected != self.publish.provider {
             return Err(RiskError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.publish)
+        let bytes = openfiat_serialization::json::to_bytes(&self.publish)
             .map_err(|_| RiskError::MalformedRecord)?;
         verify(&self.publish.provider_public_key, &bytes, &self.signature)
             .map_err(|_| RiskError::InvalidSignature)

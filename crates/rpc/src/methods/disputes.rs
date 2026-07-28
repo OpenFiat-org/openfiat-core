@@ -7,7 +7,7 @@ use openfiat_disputes::events::{
     SignedArbitratorJoin, SignedDisputeOpen, SignedVoteCommit, SignedVoteReveal,
 };
 use openfiat_disputes::{Dispute, DisputeId};
-use openfiat_serialization::wire;
+use openfiat_serialization::json;
 use openfiat_storage::KvStore;
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
@@ -33,7 +33,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<String, RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedDisputeOpen =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 let id = state
                     .disputes
                     .apply_open(signed)
@@ -48,7 +48,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedArbitratorJoin =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 state
                     .disputes
                     .apply_arbitrator_join(signed)
@@ -62,7 +62,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedVoteCommit =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 state
                     .disputes
                     .apply_vote_commit(signed)
@@ -76,7 +76,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedVoteReveal =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 state
                     .disputes
                     .apply_vote_reveal(signed)

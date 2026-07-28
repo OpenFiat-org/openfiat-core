@@ -12,6 +12,7 @@ use crate::record::{Settlement, SettlementId};
 use crate::store::SettlementRegistry;
 use openfiat_gossip::GossipService;
 use openfiat_reservations::ReservationId;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{Amount, EventType, PeerId, Priority, PublicKey, Timestamp};
@@ -67,7 +68,7 @@ impl<S: KvStore + 'static> SettlementService<S> {
             amount,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&initiate).expect("SettlementInitiate always serializes");
+        let bytes = json::to_bytes(&initiate).expect("SettlementInitiate always serializes");
         let signed = SignedSettlementInitiate {
             signature: self.gossip.sign(&bytes),
             initiate,
@@ -87,7 +88,7 @@ impl<S: KvStore + 'static> SettlementService<S> {
             payment_reference,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
+        let bytes = json::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
         let signed = SignedPaymentSubmitted {
             signature: self.gossip.sign(&bytes),
             action,
@@ -101,7 +102,7 @@ impl<S: KvStore + 'static> SettlementService<S> {
             buyer: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
+        let bytes = json::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
         let signed = SignedPaymentReversed {
             signature: self.gossip.sign(&bytes),
             action,
@@ -115,7 +116,7 @@ impl<S: KvStore + 'static> SettlementService<S> {
             seller: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
+        let bytes = json::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
         let signed = SignedSettlementApproved {
             signature: self.gossip.sign(&bytes),
             action,
@@ -134,7 +135,7 @@ impl<S: KvStore + 'static> SettlementService<S> {
             reason,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
+        let bytes = json::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
         let signed = SignedSettlementRejected {
             signature: self.gossip.sign(&bytes),
             action,
@@ -148,7 +149,7 @@ impl<S: KvStore + 'static> SettlementService<S> {
             canceller: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
+        let bytes = json::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;
         let signed = SignedSettlementCancelled {
             signature: self.gossip.sign(&bytes),
             action,

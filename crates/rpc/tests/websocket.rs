@@ -50,7 +50,7 @@ async fn a_websocket_client_receives_a_notification_for_a_real_mutation() {
     };
     let signed = SignedSessionCreate::sign(create, &wallet);
     let data = openfiat_rpc::dispatch::encode_bytes(
-        &openfiat_serialization::wire::to_bytes(&signed).unwrap(),
+        &openfiat_serialization::json::to_bytes(&signed).unwrap(),
     );
 
     handle

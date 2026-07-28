@@ -8,6 +8,7 @@ use crate::events::{
 use crate::protocol;
 use crate::record::{CastVote, Proposal, ProposalId, ProposalStatus};
 use openfiat_crypto::verify;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventEnvelope, Timestamp};
@@ -113,7 +114,7 @@ impl<S: KvStore> GovernanceRegistry<S> {
             return Err(GovernanceError::Unauthorized);
         }
         let bytes =
-            wire::to_bytes(&signed.withdraw).map_err(|_| GovernanceError::MalformedProposal)?;
+            json::to_bytes(&signed.withdraw).map_err(|_| GovernanceError::MalformedProposal)?;
         verify(&proposal.author_public_key, &bytes, &signed.signature)
             .map_err(|_| GovernanceError::InvalidSignature)?;
         if proposal.status != ProposalStatus::Voting {
@@ -135,7 +136,7 @@ impl<S: KvStore> GovernanceRegistry<S> {
             return Err(GovernanceError::Unauthorized);
         }
         let bytes =
-            wire::to_bytes(&signed.activate).map_err(|_| GovernanceError::MalformedProposal)?;
+            json::to_bytes(&signed.activate).map_err(|_| GovernanceError::MalformedProposal)?;
         verify(&proposal.author_public_key, &bytes, &signed.signature)
             .map_err(|_| GovernanceError::InvalidSignature)?;
         if proposal.status != ProposalStatus::Accepted {

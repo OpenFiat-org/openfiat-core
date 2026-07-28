@@ -15,6 +15,7 @@ use crate::record::{
 use crate::store::NotificationRegistry;
 use openfiat_gossip::GossipService;
 use openfiat_registry::Registry;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, PeerId, Priority, ServiceId, Timestamp};
@@ -58,7 +59,7 @@ impl<S: KvStore + 'static> NotificationService<S> {
             enabled_categories,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&update).map_err(|_| NotificationError::MalformedEvent)?;
+        let bytes = json::to_bytes(&update).map_err(|_| NotificationError::MalformedEvent)?;
         let signed = SignedSubscriptionUpdate {
             signature: self.gossip.sign(&bytes),
             update,
@@ -86,7 +87,7 @@ impl<S: KvStore + 'static> NotificationService<S> {
             status,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&report).map_err(|_| NotificationError::MalformedEvent)?;
+        let bytes = json::to_bytes(&report).map_err(|_| NotificationError::MalformedEvent)?;
         let signed = SignedDeliveryReport {
             signature: self.gossip.sign(&bytes),
             report,

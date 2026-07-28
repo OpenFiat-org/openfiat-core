@@ -11,6 +11,7 @@ use crate::protocol;
 use crate::record::{Dispute, DisputeId, Vote};
 use crate::store::DisputeRegistry;
 use openfiat_gossip::GossipService;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_settlement::{SettlementId, SettlementRegistry};
 use openfiat_storage::KvStore;
@@ -58,7 +59,7 @@ impl<S: KvStore + 'static> DisputeService<S> {
             reason: reason.into(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&open).expect("DisputeOpen always serializes");
+        let bytes = json::to_bytes(&open).expect("DisputeOpen always serializes");
         let signed = SignedDisputeOpen {
             signature: self.gossip.sign(&bytes),
             open,
@@ -74,7 +75,7 @@ impl<S: KvStore + 'static> DisputeService<S> {
             arbitrator_public_key: self.gossip.public_key(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&join).map_err(|_| DisputeError::MalformedDispute)?;
+        let bytes = json::to_bytes(&join).map_err(|_| DisputeError::MalformedDispute)?;
         let signed = SignedArbitratorJoin {
             signature: self.gossip.sign(&bytes),
             join,
@@ -96,7 +97,7 @@ impl<S: KvStore + 'static> DisputeService<S> {
             commitment: commitment::compute(vote, &secret),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&commit).map_err(|_| DisputeError::MalformedDispute)?;
+        let bytes = json::to_bytes(&commit).map_err(|_| DisputeError::MalformedDispute)?;
         let signed = SignedVoteCommit {
             signature: self.gossip.sign(&bytes),
             commit,
@@ -117,7 +118,7 @@ impl<S: KvStore + 'static> DisputeService<S> {
             secret,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&reveal).map_err(|_| DisputeError::MalformedDispute)?;
+        let bytes = json::to_bytes(&reveal).map_err(|_| DisputeError::MalformedDispute)?;
         let signed = SignedVoteReveal {
             signature: self.gossip.sign(&bytes),
             reveal,
@@ -134,7 +135,7 @@ impl<S: KvStore + 'static> DisputeService<S> {
             party: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&agree).map_err(|_| DisputeError::MalformedDispute)?;
+        let bytes = json::to_bytes(&agree).map_err(|_| DisputeError::MalformedDispute)?;
         let signed = SignedMutualSettlementAgree {
             signature: self.gossip.sign(&bytes),
             agree,

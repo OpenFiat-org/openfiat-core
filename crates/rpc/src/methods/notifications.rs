@@ -7,7 +7,7 @@ use crate::error::RpcError;
 use crate::state::NodeState;
 use openfiat_notifications::events::{SignedDeliveryReport, SignedSubscriptionUpdate};
 use openfiat_notifications::{DeliveryReceipt, Subscription};
-use openfiat_serialization::wire;
+use openfiat_serialization::json;
 use openfiat_storage::KvStore;
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
@@ -51,7 +51,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSubscriptionUpdate =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 state
                     .notifications
                     .apply_subscription_update(signed)
@@ -65,7 +65,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedDeliveryReport =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 state
                     .notifications
                     .apply_delivery_report(signed)

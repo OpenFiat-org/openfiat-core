@@ -5,7 +5,7 @@ use crate::error::RpcError;
 use crate::state::NodeState;
 use openfiat_advertisements::events::SignedAdvertisementCreate;
 use openfiat_advertisements::{Advertisement, AdvertisementId};
-use openfiat_serialization::wire;
+use openfiat_serialization::json;
 use openfiat_storage::KvStore;
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
@@ -31,7 +31,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<String, RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedAdvertisementCreate =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 let id = state
                     .advertisements
                     .apply_create(signed)

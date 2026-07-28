@@ -29,7 +29,7 @@ pub struct SignedProposalCreate {
 
 impl SignedProposalCreate {
     pub fn sign(create: ProposalCreate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&create)
+        let bytes = openfiat_serialization::json::to_bytes(&create)
             .expect("ProposalCreate always serializes");
         Self {
             signature: keypair.sign(&bytes),
@@ -43,7 +43,7 @@ impl SignedProposalCreate {
         if expected != self.create.author {
             return Err(GovernanceError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.create)
+        let bytes = openfiat_serialization::json::to_bytes(&self.create)
             .map_err(|_| GovernanceError::MalformedProposal)?;
         verify(&self.create.author_public_key, &bytes, &self.signature)
             .map_err(|_| GovernanceError::InvalidSignature)
@@ -69,7 +69,7 @@ pub struct SignedVoteCast {
 impl SignedVoteCast {
     pub fn sign(vote: VoteCast, keypair: &Keypair) -> Self {
         let bytes =
-            openfiat_serialization::wire::to_bytes(&vote).expect("VoteCast always serializes");
+            openfiat_serialization::json::to_bytes(&vote).expect("VoteCast always serializes");
         Self {
             signature: keypair.sign(&bytes),
             vote,
@@ -82,7 +82,7 @@ impl SignedVoteCast {
         if expected != self.vote.voter {
             return Err(GovernanceError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.vote)
+        let bytes = openfiat_serialization::json::to_bytes(&self.vote)
             .map_err(|_| GovernanceError::MalformedProposal)?;
         verify(&self.vote.voter_public_key, &bytes, &self.signature)
             .map_err(|_| GovernanceError::InvalidSignature)
@@ -104,7 +104,7 @@ pub struct SignedProposalWithdraw {
 
 impl SignedProposalWithdraw {
     pub fn sign(withdraw: ProposalWithdraw, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&withdraw)
+        let bytes = openfiat_serialization::json::to_bytes(&withdraw)
             .expect("ProposalWithdraw always serializes");
         Self {
             signature: keypair.sign(&bytes),
@@ -128,7 +128,7 @@ pub struct SignedProposalActivate {
 
 impl SignedProposalActivate {
     pub fn sign(activate: ProposalActivate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&activate)
+        let bytes = openfiat_serialization::json::to_bytes(&activate)
             .expect("ProposalActivate always serializes");
         Self {
             signature: keypair.sign(&bytes),

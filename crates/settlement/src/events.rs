@@ -32,7 +32,7 @@ pub struct SignedSettlementInitiate {
 
 impl SignedSettlementInitiate {
     pub fn sign(initiate: SettlementInitiate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&initiate)
+        let bytes = openfiat_serialization::json::to_bytes(&initiate)
             .expect("SettlementInitiate always serializes");
         Self {
             signature: keypair.sign(&bytes),
@@ -46,7 +46,7 @@ impl SignedSettlementInitiate {
         if expected != self.initiate.buyer {
             return Err(SettlementError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.initiate)
+        let bytes = openfiat_serialization::json::to_bytes(&self.initiate)
             .map_err(|_| SettlementError::MalformedSettlement)?;
         openfiat_crypto::verify(&self.initiate.buyer_public_key, &bytes, &self.signature)
             .map_err(|_| SettlementError::InvalidSignature)
@@ -70,7 +70,7 @@ macro_rules! settlement_action {
 
         impl $signed {
             pub fn sign(action: $unsigned, keypair: &Keypair) -> Self {
-                let bytes = openfiat_serialization::wire::to_bytes(&action).expect(concat!(stringify!($unsigned), " always serializes"));
+                let bytes = openfiat_serialization::json::to_bytes(&action).expect(concat!(stringify!($unsigned), " always serializes"));
                 Self { signature: keypair.sign(&bytes), action }
             }
         }

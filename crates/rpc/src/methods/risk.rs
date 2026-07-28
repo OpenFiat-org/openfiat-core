@@ -7,7 +7,7 @@ use crate::error::RpcError;
 use crate::state::NodeState;
 use openfiat_risk::events::SignedRiskPublish;
 use openfiat_risk::{RiskRecord, ScreeningResult};
-use openfiat_serialization::wire;
+use openfiat_serialization::json;
 use openfiat_storage::KvStore;
 use openfiat_types::Timestamp;
 
@@ -36,7 +36,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedRiskPublish =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 state
                     .risk
                     .apply_publish(signed)

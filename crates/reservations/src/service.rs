@@ -12,6 +12,7 @@ use crate::store::ReservationRegistry;
 use openfiat_advertisements::AdvertisementId;
 use openfiat_advertisements::AdvertisementRegistry;
 use openfiat_gossip::GossipService;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{Amount, EventType, Priority, Timestamp};
@@ -71,7 +72,7 @@ impl<S: KvStore + 'static> ReservationService<S> {
             amount,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&request).expect("ReservationRequest always serializes");
+        let bytes = json::to_bytes(&request).expect("ReservationRequest always serializes");
         let signed = SignedReservationRequest {
             signature: self.gossip.sign(&bytes),
             request,
@@ -86,7 +87,7 @@ impl<S: KvStore + 'static> ReservationService<S> {
             requester: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&cancel).map_err(|_| ReservationError::MalformedReservation)?;
+        let bytes = json::to_bytes(&cancel).map_err(|_| ReservationError::MalformedReservation)?;
         let signed = SignedReservationCancel {
             signature: self.gossip.sign(&bytes),
             cancel,

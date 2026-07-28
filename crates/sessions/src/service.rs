@@ -10,6 +10,7 @@ use crate::protocol;
 use crate::record::{Session, SessionId};
 use crate::store::SessionRegistry;
 use openfiat_gossip::GossipService;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, PeerId, Priority, Timestamp};
@@ -63,7 +64,7 @@ impl<S: KvStore + 'static> SessionService<S> {
             timestamp: now,
             expires_at: Timestamp::from_millis(now.as_millis() + lifetime.as_millis() as u64),
         };
-        let bytes = wire::to_bytes(&create).map_err(|_| SessionError::MalformedSession)?;
+        let bytes = json::to_bytes(&create).map_err(|_| SessionError::MalformedSession)?;
         let signed = SignedSessionCreate {
             signature: self.gossip.sign(&bytes),
             create,
@@ -87,7 +88,7 @@ impl<S: KvStore + 'static> SessionService<S> {
             version,
             timestamp: now,
         };
-        let bytes = wire::to_bytes(&renew).map_err(|_| SessionError::MalformedSession)?;
+        let bytes = json::to_bytes(&renew).map_err(|_| SessionError::MalformedSession)?;
         let signed = SignedSessionRenew {
             signature: self.gossip.sign(&bytes),
             renew,
@@ -101,7 +102,7 @@ impl<S: KvStore + 'static> SessionService<S> {
             wallet: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&revoke).map_err(|_| SessionError::MalformedSession)?;
+        let bytes = json::to_bytes(&revoke).map_err(|_| SessionError::MalformedSession)?;
         let signed = SignedSessionRevoke {
             signature: self.gossip.sign(&bytes),
             revoke,
@@ -122,7 +123,7 @@ impl<S: KvStore + 'static> SessionService<S> {
             version,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&migrate).map_err(|_| SessionError::MalformedSession)?;
+        let bytes = json::to_bytes(&migrate).map_err(|_| SessionError::MalformedSession)?;
         let signed = SignedSessionMigrate {
             signature: self.gossip.sign(&bytes),
             migrate,

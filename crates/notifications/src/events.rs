@@ -29,7 +29,7 @@ pub struct SignedSubscriptionUpdate {
 
 impl SignedSubscriptionUpdate {
     pub fn sign(update: SubscriptionUpdate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&update)
+        let bytes = openfiat_serialization::json::to_bytes(&update)
             .expect("SubscriptionUpdate always serializes");
         Self {
             signature: keypair.sign(&bytes),
@@ -43,7 +43,7 @@ impl SignedSubscriptionUpdate {
         if expected != self.update.wallet {
             return Err(NotificationError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.update)
+        let bytes = openfiat_serialization::json::to_bytes(&self.update)
             .map_err(|_| NotificationError::MalformedEvent)?;
         verify(&self.update.wallet_public_key, &bytes, &self.signature)
             .map_err(|_| NotificationError::InvalidSignature)
@@ -70,7 +70,7 @@ pub struct SignedDeliveryReport {
 
 impl SignedDeliveryReport {
     pub fn sign(report: DeliveryReport, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&report)
+        let bytes = openfiat_serialization::json::to_bytes(&report)
             .expect("DeliveryReport always serializes");
         Self {
             signature: keypair.sign(&bytes),
@@ -84,7 +84,7 @@ impl SignedDeliveryReport {
         if expected != self.report.provider {
             return Err(NotificationError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.report)
+        let bytes = openfiat_serialization::json::to_bytes(&self.report)
             .map_err(|_| NotificationError::MalformedEvent)?;
         verify(&self.report.provider_public_key, &bytes, &self.signature)
             .map_err(|_| NotificationError::InvalidSignature)

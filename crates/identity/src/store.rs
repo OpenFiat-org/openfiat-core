@@ -7,6 +7,7 @@ use crate::events::{SignedClaimPublish, SignedClaimRevoke, SignedClaimVerify};
 use crate::protocol;
 use crate::record::{Claim, ClaimId, VerificationStatus};
 use openfiat_crypto::verify;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventEnvelope, PeerId};
@@ -92,7 +93,7 @@ impl<S: KvStore> IdentityRegistry<S> {
         if claim.wallet != signed.verify.wallet {
             return Err(IdentityError::Unauthorized);
         }
-        let bytes = wire::to_bytes(&signed.verify).map_err(|_| IdentityError::MalformedClaim)?;
+        let bytes = json::to_bytes(&signed.verify).map_err(|_| IdentityError::MalformedClaim)?;
         verify(&claim.wallet_public_key, &bytes, &signed.signature)
             .map_err(|_| IdentityError::InvalidSignature)?;
         if claim.revoked {
@@ -113,7 +114,7 @@ impl<S: KvStore> IdentityRegistry<S> {
         if claim.wallet != signed.revoke.wallet {
             return Err(IdentityError::Unauthorized);
         }
-        let bytes = wire::to_bytes(&signed.revoke).map_err(|_| IdentityError::MalformedClaim)?;
+        let bytes = json::to_bytes(&signed.revoke).map_err(|_| IdentityError::MalformedClaim)?;
         verify(&claim.wallet_public_key, &bytes, &signed.signature)
             .map_err(|_| IdentityError::InvalidSignature)?;
         if claim.revoked {

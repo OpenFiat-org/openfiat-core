@@ -148,7 +148,7 @@ mod tests {
             expires_at: Timestamp::from_millis(Timestamp::now().as_millis() + 3_600_000),
         };
         let signed = SignedSessionCreate::sign(create, &wallet);
-        let data = encode_bytes(&openfiat_serialization::wire::to_bytes(&signed).unwrap());
+        let data = encode_bytes(&openfiat_serialization::json::to_bytes(&signed).unwrap());
 
         let result = handle
             .call("sendSessionEstablish", serde_json::json!({ "data": data }))

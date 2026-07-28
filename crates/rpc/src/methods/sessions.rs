@@ -5,7 +5,7 @@ use crate::dispatch::{
 };
 use crate::error::RpcError;
 use crate::state::NodeState;
-use openfiat_serialization::wire;
+use openfiat_serialization::json;
 use openfiat_sessions::events::{
     SignedSessionCreate, SignedSessionMigrate, SignedSessionRenew, SignedSessionRevoke,
 };
@@ -37,7 +37,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<String, RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSessionCreate =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 let id = state
                     .sessions
                     .apply_create(signed)
@@ -52,7 +52,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSessionRenew =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 state
                     .sessions
                     .apply_renew(signed)
@@ -66,7 +66,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSessionRevoke =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 state
                     .sessions
                     .apply_revoke(signed)
@@ -80,7 +80,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSessionMigrate =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 state
                     .sessions
                     .apply_migrate(signed)

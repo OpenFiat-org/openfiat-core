@@ -5,7 +5,7 @@ use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, meth
 use crate::error::RpcError;
 use crate::state::NodeState;
 use openfiat_registry::{ServiceRecord, SignedRegistration};
-use openfiat_serialization::wire;
+use openfiat_serialization::json;
 use openfiat_storage::KvStore;
 use openfiat_types::ServiceId;
 
@@ -32,7 +32,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<String, RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedRegistration =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 let id = state
                     .services
                     .apply_registration(signed)

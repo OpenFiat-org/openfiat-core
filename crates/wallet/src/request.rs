@@ -13,7 +13,7 @@ use crate::error::WalletError;
 use crate::wallet::Wallet;
 use openfiat_crypto::verify;
 use openfiat_network::identity::peer_id_from_public_key;
-use openfiat_serialization::wire;
+use openfiat_serialization::json;
 use openfiat_types::{PeerId, PublicKey, Signature, Timestamp};
 use std::time::Duration;
 
@@ -45,7 +45,7 @@ impl Wallet {
             nonce,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&envelope).map_err(|_| WalletError::MalformedRequest)?;
+        let bytes = json::to_bytes(&envelope).map_err(|_| WalletError::MalformedRequest)?;
         Ok(SignedRequest {
             signature: self.sign(&bytes),
             envelope,
@@ -68,7 +68,7 @@ pub fn verify_request<T: serde::Serialize>(
     if expected != signed.envelope.wallet {
         return Err(WalletError::InvalidSignature);
     }
-    let bytes = wire::to_bytes(&signed.envelope).map_err(|_| WalletError::MalformedRequest)?;
+    let bytes = json::to_bytes(&signed.envelope).map_err(|_| WalletError::MalformedRequest)?;
     verify(
         &signed.envelope.wallet_public_key,
         &bytes,

@@ -10,6 +10,7 @@ use crate::protocol;
 use crate::record::{Proposal, ProposalCategory, ProposalId, VoteChoice};
 use crate::store::GovernanceRegistry;
 use openfiat_gossip::GossipService;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, Priority, Timestamp};
@@ -62,7 +63,7 @@ impl<S: KvStore + 'static> GovernanceService<S> {
             author_public_key: self.gossip.public_key(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&create).map_err(|_| GovernanceError::MalformedProposal)?;
+        let bytes = json::to_bytes(&create).map_err(|_| GovernanceError::MalformedProposal)?;
         let signed = SignedProposalCreate {
             signature: self.gossip.sign(&bytes),
             create,
@@ -85,7 +86,7 @@ impl<S: KvStore + 'static> GovernanceService<S> {
             weight,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&vote).map_err(|_| GovernanceError::MalformedProposal)?;
+        let bytes = json::to_bytes(&vote).map_err(|_| GovernanceError::MalformedProposal)?;
         let signed = SignedVoteCast {
             signature: self.gossip.sign(&bytes),
             vote,
@@ -99,7 +100,7 @@ impl<S: KvStore + 'static> GovernanceService<S> {
             author: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&withdraw).map_err(|_| GovernanceError::MalformedProposal)?;
+        let bytes = json::to_bytes(&withdraw).map_err(|_| GovernanceError::MalformedProposal)?;
         let signed = SignedProposalWithdraw {
             signature: self.gossip.sign(&bytes),
             withdraw,
@@ -113,7 +114,7 @@ impl<S: KvStore + 'static> GovernanceService<S> {
             author: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&activate).map_err(|_| GovernanceError::MalformedProposal)?;
+        let bytes = json::to_bytes(&activate).map_err(|_| GovernanceError::MalformedProposal)?;
         let signed = SignedProposalActivate {
             signature: self.gossip.sign(&bytes),
             activate,

@@ -11,6 +11,7 @@ use crate::protocol;
 use crate::record::{Advertisement, AdvertisementId, Direction, PricingModel};
 use crate::store::AdvertisementRegistry;
 use openfiat_gossip::GossipService;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{Amount, EventType, Priority, Timestamp};
@@ -93,7 +94,7 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
             payment_methods,
             timestamp: Timestamp::now(),
         };
-        let bytes = wire::to_bytes(&create).expect("AdvertisementCreate always serializes");
+        let bytes = json::to_bytes(&create).expect("AdvertisementCreate always serializes");
         let signed = SignedAdvertisementCreate {
             signature: self.gossip.sign(&bytes),
             create,
@@ -109,7 +110,7 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
             timestamp: Timestamp::now(),
         };
         let bytes =
-            wire::to_bytes(&disable).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+            json::to_bytes(&disable).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
         let signed = SignedAdvertisementDisable {
             signature: self.gossip.sign(&bytes),
             disable,
@@ -129,7 +130,7 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
             timestamp: Timestamp::now(),
         };
         let bytes =
-            wire::to_bytes(&update).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+            json::to_bytes(&update).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
         let signed = SignedAdvertisementPriceUpdate {
             signature: self.gossip.sign(&bytes),
             update,

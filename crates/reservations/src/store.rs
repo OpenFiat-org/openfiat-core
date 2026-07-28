@@ -7,6 +7,7 @@ use crate::events::{SignedReservationCancel, SignedReservationRequest};
 use crate::protocol;
 use crate::record::{Reservation, ReservationId, ReservationState};
 use openfiat_advertisements::{AdvertisementRegistry, AdvertisementStatus};
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventEnvelope, Timestamp};
@@ -119,7 +120,7 @@ impl<S: KvStore> ReservationRegistry<S> {
             return Err(ReservationError::UnauthorizedUpdate);
         }
         let bytes =
-            wire::to_bytes(&signed.cancel).map_err(|_| ReservationError::MalformedReservation)?;
+            json::to_bytes(&signed.cancel).map_err(|_| ReservationError::MalformedReservation)?;
         openfiat_crypto::verify(&reservation.requester_public_key, &bytes, &signed.signature)
             .map_err(|_| ReservationError::InvalidSignature)?;
         if reservation.state != ReservationState::EscrowLocked {

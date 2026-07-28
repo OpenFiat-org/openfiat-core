@@ -9,6 +9,7 @@ use crate::events::{
 use crate::protocol;
 use crate::record::{Advertisement, AdvertisementId, AdvertisementStatus, Direction};
 use openfiat_crypto::verify;
+use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{Amount, EventEnvelope, Timestamp};
@@ -99,7 +100,7 @@ impl<S: KvStore> AdvertisementRegistry<S> {
         if ad.merchant != signed.disable.merchant {
             return Err(AdvertisementError::UnauthorizedUpdate);
         }
-        let bytes = wire::to_bytes(&signed.disable)
+        let bytes = json::to_bytes(&signed.disable)
             .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
         verify(&ad.merchant_public_key, &bytes, &signed.signature)
             .map_err(|_| AdvertisementError::InvalidSignature)?;
@@ -120,7 +121,7 @@ impl<S: KvStore> AdvertisementRegistry<S> {
         if ad.merchant != signed.update.merchant {
             return Err(AdvertisementError::UnauthorizedUpdate);
         }
-        let bytes = wire::to_bytes(&signed.update)
+        let bytes = json::to_bytes(&signed.update)
             .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
         verify(&ad.merchant_public_key, &bytes, &signed.signature)
             .map_err(|_| AdvertisementError::InvalidSignature)?;

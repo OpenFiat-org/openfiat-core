@@ -30,7 +30,7 @@ pub struct SignedRegistration {
 
 impl SignedRegistration {
     pub fn sign(registration: Registration, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&registration)
+        let bytes = openfiat_serialization::json::to_bytes(&registration)
             .expect("Registration always serializes");
         Self {
             signature: keypair.sign(&bytes),
@@ -47,7 +47,7 @@ impl SignedRegistration {
         if expected != self.registration.provider {
             return Err(RegistryError::UnauthorizedUpdate);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.registration)
+        let bytes = openfiat_serialization::json::to_bytes(&self.registration)
             .map_err(|_| RegistryError::MalformedRegistration)?;
         verify(
             &self.registration.provider_public_key,

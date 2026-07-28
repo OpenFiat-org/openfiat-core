@@ -3,7 +3,7 @@
 use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, method_fn};
 use crate::error::RpcError;
 use crate::state::NodeState;
-use openfiat_serialization::wire;
+use openfiat_serialization::json;
 use openfiat_settlement::events::{
     SignedPaymentSubmitted, SignedSettlementApproved, SignedSettlementInitiate,
 };
@@ -33,7 +33,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<String, RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSettlementInitiate =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 let id = state
                     .settlements
                     .apply_initiate(signed)
@@ -48,7 +48,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedPaymentSubmitted =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 state
                     .settlements
                     .apply_payment_submitted(signed)
@@ -62,7 +62,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSettlementApproved =
-                    wire::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
                 state
                     .settlements
                     .apply_approved(signed)

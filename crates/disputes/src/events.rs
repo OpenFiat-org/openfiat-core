@@ -32,7 +32,7 @@ pub struct SignedDisputeOpen {
 impl SignedDisputeOpen {
     pub fn sign(open: DisputeOpen, keypair: &Keypair) -> Self {
         let bytes =
-            openfiat_serialization::wire::to_bytes(&open).expect("DisputeOpen always serializes");
+            openfiat_serialization::json::to_bytes(&open).expect("DisputeOpen always serializes");
         Self {
             signature: keypair.sign(&bytes),
             open,
@@ -45,7 +45,7 @@ impl SignedDisputeOpen {
         if expected != self.open.opener {
             return Err(DisputeError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.open)
+        let bytes = openfiat_serialization::json::to_bytes(&self.open)
             .map_err(|_| DisputeError::MalformedDispute)?;
         verify(&self.open.opener_public_key, &bytes, &self.signature)
             .map_err(|_| DisputeError::InvalidSignature)
@@ -68,7 +68,7 @@ pub struct SignedArbitratorJoin {
 
 impl SignedArbitratorJoin {
     pub fn sign(join: ArbitratorJoin, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&join)
+        let bytes = openfiat_serialization::json::to_bytes(&join)
             .expect("ArbitratorJoin always serializes");
         Self {
             signature: keypair.sign(&bytes),
@@ -82,7 +82,7 @@ impl SignedArbitratorJoin {
         if expected != self.join.arbitrator {
             return Err(DisputeError::Unauthorized);
         }
-        let bytes = openfiat_serialization::wire::to_bytes(&self.join)
+        let bytes = openfiat_serialization::json::to_bytes(&self.join)
             .map_err(|_| DisputeError::MalformedDispute)?;
         verify(&self.join.arbitrator_public_key, &bytes, &self.signature)
             .map_err(|_| DisputeError::InvalidSignature)
@@ -106,7 +106,7 @@ pub struct SignedVoteCommit {
 impl SignedVoteCommit {
     pub fn sign(commit: VoteCommit, keypair: &Keypair) -> Self {
         let bytes =
-            openfiat_serialization::wire::to_bytes(&commit).expect("VoteCommit always serializes");
+            openfiat_serialization::json::to_bytes(&commit).expect("VoteCommit always serializes");
         Self {
             signature: keypair.sign(&bytes),
             commit,
@@ -132,7 +132,7 @@ pub struct SignedVoteReveal {
 impl SignedVoteReveal {
     pub fn sign(reveal: VoteReveal, keypair: &Keypair) -> Self {
         let bytes =
-            openfiat_serialization::wire::to_bytes(&reveal).expect("VoteReveal always serializes");
+            openfiat_serialization::json::to_bytes(&reveal).expect("VoteReveal always serializes");
         Self {
             signature: keypair.sign(&bytes),
             reveal,
@@ -155,7 +155,7 @@ pub struct SignedMutualSettlementAgree {
 
 impl SignedMutualSettlementAgree {
     pub fn sign(agree: MutualSettlementAgree, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::wire::to_bytes(&agree)
+        let bytes = openfiat_serialization::json::to_bytes(&agree)
             .expect("MutualSettlementAgree always serializes");
         Self {
             signature: keypair.sign(&bytes),
