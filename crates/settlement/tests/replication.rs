@@ -1,6 +1,11 @@
 //! A settlement's full happy path — initiate, submit payment, approve —
 //! replicates correctly across a 2-node gossip cluster, with each action
 //! signed and originated by the party who actually performs it.
+//! `Approved` is the terminal state gossip alone reaches (OFS-4300):
+//! completion is recorded once each node independently observes the
+//! on-chain release confirmed, not via a further gossiped event — this
+//! test proves that recording is available identically on both nodes,
+//! not just the one that happened to originate the approval.
 
 use futures::future::select_all;
 use openfiat_crypto::Keypair;
@@ -122,7 +127,24 @@ async fn a_settlements_happy_path_replicates_across_the_cluster() {
     drive_until(&mut all, |services| {
         services
             .iter()
-            .all(|s| s.get(&settlement_id).unwrap().state == SettlementState::Completed)
+            .all(|s| s.get(&settlement_id).unwrap().state == SettlementState::Approved)
     })
     .await;
+
+    // Completion is local bookkeeping (OFS-4300), not a further gossiped
+    // event — each node records it independently once it observes the
+    // on-chain release confirmed.
+    for service in &mut all {
+        service
+            .record_escrow_released(&settlement_id, "5xY...onchainSig")
+            .unwrap();
+    }
+    for service in &all {
+        let settlement = service.get(&settlement_id).unwrap();
+        assert_eq!(settlement.state, SettlementState::Completed);
+        assert_eq!(
+            settlement.escrow_release_signature.as_deref(),
+            Some("5xY...onchainSig")
+        );
+    }
 }

@@ -44,10 +44,13 @@ impl Trade {
             (ReservationState::EscrowLocked, Some(settlement)) => match settlement.state {
                 SettlementState::AwaitingPayment => TradeStatus::AwaitingPayment,
                 SettlementState::PaymentSubmitted => TradeStatus::PaymentSubmitted,
-                // Not currently reachable — `SettlementRegistry::apply_approved`
-                // transitions straight to `Completed` until on-chain escrow
-                // release is wired in as its own async step — but a client
-                // displaying trade status should treat it identically either way.
+                // `Approved` (merchant approved, on-chain release not yet
+                // confirmed) and `Completed` (release confirmed, OFS-4300)
+                // are a real, distinct pair now — but a client displaying
+                // trade status still only needs one value for both; the
+                // settlement's own `escrow_release_signature` is where
+                // "has it actually landed on-chain yet" lives for a caller
+                // that cares about that distinction.
                 SettlementState::Approved | SettlementState::Completed => TradeStatus::Completed,
                 SettlementState::Rejected => TradeStatus::Rejected,
                 SettlementState::Cancelled => TradeStatus::Cancelled,

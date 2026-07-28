@@ -124,6 +124,20 @@ impl<S: KvStore + 'static> SettlementService<S> {
         self.originate(protocol::EVENT_APPROVED, &signed)
     }
 
+    /// Records that this settlement's on-chain `release_escrow`
+    /// transaction has been independently observed as confirmed
+    /// (OFS-4300 §7-8) — local bookkeeping, not gossiped, since every
+    /// node can verify chain confirmation for itself; see
+    /// `SettlementRegistry::apply_escrow_released`.
+    pub fn record_escrow_released(
+        &mut self,
+        settlement_id: &SettlementId,
+        signature: impl Into<String>,
+    ) -> Result<(), SettlementError> {
+        self.registry
+            .apply_escrow_released(settlement_id, signature)
+    }
+
     pub fn reject(
         &mut self,
         settlement_id: SettlementId,

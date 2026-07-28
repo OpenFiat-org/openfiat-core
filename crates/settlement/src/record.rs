@@ -1,15 +1,18 @@
 //! The settlement shape and its state machine (OFS-2300 §5, §20).
 //!
 //! Actual on-chain escrow release (§16 — "escrow release is performed
-//! exclusively by the OpenFiat Program") is a Solana instruction, not
-//! something this P2P coordination layer invokes directly; `Approved`
-//! transitioning straight to `Completed` here models this crate's own
-//! authority ending where the on-chain program's begins, the same way
-//! `openfiat-reservations`'s authority ends at `EscrowLocked`. `Approved`
-//! and `Completed` are kept as two states anyway (rather than merged, the
-//! way this crate merges `PaymentSubmitted`/`MerchantReviewing`) because
-//! the on-chain release is a real asynchronous step in production, even
-//! though it isn't performed here yet.
+//! exclusively by the OpenFiat Program") is a Solana instruction; this
+//! P2P coordination layer never constructs or signs it — that's the
+//! seller's own wallet, client-side, via OFS-4300's `sendTransaction`
+//! (or a peer relay if their node has no direct RPC connection). What
+//! this crate *does* do is hold `Approved` as a real, distinct state
+//! (the merchant has approved; release hasn't been confirmed on-chain
+//! yet) and record the transition to `Completed` once something outside
+//! this crate independently observes that confirmation — the same
+//! "local, unsigned bookkeeping" pattern `openfiat-reservations` already
+//! uses for timeout expiry, not a new signed peer-to-peer event, since
+//! on-chain confirmation is equally independently verifiable by every
+//! node (OFS-4300 §7-8), not something one peer asserts to another.
 
 use openfiat_reservations::ReservationId;
 use openfiat_types::{Amount, PeerId, PublicKey, Timestamp};
@@ -55,6 +58,10 @@ pub struct Settlement {
     pub amount: Amount,
     pub state: SettlementState,
     pub payment_reference: Option<String>,
+    /// The on-chain `release_escrow` transaction's own signature, once
+    /// its confirmation has been independently observed (OFS-4300) —
+    /// `None` until `SettlementRegistry::apply_escrow_released`.
+    pub escrow_release_signature: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }

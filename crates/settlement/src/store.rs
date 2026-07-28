@@ -13,7 +13,7 @@ use openfiat_crypto::verify;
 use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
-use openfiat_types::EventEnvelope;
+use openfiat_types::{EventEnvelope, Timestamp};
 
 const COLUMN_FAMILY: &str = "settlements";
 
@@ -72,6 +72,7 @@ impl<S: KvStore> SettlementRegistry<S> {
             amount: initiate.amount,
             state: SettlementState::AwaitingPayment,
             payment_reference: None,
+            escrow_release_signature: None,
             created_at: initiate.timestamp,
             updated_at: initiate.timestamp,
         });
@@ -131,10 +132,12 @@ impl<S: KvStore> SettlementRegistry<S> {
         Ok(())
     }
 
-    /// §15-16: the merchant's approval. This crate's authority ends here
-    /// — real escrow release is the on-chain program's job (see the
-    /// `record` module doc), so `Approved` transitions straight to
-    /// `Completed`.
+    /// §15-16: the merchant's approval — legal only from
+    /// `PaymentSubmitted`. This crate's authority ends here in the sense
+    /// that it never itself constructs or submits the on-chain
+    /// `release_escrow` instruction (that's the seller's own wallet,
+    /// client-side, via OFS-4300); `Approved` is the real, held state
+    /// until [`Self::apply_escrow_released`] observes that confirmed.
     pub fn apply_approved(&self, signed: SignedSettlementApproved) -> Result<(), SettlementError> {
         let mut settlement = self
             .get(&signed.action.settlement_id)
@@ -150,8 +153,31 @@ impl<S: KvStore> SettlementRegistry<S> {
             return Err(SettlementError::InvalidStateTransition);
         }
 
-        settlement.state = SettlementState::Completed;
+        settlement.state = SettlementState::Approved;
         settlement.updated_at = signed.action.timestamp;
+        self.put(&settlement);
+        Ok(())
+    }
+
+    /// Records that the on-chain `release_escrow` transaction has been
+    /// independently observed as confirmed (OFS-4300 §7-8) — purely
+    /// local bookkeeping, like `openfiat-reservations::expire_stale`,
+    /// not a new signed peer-to-peer event: on-chain confirmation is
+    /// equally verifiable by every node, not something one peer asserts
+    /// to another. Legal only from `Approved`.
+    pub fn apply_escrow_released(
+        &self,
+        id: &SettlementId,
+        signature: impl Into<String>,
+    ) -> Result<(), SettlementError> {
+        let mut settlement = self.get(id).ok_or(SettlementError::SettlementNotFound)?;
+        if settlement.state != SettlementState::Approved {
+            return Err(SettlementError::InvalidStateTransition);
+        }
+
+        settlement.state = SettlementState::Completed;
+        settlement.escrow_release_signature = Some(signature.into());
+        settlement.updated_at = Timestamp::now();
         self.put(&settlement);
         Ok(())
     }
@@ -317,7 +343,38 @@ mod tests {
                 &seller,
             ))
             .unwrap();
-        assert_eq!(registry.get(&id).unwrap().state, SettlementState::Completed);
+        assert_eq!(registry.get(&id).unwrap().state, SettlementState::Approved);
+        assert_eq!(registry.get(&id).unwrap().escrow_release_signature, None);
+
+        registry
+            .apply_escrow_released(&id, "5xY...onchainSig")
+            .unwrap();
+        let settlement = registry.get(&id).unwrap();
+        assert_eq!(settlement.state, SettlementState::Completed);
+        assert_eq!(
+            settlement.escrow_release_signature,
+            Some("5xY...onchainSig".to_string())
+        );
+    }
+
+    #[test]
+    fn escrow_release_cannot_be_recorded_before_approval() {
+        let (registry, buyer, _seller, id) = setup();
+        let buyer_id = peer_id_from_public_key(&buyer.public_key()).unwrap();
+        registry
+            .apply_payment_submitted(SignedPaymentSubmitted::sign(
+                PaymentSubmitted {
+                    settlement_id: id.clone(),
+                    buyer: buyer_id,
+                    payment_reference: None,
+                    timestamp: Timestamp::now(),
+                },
+                &buyer,
+            ))
+            .unwrap();
+
+        let result = registry.apply_escrow_released(&id, "sig");
+        assert_eq!(result, Err(SettlementError::InvalidStateTransition));
     }
 
     #[test]
