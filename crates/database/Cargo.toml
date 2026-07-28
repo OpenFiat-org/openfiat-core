@@ -10,3 +10,6 @@ repository = "https://github.com/OpenFiat-org/openfiat-core"
 openfiat-storage = { path = "../storage", version = "0.1.0" }
 openfiat-types = { path = "../types", version = "0.1.0" }
 rocksdb = "0.24.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"

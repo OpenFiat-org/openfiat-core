@@ -5,6 +5,3 @@ edition = "2024"
 license = "Apache-2.0"
 description = "Storage engine abstraction: column families, transactions, pruning."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
-
-[dependencies]
-openfiat-types = { path = "../types", version = "0.1.0" }

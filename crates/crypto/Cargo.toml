@@ -7,4 +7,7 @@ description = "Cryptographic primitives: signing, hashing, key derivation."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
+ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
 openfiat-types = { path = "../types", version = "0.1.0" }
+rand = { version = "0.10.2", features = ["std", "std_rng"] }
+sha2 = { version = "0.11.0", default-features = false }

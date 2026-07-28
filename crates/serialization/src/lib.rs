@@ -1,8 +1,13 @@
 //! `openfiat-serialization` — Canonical serialization/deserialization for wire and storage formats.
 //!
-//! This crate currently defines architecture only: module layout and public
-//! surface will be filled in during implementation. No business logic lives
-//! here yet.
+//! Two boundaries, two formats (decision log item 3 of the P2P networking
+//! plan): [`wire`] (`postcard`) for internal Rust↔Rust messages inside the
+//! gossip envelope and RocksDB values, and [`json`] (`serde_json`) for the
+//! HTTP/RPC boundary where cross-language and human readability matter
+//! more than size.
+
+pub mod json;
+pub mod wire;
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {

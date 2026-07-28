@@ -1,8 +1,16 @@
 //! `openfiat-crypto` — Cryptographic primitives: signing, hashing, key derivation.
 //!
-//! This crate currently defines architecture only: module layout and public
-//! surface will be filled in during implementation. No business logic lives
-//! here yet.
+//! Ed25519 for signing (matches OFNP §6/ONSP §5's "Public key / Private
+//! key" node identity model), SHA-256 for content hashing. Nothing here
+//! ever exposes raw private key bytes outside [`keypair::Keypair`] itself.
+
+pub mod hash;
+pub mod keypair;
+pub mod verify;
+
+pub use hash::sha256;
+pub use keypair::Keypair;
+pub use verify::{VerifyError, verify};
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {
