@@ -66,6 +66,22 @@ cargo check --workspace
 cargo run --bin openfiat-node
 ```
 
+## Running a node
+
+`openfiat-node` is a real, standalone binary — no container runtime
+required. Each tagged release publishes native builds for both Linux and
+Windows servers (see [Releases](https://github.com/OpenFiat-org/openfiat-core/releases),
+built by [`release.yml`](.github/workflows/release.yml)):
+
+- **Linux** — see [`packaging/systemd`](packaging/systemd) for a systemd
+  unit (auto-restart, graceful shutdown, sandboxing).
+- **Windows** — see [`packaging/windows`](packaging/windows) for running
+  it as a real Windows Service via NSSM.
+
+A local multi-node cluster for development/testing (not a production
+deployment target) is available via Docker Compose — see
+[`openfiat-infra/docker`](https://github.com/OpenFiat-org/openfiat-infra/tree/main/docker).
+
 
 ## Development
 

@@ -183,6 +183,36 @@ async fn main() {
         .unwrap_or_else(|e| panic!("failed to bind {http_addr}: {e}"));
     println!("openfiat-node listening on http://{http_addr} (try GET /health, GET /docs)");
     axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("openfiat-node HTTP server failed");
+}
+
+/// Resolves once this process is asked to stop — `systemctl stop` (SIGTERM)
+/// or Ctrl+C (SIGINT) on Linux, Ctrl+C on Windows. Without this, the
+/// process's own default signal disposition just kills it outright, giving
+/// systemd's `TimeoutStopSec` nothing graceful to wait for and skipping
+/// OFNP §23's graceful-disconnect sequence entirely.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install the Ctrl+C signal handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install the SIGTERM signal handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
+    println!("openfiat-node: shutdown signal received, closing gracefully");
 }

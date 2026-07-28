@@ -1,0 +1,81 @@
+name: Release binaries
+
+# Builds `openfiat-node` as a real, standalone native binary for Linux and
+# Windows servers — no container runtime required to run it. Each OS builds
+# on its own native GitHub-hosted runner (no cross-compilation), so RocksDB's
+# bundled C++ build always uses that platform's own toolchain.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: openfiat-node-linux-x86_64
+            binary_name: openfiat-node
+            archive_cmd: tar -C dist -czf ${{ github.workspace }}/openfiat-node-linux-x86_64.tar.gz .
+            archive_ext: tar.gz
+          - os: windows-latest
+            asset_name: openfiat-node-windows-x86_64
+            binary_name: openfiat-node.exe
+            archive_cmd: powershell -Command "Compress-Archive -Path dist/* -DestinationPath openfiat-node-windows-x86_64.zip"
+            archive_ext: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # ubuntu-latest ships build-essential/cmake/clang already, but this
+      # matches the same explicit install ci.yml's own jobs use rather than
+      # relying on what happens to be preinstalled.
+      - name: Install RocksDB build dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential clang cmake pkg-config libssl-dev
+
+      - name: Build release binary
+        run: cargo build --release --bin openfiat-node
+
+      - name: Stage binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/${{ matrix.binary_name }} dist/
+          cp README.md LICENSE dist/
+
+      - name: Archive
+        shell: bash
+        run: ${{ matrix.archive_cmd }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: openfiat-node-*.${{ matrix.archive_ext }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

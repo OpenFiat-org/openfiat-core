@@ -21,4 +21,4 @@ openfiat-chain = { path = "../chain", version = "0.1.0" }
 openfiat-network = { path = "../network", version = "0.1.0" }
 openfiat-types = { path = "../types", version = "0.1.0" }
 axum = "0.8.9"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }

@@ -1,0 +1,33 @@
+[Unit]
+Description=OpenFiat node
+Documentation=https://docs.openfiat.network
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openfiat
+Group=openfiat
+ExecStart=/usr/local/bin/openfiat-node
+WorkingDirectory=/var/lib/openfiat
+EnvironmentFile=-/etc/openfiat/node.env
+Restart=on-failure
+RestartSec=5s
+
+# openfiat-node handles SIGTERM itself (graceful shutdown — see
+# crates/cli's shutdown_signal) rather than needing systemd to force-kill
+# it; this just gives that shutdown path a reasonable window before
+# systemd escalates to SIGKILL.
+TimeoutStopSec=30s
+
+# Minimal sandboxing: this process only ever needs its own data directory,
+# outbound network (gossip dialing, optional Solana RPC), and one inbound
+# HTTP/QUIC port — no other filesystem or capability access.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/openfiat
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
