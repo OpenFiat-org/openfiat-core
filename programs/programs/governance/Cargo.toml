@@ -1,0 +1,34 @@
+[package]
+name = "governance"
+version = "0.1.0"
+description = "Proposals, voting, parameter updates, treasury spend authorization (OFS-4200 §6)."
+license = "Apache-2.0"
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "governance"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = { version = "1.1.2", features = ["init-if-needed"] }
+anchor-spl = "1.1.2"
+openfiat-programs-shared = { path = "../../shared", version = "0.1.0" }
+# Read-only cross-program account access to StakeAccount, matching
+# escrow's own established pattern — see StakeAccount::effective_stake's
+# doc comment for why this is a plain account read, not a CPI dispatch.
+staking = { path = "../staking", version = "0.1.0", features = ["cpi"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

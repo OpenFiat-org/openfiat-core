@@ -24,7 +24,7 @@ behind each program below.
 | `presale` | Done (Phase 3) — full sale lifecycle, deployed to devnet | OPEN token presale (OFS-4200 §3) |
 | `escrow` | Done (Phase 4 + 4b) — full vault lifecycle + dispute-to-chain bridge | Liquidity Vault + Trade Escrow Vault settlement |
 | `staking` | Done (Phase 5a) — stake/unbond/withdraw/slash/rewards | Per-role OPEN staking, unbonding, slashing |
-| `governance` | Not yet scaffolded (Phase 5b) | Proposals, voting, parameter updates, treasury spend |
+| `governance` | Done (Phase 5b) — proposals/voting/tally/deposit settlement | Proposals, voting, parameter updates, treasury spend |
 
 ## Prerequisites
 

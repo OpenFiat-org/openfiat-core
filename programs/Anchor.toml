@@ -13,6 +13,7 @@ presale = "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7"
 mock_jupiter = "8ysRdUzhhvm4jHJwbJqYF6ZuS2AqekfTJbxMUF1g3Ugn"
 escrow = "HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP"
 staking = "HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx"
+governance = "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE"
 
 # Filled in once `anchor deploy --provider.cluster devnet` has actually run
 # (Phase 3 exit criteria) — same program ID as localnet since it's derived
