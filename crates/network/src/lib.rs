@@ -1,9 +1,26 @@
 //! `openfiat-network` — Transport layer: TCP/QUIC, TLS abstraction, connection management.
 //!
-//! Related specification: OFS-1000 (OFNP).
-//! This crate currently defines architecture only: module layout and public
-//! surface will be filled in during implementation. No business logic lives
-//! here yet.
+//! Implements OFS-1000 (OFNP): libp2p transport (Noise + QUIC + Yamux, per
+//! `docs/architecture.md`), the connection lifecycle state machine (§8),
+//! the message envelope (§13-16), per-session sequence tracking (§15), and
+//! heartbeat-driven liveness (§18). Peer discovery, gossip, and everything
+//! above them (OFS-1100 onward) build on this crate rather than reimplementing
+//! any of it.
+
+pub mod behaviour;
+pub mod envelope;
+pub mod error;
+pub mod heartbeat;
+pub mod identity;
+pub mod lifecycle;
+pub mod node;
+pub mod sequence;
+
+pub use envelope::{Envelope, EnvelopeCodec, Header};
+pub use error::NetworkError;
+pub use lifecycle::ConnectionState;
+pub use node::Node;
+pub use sequence::SequenceTracker;
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {
