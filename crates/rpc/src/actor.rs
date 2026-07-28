@@ -163,11 +163,25 @@ async fn poll_chain<S: KvStore + 'static>(state: &NodeState<S>, client: &dyn Cha
                     &awaiting.signature,
                     awaiting.slot_submitted,
                 );
-                if let Some(settlement_id) = &awaiting.correlation {
-                    let _ = state.settlements.apply_escrow_released(
-                        &openfiat_settlement::SettlementId::new(settlement_id.clone()),
-                        awaiting.signature.clone(),
-                    );
+                // See `methods::chain::SendTransactionParams`'s doc
+                // comment for this tagging convention.
+                match awaiting.correlation.as_deref().and_then(|tag| {
+                    tag.split_once(':')
+                        .map(|(domain, id)| (domain, id.to_string()))
+                }) {
+                    Some(("settlement", id)) => {
+                        let _ = state.settlements.apply_escrow_released(
+                            &openfiat_settlement::SettlementId::new(id),
+                            awaiting.signature.clone(),
+                        );
+                    }
+                    Some(("dispute", id)) => {
+                        let _ = state.disputes.apply_onchain_execution(
+                            &openfiat_disputes::DisputeId::new(id),
+                            awaiting.signature.clone(),
+                        );
+                    }
+                    _ => {}
                 }
             }
             Ok(Some(SignatureStatus::Failed)) => {
@@ -444,7 +458,7 @@ mod tests {
             .chain
             .enqueue_relay(
                 fixture_transaction_bytes(),
-                Some(settlement_id.as_str().to_string()),
+                Some(format!("settlement:{}", settlement_id.as_str())),
             )
             .unwrap();
 

@@ -94,6 +94,12 @@ pub struct Dispute {
     pub resolution: Option<Resolution>,
     pub buyer_agreed_mutual_settlement: bool,
     pub seller_agreed_mutual_settlement: bool,
+    /// The on-chain `execute_dispute_outcome` transaction's own
+    /// signature, once independently observed as confirmed (Phase 4b's
+    /// dispute-to-chain bridge; same deferred-until-confirmed pattern as
+    /// `openfiat-settlement::Settlement::escrow_release_signature`).
+    /// `None` until `DisputeRegistry::apply_onchain_execution`.
+    pub onchain_execution_signature: Option<String>,
     pub opened_at: Timestamp,
     pub updated_at: Timestamp,
 }

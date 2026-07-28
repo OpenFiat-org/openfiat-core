@@ -35,19 +35,22 @@ pub struct SendTransactionResult {
     pub queued: bool,
 }
 
-/// `settlement_id` is optional and opaque to this crate — when present,
-/// it's carried through `ChainState`'s pending-relay/awaiting-
+/// `correlation` is optional and opaque to `ChainState`/this crate's own
+/// dispatch — it's carried through the pending-relay/awaiting-
 /// confirmation tracking so that once this specific transaction is
 /// observed as genuinely confirmed (not merely accepted for submission),
-/// `SettlementRegistry::apply_escrow_released` gets called for it. Not
-/// an OFS-4300-defined field — this workspace's own extension for
-/// correlating a generic chain-bridge relay with the domain event that
-/// triggered it.
+/// `poll_chain` can route a follow-up call to the right domain registry.
+/// Convention (interpreted only by `actor::poll_chain`, not by this
+/// module): `"settlement:<id>"` -> `SettlementRegistry::
+/// apply_escrow_released`, `"dispute:<id>"` -> `DisputeRegistry::
+/// apply_onchain_execution`. Not an OFS-4300-defined field — this
+/// workspace's own extension for correlating a generic chain-bridge
+/// relay with the domain event that triggered it.
 #[derive(Debug, Deserialize)]
 pub struct SendTransactionParams {
     pub data: String,
     #[serde(default)]
-    pub settlement_id: Option<String>,
+    pub correlation: Option<String>,
 }
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
@@ -106,7 +109,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let tx_bytes = decode_bytes(&params.data)?;
                 state
                     .chain
-                    .enqueue_relay(tx_bytes, params.settlement_id)
+                    .enqueue_relay(tx_bytes, params.correlation)
                     .map_err(|err| RpcError::Application(err.code()))?;
                 Ok(SendTransactionResult { queued: true })
             },

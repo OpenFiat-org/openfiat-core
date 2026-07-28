@@ -94,6 +94,7 @@ impl<S: KvStore> DisputeRegistry<S> {
             resolution: None,
             buyer_agreed_mutual_settlement: false,
             seller_agreed_mutual_settlement: false,
+            onchain_execution_signature: None,
             opened_at: signed.open.timestamp,
             updated_at: signed.open.timestamp,
         });
@@ -245,6 +246,25 @@ impl<S: KvStore> DisputeRegistry<S> {
             dispute.status = DisputeStatus::Resolved;
         }
         dispute.updated_at = signed.agree.timestamp;
+        self.put(&dispute);
+        Ok(())
+    }
+
+    /// Records that this dispute's on-chain `execute_dispute_outcome`
+    /// transaction has been independently observed as confirmed (Phase
+    /// 4b's dispute-to-chain bridge) — local bookkeeping, not gossiped,
+    /// mirroring `SettlementRegistry::apply_escrow_released` exactly:
+    /// every node can verify chain confirmation for itself.
+    pub fn apply_onchain_execution(
+        &self,
+        id: &DisputeId,
+        signature: impl Into<String>,
+    ) -> Result<(), DisputeError> {
+        let mut dispute = self.get(id).ok_or(DisputeError::DisputeNotFound)?;
+        if dispute.status != DisputeStatus::Resolved {
+            return Err(DisputeError::InvalidStateTransition);
+        }
+        dispute.onchain_execution_signature = Some(signature.into());
         self.put(&dispute);
         Ok(())
     }
@@ -467,6 +487,64 @@ mod tests {
         let dispute = disputes.get(&dispute_id).unwrap();
         assert_eq!(dispute.status, DisputeStatus::Resolved);
         assert_eq!(dispute.resolution, Some(Resolution::BuyerWins));
+    }
+
+    #[test]
+    fn onchain_execution_cannot_be_recorded_before_resolution() {
+        let (_settlements, disputes, buyer, _seller, settlement_id) = setup();
+        let dispute_id = open_dispute(&disputes, &buyer, &settlement_id);
+        let result = disputes.apply_onchain_execution(&dispute_id, "sig-too-early");
+        assert_eq!(result, Err(DisputeError::InvalidStateTransition));
+    }
+
+    #[test]
+    fn onchain_execution_is_recorded_once_the_case_resolves() {
+        let (_settlements, disputes, buyer, _seller, settlement_id) = setup();
+        let dispute_id = open_dispute(&disputes, &buyer, &settlement_id);
+        let arbitrators: Vec<Keypair> = (0..3).map(|_| Keypair::generate()).collect();
+        for arbitrator in &arbitrators {
+            join(&disputes, &dispute_id, arbitrator);
+        }
+        let votes = [Vote::BuyerWins, Vote::BuyerWins, Vote::MerchantWins];
+        let secrets = [[1u8; 32], [2u8; 32], [3u8; 32]];
+        for ((arbitrator, vote), secret) in arbitrators.iter().zip(votes).zip(secrets) {
+            let commit = VoteCommit {
+                dispute_id: dispute_id.clone(),
+                arbitrator: peer_id_from_public_key(&arbitrator.public_key()).unwrap(),
+                commitment: commitment::compute(vote, &secret),
+                timestamp: Timestamp::now(),
+            };
+            disputes
+                .apply_vote_commit(SignedVoteCommit::sign(commit, arbitrator))
+                .unwrap();
+        }
+        for ((arbitrator, vote), secret) in arbitrators.iter().zip(votes).zip(secrets) {
+            let reveal = VoteReveal {
+                dispute_id: dispute_id.clone(),
+                arbitrator: peer_id_from_public_key(&arbitrator.public_key()).unwrap(),
+                vote,
+                secret,
+                timestamp: Timestamp::now(),
+            };
+            disputes
+                .apply_vote_reveal(SignedVoteReveal::sign(reveal, arbitrator))
+                .unwrap();
+        }
+        assert_eq!(
+            disputes.get(&dispute_id).unwrap().status,
+            DisputeStatus::Resolved
+        );
+
+        disputes
+            .apply_onchain_execution(&dispute_id, "5xY...onchainSig")
+            .unwrap();
+        assert_eq!(
+            disputes
+                .get(&dispute_id)
+                .unwrap()
+                .onchain_execution_signature,
+            Some("5xY...onchainSig".to_string())
+        );
     }
 
     #[test]
