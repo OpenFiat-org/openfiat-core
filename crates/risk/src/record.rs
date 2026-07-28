@@ -94,7 +94,7 @@ impl RiskRecord {
 }
 
 /// §11's "Results Aggregated" step, computed by [`crate::store::RiskIndex::screen`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ScreeningResult {
     pub wallet: PeerId,
     /// `None` means no current, unsuperseded flag exists — either no

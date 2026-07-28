@@ -28,7 +28,7 @@ pub enum TradeStatus {
     Disputed,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Trade {
     pub reservation: Reservation,
     pub settlement: Option<Settlement>,
