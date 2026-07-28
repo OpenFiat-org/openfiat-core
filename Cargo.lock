@@ -2348,8 +2348,16 @@ dependencies = [
 name = "openfiat-governance"
 version = "0.1.0"
 dependencies = [
- "openfiat-identity",
+ "futures",
+ "libp2p",
+ "openfiat-crypto",
+ "openfiat-gossip",
+ "openfiat-network",
+ "openfiat-serialization",
+ "openfiat-storage",
  "openfiat-types",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
