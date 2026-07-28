@@ -26,6 +26,15 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
         Self { gossip, registry }
     }
 
+    /// A shared handle to this node's advertisement index, for crates
+    /// downstream in the dependency chain (reservations, settlement) that
+    /// need to validate against and adjust liquidity on the same replica
+    /// this service maintains — see `openfiat-reservations` for the first
+    /// consumer.
+    pub fn registry(&self) -> Rc<AdvertisementRegistry<S>> {
+        Rc::clone(&self.registry)
+    }
+
     pub fn get(&self, id: &AdvertisementId) -> Option<Advertisement> {
         self.registry.get(id)
     }

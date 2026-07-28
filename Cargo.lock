@@ -2415,8 +2415,17 @@ dependencies = [
 name = "openfiat-reservations"
 version = "0.1.0"
 dependencies = [
- "openfiat-trade",
+ "futures",
+ "libp2p",
+ "openfiat-advertisements",
+ "openfiat-crypto",
+ "openfiat-gossip",
+ "openfiat-network",
+ "openfiat-serialization",
+ "openfiat-storage",
  "openfiat-types",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
