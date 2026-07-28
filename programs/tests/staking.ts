@@ -1,0 +1,422 @@
+import * as anchor from "@anchor-lang/core";
+import { Program, BN } from "@anchor-lang/core";
+import { Staking } from "../target/types/staking";
+import {
+  TOKEN_2022_PROGRAM_ID,
+  createMint,
+  mintTo,
+  getOrCreateAssociatedTokenAccount,
+  getAccount,
+} from "@solana/spl-token";
+import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import { expect } from "chai";
+
+describe("staking", () => {
+  anchor.setProvider(anchor.AnchorProvider.env());
+  const provider = anchor.AnchorProvider.env();
+  const connection = provider.connection;
+
+  const program = anchor.workspace.staking as Program<Staking>;
+  const admin = (provider.wallet as anchor.Wallet).payer;
+
+  const MINT_DECIMALS = 9;
+  const unit = (n: number) => new BN(n).mul(new BN(10).pow(new BN(MINT_DECIMALS)));
+
+  const ROLE_NODE_OPERATOR = { nodeOperator: {} };
+  const ROLE_ARBITRATOR = { arbitrator: {} };
+
+  let mint: PublicKey;
+  let stakingConfig: PublicKey;
+  let stakeVault: PublicKey;
+  let rewardsVault: PublicKey;
+  let slashingAuthority: Keypair;
+  let rewardsAuthority: Keypair;
+  let slashDestination: PublicKey;
+
+  const UNBONDING_PERIOD_SECS = 1; // short, so tests don't wait real days
+  const SLASH_BPS = 1000; // 10%
+
+  async function airdrop(pubkey: PublicKey, sol = 10) {
+    const sig = await connection.requestAirdrop(pubkey, sol * 1_000_000_000);
+    const latest = await connection.getLatestBlockhash();
+    await connection.confirmTransaction({ signature: sig, ...latest });
+  }
+
+  async function ata(mintPk: PublicKey, owner: PublicKey) {
+    const acc = await getOrCreateAssociatedTokenAccount(
+      connection,
+      admin,
+      mintPk,
+      owner,
+      false,
+      "confirmed",
+      { commitment: "confirmed" },
+      TOKEN_2022_PROGRAM_ID,
+    );
+    return acc.address;
+  }
+
+  async function mintTokens(dest: PublicKey, amount: BN) {
+    await mintTo(
+      connection,
+      admin,
+      mint,
+      dest,
+      admin,
+      BigInt(amount.toString()),
+      [],
+      { commitment: "confirmed" },
+      TOKEN_2022_PROGRAM_ID,
+    );
+  }
+
+  async function expectAnchorError(p: Promise<unknown>, code: string) {
+    try {
+      await p;
+      expect.fail(`expected instruction to fail with ${code}, but it succeeded`);
+    } catch (err: any) {
+      const actual = err?.error?.errorCode?.code ?? String(err);
+      expect(actual).to.equal(code);
+    }
+  }
+
+  async function withBlockhashRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await fn();
+      } catch (err) {
+        const isBlockhashRace = err instanceof Error && err.message.includes("Blockhash not found");
+        if (!isBlockhashRace || i === attempts - 1) throw err;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    throw new Error("unreachable");
+  }
+
+  function stakingConfigPda() {
+    return PublicKey.findProgramAddressSync([Buffer.from("staking_config")], program.programId)[0];
+  }
+  function stakeVaultPda() {
+    return PublicKey.findProgramAddressSync([Buffer.from("stake_vault")], program.programId)[0];
+  }
+  function rewardsVaultPda() {
+    return PublicKey.findProgramAddressSync([Buffer.from("rewards_vault")], program.programId)[0];
+  }
+  function stakeAccountPda(owner: PublicKey, roleByte: number) {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from("stake"), owner.toBuffer(), Buffer.from([roleByte])],
+      program.programId,
+    )[0];
+  }
+
+  before(async () => {
+    mint = await createMint(
+      connection,
+      admin,
+      admin.publicKey,
+      null,
+      MINT_DECIMALS,
+      undefined,
+      { commitment: "confirmed" },
+      TOKEN_2022_PROGRAM_ID,
+    );
+
+    slashingAuthority = Keypair.generate();
+    rewardsAuthority = Keypair.generate();
+    slashDestination = await ata(mint, Keypair.generate().publicKey);
+
+    stakingConfig = stakingConfigPda();
+    stakeVault = stakeVaultPda();
+    rewardsVault = rewardsVaultPda();
+
+    await withBlockhashRetry(() =>
+      program.methods
+        .initializeStakingConfig({
+          minStake: unit(1000),
+          minStakeArbitrator: unit(50000),
+          unbondingPeriodSecs: new BN(UNBONDING_PERIOD_SECS),
+          slashBps: SLASH_BPS,
+          slashingAuthority: slashingAuthority.publicKey,
+          slashDestination,
+          rewardsAuthority: rewardsAuthority.publicKey,
+        })
+        .accountsPartial({
+          admin: admin.publicKey,
+          mint,
+          stakingConfig,
+          stakeVault,
+          rewardsVault,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc({ commitment: "confirmed" }),
+    );
+
+    // Seed the rewards vault so claim_rewards has something real to pay out.
+    const rewardsFunder = Keypair.generate();
+    await airdrop(rewardsFunder.publicKey);
+    const funderAta = await ata(mint, rewardsFunder.publicKey);
+    await mintTokens(funderAta, unit(10000));
+    const { transferChecked } = await import("@solana/spl-token");
+    await transferChecked(
+      connection,
+      rewardsFunder,
+      funderAta,
+      mint,
+      rewardsVault,
+      rewardsFunder,
+      BigInt(unit(10000).toString()),
+      MINT_DECIMALS,
+      [],
+      { commitment: "confirmed" },
+      TOKEN_2022_PROGRAM_ID,
+    );
+  });
+
+  describe("stake -> request_unstake -> withdraw_unstaked", () => {
+    let owner: Keypair;
+    let stakeAccount: PublicKey;
+
+    before(async () => {
+      owner = Keypair.generate();
+      await airdrop(owner.publicKey);
+      stakeAccount = stakeAccountPda(owner.publicKey, 2); // NodeOperator = index 2
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .initializeStakeAccount(ROLE_NODE_OPERATOR)
+          .accountsPartial({
+            owner: owner.publicKey,
+            stakeAccount,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const ownerAta = await ata(mint, owner.publicKey);
+      await mintTokens(ownerAta, unit(20000));
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .stake(unit(15000))
+          .accountsPartial({
+            owner: owner.publicKey,
+            stakingConfig,
+            stakeAccount,
+            stakeVault,
+            from: ownerAta,
+            mint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+    });
+
+    it("records the staked amount and moves tokens into the shared stake vault", async () => {
+      const account = await program.account.stakeAccount.fetch(stakeAccount);
+      expect(account.amount.toString()).to.equal(unit(15000).toString());
+      const vaultTokens = await getAccount(connection, stakeVault, "confirmed", TOKEN_2022_PROGRAM_ID);
+      expect(vaultTokens.amount.toString()).to.equal(unit(15000).toString());
+    });
+
+    it("moves requested amount from `amount` to `unbonding_amount` immediately, with no token transfer yet", async () => {
+      await withBlockhashRetry(() =>
+        program.methods
+          .requestUnstake(unit(5000))
+          .accountsPartial({ owner: owner.publicKey, stakingConfig, stakeAccount })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const account = await program.account.stakeAccount.fetch(stakeAccount);
+      expect(account.amount.toString()).to.equal(unit(10000).toString());
+      expect(account.unbondingAmount.toString()).to.equal(unit(5000).toString());
+
+      const vaultTokens = await getAccount(connection, stakeVault, "confirmed", TOKEN_2022_PROGRAM_ID);
+      expect(vaultTokens.amount.toString()).to.equal(unit(15000).toString());
+    });
+
+    it("rejects withdraw_unstaked before the unbonding period has elapsed", async () => {
+      const ownerAta = await ata(mint, owner.publicKey);
+      await expectAnchorError(
+        program.methods
+          .withdrawUnstaked()
+          .accountsPartial({
+            owner: owner.publicKey,
+            mint,
+            stakingConfig,
+            stakeAccount,
+            stakeVault,
+            to: ownerAta,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+        "StillUnbonding",
+      );
+    });
+
+    it("withdraws the unbonded amount once the unbonding period has elapsed", async () => {
+      await new Promise((r) => setTimeout(r, 1500));
+      const ownerAta = await ata(mint, owner.publicKey);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .withdrawUnstaked()
+          .accountsPartial({
+            owner: owner.publicKey,
+            mint,
+            stakingConfig,
+            stakeAccount,
+            stakeVault,
+            to: ownerAta,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const account = await program.account.stakeAccount.fetch(stakeAccount);
+      expect(account.unbondingAmount.toString()).to.equal("0");
+
+      const ownerTokens = await getAccount(connection, ownerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
+      // Started with 20000, staked 15000 (5000 left), got 5000 back.
+      expect(ownerTokens.amount.toString()).to.equal(unit(10000).toString());
+    });
+  });
+
+  describe("slash", () => {
+    it("moves slash_bps of the active stake to slash_destination, callable only by slashing_authority", async () => {
+      const owner = Keypair.generate();
+      await airdrop(owner.publicKey);
+      const stakeAccount = stakeAccountPda(owner.publicKey, 1); // Arbitrator = index 1
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .initializeStakeAccount(ROLE_ARBITRATOR)
+          .accountsPartial({ owner: owner.publicKey, stakeAccount, systemProgram: SystemProgram.programId })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const ownerAta = await ata(mint, owner.publicKey);
+      await mintTokens(ownerAta, unit(60000));
+      await withBlockhashRetry(() =>
+        program.methods
+          .stake(unit(60000))
+          .accountsPartial({
+            owner: owner.publicKey,
+            stakingConfig,
+            stakeAccount,
+            stakeVault,
+            from: ownerAta,
+            mint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      await expectAnchorError(
+        program.methods
+          .slash(1234)
+          .accountsPartial({
+            slashingAuthority: owner.publicKey, // wrong authority
+            mint,
+            stakingConfig,
+            stakeAccount,
+            stakeVault,
+            destination: slashDestination,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+        "NotSlashingAuthority",
+      );
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .slash(1234)
+          .accountsPartial({
+            slashingAuthority: slashingAuthority.publicKey,
+            mint,
+            stakingConfig,
+            stakeAccount,
+            stakeVault,
+            destination: slashDestination,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([slashingAuthority])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const account = await program.account.stakeAccount.fetch(stakeAccount);
+      // 10% of 60000 = 6000 slashed.
+      expect(account.amount.toString()).to.equal(unit(54000).toString());
+      expect(account.slashedTotal.toString()).to.equal(unit(6000).toString());
+
+      const destTokens = await getAccount(connection, slashDestination, "confirmed", TOKEN_2022_PROGRAM_ID);
+      expect(destTokens.amount.toString()).to.equal(unit(6000).toString());
+    });
+  });
+
+  describe("distribute_reward + claim_rewards", () => {
+    it("accrues then pays out a reward, callable only by rewards_authority", async () => {
+      const owner = Keypair.generate();
+      await airdrop(owner.publicKey);
+      const stakeAccount = stakeAccountPda(owner.publicKey, 2);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .initializeStakeAccount(ROLE_NODE_OPERATOR)
+          .accountsPartial({ owner: owner.publicKey, stakeAccount, systemProgram: SystemProgram.programId })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      await expectAnchorError(
+        program.methods
+          .distributeReward(unit(100))
+          .accountsPartial({ rewardsAuthority: owner.publicKey, stakingConfig, stakeAccount })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+        "NotRewardsAuthority",
+      );
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .distributeReward(unit(100))
+          .accountsPartial({ rewardsAuthority: rewardsAuthority.publicKey, stakingConfig, stakeAccount })
+          .signers([rewardsAuthority])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      let account = await program.account.stakeAccount.fetch(stakeAccount);
+      expect(account.pendingRewards.toString()).to.equal(unit(100).toString());
+
+      const ownerAta = await ata(mint, owner.publicKey);
+      await withBlockhashRetry(() =>
+        program.methods
+          .claimRewards()
+          .accountsPartial({
+            owner: owner.publicKey,
+            mint,
+            stakingConfig,
+            stakeAccount,
+            rewardsVault,
+            to: ownerAta,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      account = await program.account.stakeAccount.fetch(stakeAccount);
+      expect(account.pendingRewards.toString()).to.equal("0");
+      const ownerTokens = await getAccount(connection, ownerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
+      expect(ownerTokens.amount.toString()).to.equal(unit(100).toString());
+    });
+  });
+});
