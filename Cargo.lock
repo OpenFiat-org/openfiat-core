@@ -2255,8 +2255,14 @@ dependencies = [
 name = "openfiat-api"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "http-body-util",
+ "openfiat-metrics",
  "openfiat-rpc",
- "openfiat-types",
+ "openfiat-storage",
+ "serde_json",
+ "tokio",
+ "tower",
 ]
 
 [[package]]

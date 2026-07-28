@@ -3,9 +3,17 @@ name = "openfiat-api"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "REST/OpenAPI HTTP surface."
+description = "OpenRPC specification + interactive reference documentation for openfiat-rpc."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
-openfiat-types = { path = "../types", version = "0.1.0" }
+openfiat-storage = { path = "../storage", version = "0.1.0" }
 openfiat-rpc = { path = "../rpc", version = "0.1.0" }
+serde_json = "1.0.151"
+axum = "0.8.9"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tokio = { version = "1.53.1", features = ["macros", "rt"] }
+openfiat-metrics = { path = "../metrics", version = "0.1.0" }
