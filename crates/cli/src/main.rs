@@ -23,6 +23,7 @@
 //! remains, verified by each domain's own `apply_*` before origination
 //! is ever attempted.
 
+use openfiat_chain::NodeChainMode;
 use openfiat_crypto::Keypair;
 use openfiat_database::Database;
 use openfiat_network::Multiaddr;
@@ -103,6 +104,33 @@ fn bootstrap_peers() -> Vec<Multiaddr> {
         .collect()
 }
 
+/// `CLI_SOLANA_RPC_URLS` (comma-separated, e.g.
+/// `https://api.devnet.solana.com,https://your-provider/?api-key=...`)
+/// puts this node in `NodeChainMode::RpcConnected` (OFS-4300 §4),
+/// submitting relayed transactions to every configured endpoint in
+/// parallel (§7). Unset (the default) is `GossipOnly` — the safe,
+/// zero-config choice; an operator opts into a real RPC connection
+/// explicitly. `CLI_SOLANA_WS_URL` is optional and only recorded on the
+/// mode today — no subscription-based polling reads it yet.
+fn chain_mode() -> NodeChainMode {
+    let rpc_urls: Vec<String> = std::env::var("CLI_SOLANA_RPC_URLS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    if rpc_urls.is_empty() {
+        NodeChainMode::GossipOnly
+    } else {
+        NodeChainMode::RpcConnected {
+            rpc_urls,
+            ws_url: std::env::var("CLI_SOLANA_WS_URL").ok(),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let wallet = load_or_generate_wallet();
@@ -121,11 +149,17 @@ async fn main() {
         .parse()
         .expect("CLI_LISTEN_ADDR must be a valid multiaddr");
     let bootstrap_peers = bootstrap_peers();
+    let chain_mode = chain_mode();
 
     println!(
-        "openfiat-node {} — data dir: {data_dir}, gossip identity: {:?}",
+        "openfiat-node {} — data dir: {data_dir}, gossip identity: {:?}, chain mode: {}",
         env!("CARGO_PKG_VERSION"),
         wallet.peer_id(),
+        if chain_mode.is_rpc_connected() {
+            "RpcConnected"
+        } else {
+            "GossipOnly"
+        },
     );
 
     let rpc_handle = openfiat_rpc::spawn_actor(
@@ -138,6 +172,7 @@ async fn main() {
             self_roles: gateway_roles(),
             listen_addr,
             bootstrap_peers,
+            chain_mode,
         },
     );
     let metrics = Arc::new(openfiat_metrics::MetricsRegistry::new());

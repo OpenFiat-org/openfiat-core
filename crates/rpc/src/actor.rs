@@ -18,12 +18,21 @@
 use crate::dispatch::MethodTable;
 use crate::error::RpcError;
 use crate::state::NodeState;
+use openfiat_chain::{ChainClient, NodeChainMode, RpcChainClient};
 use openfiat_crypto::Keypair;
 use openfiat_network::{Multiaddr, Node};
 use openfiat_storage::KvStore;
 use openfiat_types::NodeRole;
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot};
+
+/// `[PROPOSED — NEEDS SIGN-OFF]`: how often an `RpcConnected` node polls
+/// its configured Solana RPC endpoint(s) for a fresh blockhash and drains
+/// any pending transaction relay. Solana's own blockhash validity window
+/// is ~150 slots (~60-90s at ~400ms/slot — OFS-4300 §6), so this is
+/// conservative headroom rather than a tight deadline, and stays gentle
+/// on a shared/rate-limited public RPC endpoint.
+const CHAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 struct RpcCommand {
     method: String,
@@ -75,6 +84,7 @@ pub struct NetworkConfig {
     pub self_roles: Vec<NodeRole>,
     pub listen_addr: Multiaddr,
     pub bootstrap_peers: Vec<Multiaddr>,
+    pub chain_mode: NodeChainMode,
 }
 
 impl NetworkConfig {
@@ -88,6 +98,7 @@ impl NetworkConfig {
             self_roles: Vec::new(),
             listen_addr: "/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap(),
             bootstrap_peers: Vec::new(),
+            chain_mode: NodeChainMode::GossipOnly,
         }
     }
 }
@@ -102,6 +113,38 @@ impl NetworkConfig {
 #[allow(clippy::await_holding_refcell_ref)]
 async fn drive_gossip<S: KvStore + 'static>(state: &NodeState<S>) {
     state.gossip.borrow_mut().drive_once().await;
+}
+
+/// One tick of an `RpcConnected` node's Solana connectivity (OFS-4300
+/// §6-7): fetch and announce a fresh blockhash, then submit whatever is
+/// queued in `state.chain`'s pending-relay queue — a caller's own
+/// `sendTransaction`, or a `GossipOnly` peer's relayed request (see
+/// `NodeState::new`'s wiring of both into the same queue). Every
+/// `state.gossip.borrow_mut()` here is a short-lived temporary scoped to
+/// one synchronous statement, never spanning an `.await`, so this needs
+/// no `RefCell`-across-await allowance the way `drive_gossip` does.
+async fn poll_chain<S: KvStore + 'static>(state: &NodeState<S>, client: &dyn ChainClient) {
+    if let Ok((blockhash, slot)) = client.get_latest_blockhash().await {
+        let _ = state
+            .chain_bridge
+            .announce_blockhash(&mut state.gossip.borrow_mut(), &blockhash, slot);
+    }
+
+    for tx_bytes in state.chain.drain_pending_relay() {
+        if let Ok(signature) = client.send_transaction(&tx_bytes).await {
+            let slot_submitted = state.chain.current_blockhash().map_or(0, |(_, slot)| slot);
+            let _ = state.chain_bridge.announce_relay_confirmation(
+                &mut state.gossip.borrow_mut(),
+                &signature,
+                slot_submitted,
+            );
+        }
+        // A failed submission is silently dropped (OFS-4300's own relay
+        // path is explicitly best-effort) — the bytes aren't re-queued
+        // since a signed transaction's blockhash eventually expires
+        // anyway, and the caller (or a `GossipOnly` peer awaiting relay)
+        // can resubmit against a fresher one.
+    }
 }
 
 /// Spawns the actor thread. `build_store` and `network` both take effect
@@ -129,7 +172,19 @@ where
         runtime.block_on(async move {
             let node = Node::new(&network.keypair)
                 .expect("failed to start this node's libp2p transport");
-            let state = NodeState::new(node, build_store(), network.keypair, network.self_roles);
+            let chain_client: Option<Box<dyn ChainClient>> = match &network.chain_mode {
+                NodeChainMode::RpcConnected { rpc_urls, .. } => {
+                    Some(Box::new(RpcChainClient::new(rpc_urls.clone())))
+                }
+                NodeChainMode::GossipOnly => None,
+            };
+            let state = NodeState::new(
+                node,
+                build_store(),
+                network.keypair,
+                network.self_roles,
+                network.chain_mode,
+            );
             {
                 let mut gossip = state.gossip.borrow_mut();
                 gossip
@@ -144,6 +199,7 @@ where
                 }
             }
             let table: MethodTable<S> = crate::methods::build_table();
+            let mut chain_poll = tokio::time::interval(CHAIN_POLL_INTERVAL);
 
             loop {
                 tokio::select! {
@@ -160,6 +216,9 @@ where
                         let _ = command.respond_to.send(result);
                     }
                     _ = drive_gossip(&state) => {}
+                    _ = chain_poll.tick(), if chain_client.is_some() => {
+                        poll_chain(&state, chain_client.as_deref().unwrap()).await;
+                    }
                 }
             }
         });
@@ -171,7 +230,59 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openfiat_chain::{ChainError, SignatureStatus};
     use openfiat_storage::mem::MemoryStore;
+
+    /// A `ChainClient` fake, so `poll_chain`'s own glue logic (fetch,
+    /// announce, drain, submit) is testable without a live Solana
+    /// cluster — the real `RpcChainClient` is exercised end to end
+    /// against actual devnet by this phase's own manual verification and
+    /// `crates/conformance`'s Phase VII suite.
+    struct FakeChainClient {
+        blockhash: &'static str,
+        slot: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl ChainClient for FakeChainClient {
+        async fn get_latest_blockhash(&self) -> Result<(String, u64), ChainError> {
+            Ok((self.blockhash.to_string(), self.slot))
+        }
+        async fn is_blockhash_valid(&self, _blockhash: &str) -> Result<bool, ChainError> {
+            Ok(true)
+        }
+        async fn send_transaction(&self, _tx_bytes: &[u8]) -> Result<String, ChainError> {
+            Ok("fake-signature".to_string())
+        }
+        async fn get_signature_status(
+            &self,
+            _signature: &str,
+        ) -> Result<Option<SignatureStatus>, ChainError> {
+            Ok(Some(SignatureStatus::Success))
+        }
+        async fn get_account(&self, _pubkey: &str) -> Result<Option<Vec<u8>>, ChainError> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_chain_announces_a_fresh_blockhash_the_rpc_layer_then_reports() {
+        let state = NodeState::new_for_test(MemoryStore::new());
+        assert_eq!(state.chain.current_blockhash(), None);
+
+        let client = FakeChainClient {
+            blockhash: "fake-blockhash-123",
+            slot: 555,
+        };
+        poll_chain(&state, &client).await;
+
+        assert_eq!(
+            state.chain.current_blockhash(),
+            Some(("fake-blockhash-123".to_string(), 555)),
+            "poll_chain's announce_blockhash call must reach ChainState via the same \
+             BlockhashAnnounced event handler a peer's announcement would"
+        );
+    }
 
     #[tokio::test]
     async fn a_call_reaches_the_actor_and_returns_a_result() {

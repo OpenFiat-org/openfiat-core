@@ -3203,6 +3203,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "openfiat-api",
+ "openfiat-chain",
  "openfiat-crypto",
  "openfiat-database",
  "openfiat-metrics",
@@ -3475,6 +3476,7 @@ dependencies = [
 name = "openfiat-rpc"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "futures-util",

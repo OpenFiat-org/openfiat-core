@@ -15,7 +15,8 @@
 //! `&self` methods.
 
 use openfiat_advertisements::AdvertisementRegistry;
-use openfiat_chain::{ChainState, NodeChainMode};
+use openfiat_chain::events::BlockhashAnnounced;
+use openfiat_chain::{ChainBridge, ChainState, NodeChainMode};
 use openfiat_crypto::Keypair;
 use openfiat_disputes::DisputeRegistry;
 use openfiat_gossip::{EventStore, GossipService, Subscription};
@@ -33,6 +34,7 @@ use openfiat_settlement::SettlementRegistry;
 use openfiat_snapshot::SnapshotIndex;
 use openfiat_storage::KvStore;
 use openfiat_trade::TradeView;
+use openfiat_serialization::wire;
 use openfiat_types::NodeRole;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -54,6 +56,13 @@ pub struct NodeState<S> {
     pub snapshots: Rc<SnapshotIndex<Rc<S>>>,
     pub sessions: Rc<SessionRegistry<Rc<S>>>,
     pub chain: Rc<ChainState>,
+    /// The Chain Bridge's gossip-facing half (OFS-4300 §6-7) — installed
+    /// on the same shared `gossip` above, alongside every registry's
+    /// `apply_event`. Kept separate from `chain` (which is what
+    /// `rpc::methods::chain`'s synchronous handlers read/write) because
+    /// only this half needs `&mut GossipService` to originate anything;
+    /// see `new`'s wiring of the two together.
+    pub chain_bridge: ChainBridge,
 }
 
 impl<S: KvStore + 'static> NodeState<S> {
@@ -61,8 +70,19 @@ impl<S: KvStore + 'static> NodeState<S> {
     /// an identity keypair — see `openfiat_network::Node::new`);
     /// `keypair` is the same identity, reused here to sign gossip
     /// envelopes; `self_roles` gates which event types this node may
-    /// originate (`openfiat_gossip::authorization`).
-    pub fn new(node: Node, store: S, keypair: Keypair, self_roles: Vec<NodeRole>) -> Self {
+    /// originate (`openfiat_gossip::authorization`); `chain_mode`
+    /// decides whether `rpc::methods::chain`'s handlers behave as
+    /// `RpcConnected` or `GossipOnly` (OFS-4300 §4) — actually acting on
+    /// `RpcConnected` mode (polling a real Solana RPC endpoint) is the
+    /// async node-composition layer's job (`actor::spawn_actor`), not
+    /// this constructor's.
+    pub fn new(
+        node: Node,
+        store: S,
+        keypair: Keypair,
+        self_roles: Vec<NodeRole>,
+        chain_mode: NodeChainMode,
+    ) -> Self {
         let store = Rc::new(store);
         let event_store = EventStore::new(Rc::clone(&store));
         let mut gossip =
@@ -95,11 +115,38 @@ impl<S: KvStore + 'static> NodeState<S> {
         let risk = Rc::new(RiskIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let snapshots = Rc::new(SnapshotIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let sessions = Rc::new(SessionRegistry::new(Rc::clone(&store)));
-        // `GossipOnly` is the safe, zero-config default — an operator who
-        // wants `RpcConnected` mode configures it explicitly at the
-        // node-composition layer (`openfiat-cli`), same as every other
-        // deployment-specific choice.
-        let chain = Rc::new(ChainState::new(NodeChainMode::GossipOnly));
+        let is_rpc_connected = chain_mode.is_rpc_connected();
+        let chain = Rc::new(ChainState::new(chain_mode));
+        let chain_bridge = ChainBridge::install(&mut gossip);
+
+        // Keeps `chain`'s cache (what `getChainStatus`/`getLatestBlockhash`
+        // actually read) in sync with every `BlockhashAnnounced` this
+        // node stores — its own self-announcement (an `RpcConnected`
+        // node's poll loop) or a peer's (a `GossipOnly` node's only
+        // source) alike, so both modes answer those two methods
+        // identically per OFS-4300 §8's own requirement.
+        let chain_for_blockhash = Rc::clone(&chain);
+        gossip.add_event_handler(move |event| {
+            if event.ofs_spec == openfiat_chain::protocol::OFS_SPEC
+                && event.event_type.as_str() == openfiat_chain::protocol::EVENT_BLOCKHASH_ANNOUNCED
+                && let Ok(announced) = wire::from_bytes::<BlockhashAnnounced>(&event.payload)
+            {
+                chain_for_blockhash.record_blockhash(&announced.blockhash, announced.slot);
+            }
+        });
+
+        // Only an `RpcConnected` node has anywhere to submit a peer's
+        // relay request — a `GossipOnly` node registering this too would
+        // just queue bytes into a `pending_relay` nothing ever drains.
+        // Feeding the *same* queue `sendTransaction`'s handler already
+        // uses means the actor's one poll loop submits both a caller's
+        // own request and a `GossipOnly` peer's relayed one identically.
+        if is_rpc_connected {
+            let chain_for_relay = Rc::clone(&chain);
+            chain_bridge.on_relay_requested(move |requested| {
+                let _ = chain_for_relay.enqueue_relay(requested.tx_bytes.clone());
+            });
+        }
 
         macro_rules! attach {
             ($registry:expr) => {{
@@ -137,6 +184,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             snapshots,
             sessions,
             chain,
+            chain_bridge,
         }
     }
 
@@ -149,7 +197,7 @@ impl<S: KvStore + 'static> NodeState<S> {
     pub fn new_for_test(store: S) -> Self {
         let keypair = Keypair::generate();
         let node = Node::new(&keypair).expect("loopback node construction cannot fail");
-        Self::new(node, store, keypair, Vec::new())
+        Self::new(node, store, keypair, Vec::new(), NodeChainMode::GossipOnly)
     }
 }
 
