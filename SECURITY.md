@@ -20,7 +20,7 @@ channels:
 
 1. [GitHub Security Advisories](../../security/advisories/new) for this
    repository (preferred).
-2. Email **security@openfiat.org** with a description of the issue, steps to
+2. Email **security@openfiat.network** with a description of the issue, steps to
    reproduce, and its potential impact.
 
 You should receive an acknowledgement within **72 hours**. We will work with
