@@ -1,44 +1,33 @@
 //! `openfiat-risk` — plugin architecture and provider SDK for OpenFiat risk
 //! intelligence adapters.
 //!
-//! Related specification: OFS-7100 (OpenFiat Risk Intelligence Protocol).
-//!
-//! This crate defines the `RiskProvider` interface only. Concrete adapters
-//! (e.g. for CipherOwl, Chainalysis, TRM, Elliptic, or a community-run
-//! provider) are expected to be implemented externally against this trait —
-//! none are implemented here.
+//! Implements OFS-7100 (ORIP) on top of `openfiat_gossip` and
+//! `openfiat_registry`: providers register exactly the way any other
+//! service does (`ServiceType::Security(SecurityService::RiskIntelligenceProvider)`,
+//! no separate registration event here), signed risk records travel as
+//! gossip events, and every node derives its local intelligence dataset
+//! — including wallet-screening aggregation (§11) — purely by consuming
+//! them. `provider` defines the local plugin interface an external
+//! adapter (e.g. for CipherOwl, Chainalysis, TRM, Elliptic) uses to query
+//! its source before publishing a record; none ship here.
+
+pub mod error;
+pub mod events;
+pub mod protocol;
+pub mod provider;
+pub mod record;
+pub mod service;
+pub mod store;
+
+pub use error::RiskError;
+pub use provider::{ProviderError, RiskAssessment, RiskProvider, RiskSubject};
+pub use record::{Confidence, ProviderCategory, RiskOutcome, RiskRecord, RiskRecordId, ScreeningResult, Severity};
+pub use service::RiskService;
+pub use store::RiskIndex;
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-/// The subject of a risk assessment (an address, identity claim, etc.).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RiskSubject {
-    pub kind: String,
-    pub reference: String,
-}
-
-/// The result of a risk assessment.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RiskAssessment {
-    pub subject: RiskSubject,
-    pub score: f64,
-    pub provider: String,
-}
-
-/// Implemented by a risk intelligence provider plugin.
-pub trait RiskProvider: Send + Sync {
-    fn name(&self) -> &str;
-    fn assess(&self, subject: &RiskSubject) -> Result<RiskAssessment, RiskError>;
-}
-
-/// Errors a [`RiskProvider`] may return.
-#[derive(Debug)]
-pub enum RiskError {
-    NotImplemented,
-    ProviderUnavailable(String),
 }
 
 #[cfg(test)]
@@ -48,15 +37,5 @@ mod tests {
     #[test]
     fn reports_a_version() {
         assert!(!version().is_empty());
-    }
-
-    #[test]
-    fn subject_equality() {
-        let a = RiskSubject {
-            kind: "address".into(),
-            reference: "abc".into(),
-        };
-        let b = a.clone();
-        assert_eq!(a, b);
     }
 }

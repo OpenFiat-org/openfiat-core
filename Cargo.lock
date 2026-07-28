@@ -2484,8 +2484,17 @@ dependencies = [
 name = "openfiat-risk"
 version = "0.1.0"
 dependencies = [
- "openfiat-identity",
+ "futures",
+ "libp2p",
+ "openfiat-crypto",
+ "openfiat-gossip",
+ "openfiat-network",
+ "openfiat-registry",
+ "openfiat-serialization",
+ "openfiat-storage",
  "openfiat-types",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
