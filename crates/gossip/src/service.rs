@@ -45,8 +45,12 @@ pub struct GossipService<S> {
     /// Invoked for every event this node stores — whether self-originated
     /// or received (pushed, or recovered) — so a crate built on top of
     /// gossip (registry, advertisements, ...) can react without gossip
-    /// needing to know anything about what's built on it.
-    event_handler: Option<EventHandler>,
+    /// needing to know anything about what's built on it. A `Vec` rather
+    /// than a single slot: a real node multiplexes every domain's events
+    /// through one shared `GossipService` (that's the point of `ofs_spec`
+    /// discrimination), so more than one domain crate needs to register a
+    /// handler on the same instance without evicting the others'.
+    event_handlers: Vec<EventHandler>,
 }
 
 /// A callback notified of every event a [`GossipService`] stores.
@@ -64,7 +68,7 @@ impl<S: KvStore> GossipService<S> {
             subscription,
             peer_keys: HashMap::new(),
             connected: HashSet::new(),
-            event_handler: None,
+            event_handlers: Vec::new(),
         }
     }
 
@@ -82,10 +86,11 @@ impl<S: KvStore> GossipService<S> {
         self.keypair.sign(message)
     }
 
-    /// Set the handler notified of every event this node stores (see the
-    /// `event_handler` field doc). Replaces any previously set handler.
-    pub fn set_event_handler(&mut self, handler: impl FnMut(&EventEnvelope) + 'static) {
-        self.event_handler = Some(Box::new(handler));
+    /// Register a handler notified of every event this node stores (see
+    /// the `event_handlers` field doc). Appends — every previously
+    /// registered handler keeps running.
+    pub fn add_event_handler(&mut self, handler: impl FnMut(&EventEnvelope) + 'static) {
+        self.event_handlers.push(Box::new(handler));
     }
 
     /// Register a peer's public key so events it originates can be
@@ -150,7 +155,7 @@ impl<S: KvStore> GossipService<S> {
     }
 
     fn notify(&mut self, event: &EventEnvelope) {
-        if let Some(handler) = &mut self.event_handler {
+        for handler in &mut self.event_handlers {
             handler(event);
         }
     }

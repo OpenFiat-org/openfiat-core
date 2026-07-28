@@ -27,7 +27,7 @@ impl<S: KvStore + 'static> SnapshotService<S> {
     pub fn new(mut gossip: GossipService<S>, store: S, services: Rc<Registry<S>>) -> Self {
         let registry = Rc::new(SnapshotIndex::new(store, services));
         let handler_registry = Rc::clone(&registry);
-        gossip.set_event_handler(move |event| handler_registry.apply_event(event));
+        gossip.add_event_handler(move |event| handler_registry.apply_event(event));
         Self { gossip, registry }
     }
 
