@@ -1,9 +1,25 @@
 //! `openfiat-discovery` — Peer discovery: bootstrap, routing table, peer exchange.
 //!
-//! Related specification: OFS-1100 (PDP).
-//! This crate currently defines architecture only: module layout and public
-//! surface will be filled in during implementation. No business logic lives
-//! here yet.
+//! Implements OFS-1100 (PDP) on top of `openfiat_network`: a persistent
+//! peer cache (§7), signed advertisements (§8), peer exchange carried as
+//! `openfiat_network::Envelope` payloads (§9), reconnection backoff (§15),
+//! and bootstrap-independence policy (§6, §17). Gossip and everything
+//! above it (OFS-1200 onward) connects to the peer set this crate builds.
+
+pub mod advertisement;
+pub mod backoff;
+pub mod bootstrap;
+pub mod cache;
+pub mod error;
+pub mod exchange;
+pub mod record;
+pub mod service;
+
+pub use advertisement::{Advertisement, SignedAdvertisement};
+pub use cache::PeerCache;
+pub use error::DiscoveryError;
+pub use record::PeerRecord;
+pub use service::DiscoveryService;
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {

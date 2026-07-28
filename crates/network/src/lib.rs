@@ -20,6 +20,10 @@ pub use envelope::{Envelope, EnvelopeCodec, Header};
 pub use error::NetworkError;
 pub use lifecycle::ConnectionState;
 pub use node::Node;
+
+/// Re-exported so crates above this one don't need their own direct
+/// `libp2p` dependency just to name an address or a peer.
+pub use libp2p::{Multiaddr, PeerId};
 pub use sequence::SequenceTracker;
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.

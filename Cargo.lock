@@ -2291,8 +2291,16 @@ dependencies = [
 name = "openfiat-discovery"
 version = "0.1.0"
 dependencies = [
+ "futures",
+ "libp2p",
+ "openfiat-crypto",
  "openfiat-network",
+ "openfiat-serialization",
+ "openfiat-storage",
  "openfiat-types",
+ "rand 0.10.2",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
