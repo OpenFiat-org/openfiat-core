@@ -22,7 +22,7 @@ jobs:
           - os: ubuntu-latest
             asset_name: openfiat-node-linux-x86_64
             binary_name: openfiat-node
-            archive_cmd: tar -C dist -czf ${{ github.workspace }}/openfiat-node-linux-x86_64.tar.gz .
+            archive_cmd: tar -C dist -czf openfiat-node-linux-x86_64.tar.gz .
             archive_ext: tar.gz
           - os: windows-latest
             asset_name: openfiat-node-windows-x86_64
