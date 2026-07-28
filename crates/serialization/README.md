@@ -1,12 +1,14 @@
 # openfiat-serialization
 
-Canonical wire/storage encoding (`wire::to_bytes`/`wire::from_bytes`, backed
-by `postcard`) — compact, deterministic, `no_std`-friendly. Chosen over
-`bincode` because bincode's own maintainers flag it unmaintained with no
-safe upgrade path (`cargo deny` catches this as an advisory failure). Every
-signed event, registry record, and gossip payload in this workspace is
-encoded this way; JSON stays at the HTTP/RPC boundary (`rpc`, `api`) where
-human/cross-language readability matters more than size.
+Two encodings, two boundaries. `wire::to_bytes`/`wire::from_bytes`
+(`postcard`) — compact, deterministic, `no_std`-friendly — for gossip
+transport and RocksDB storage values, chosen over `bincode` because
+bincode's own maintainers flag it unmaintained with no safe upgrade path
+(`cargo deny` catches this as an advisory failure). `json::to_bytes`/
+`json::from_bytes` (`serde_json`) for every signed event's own signature
+bytes and the RPC boundary's `sendX` payload (`rpc`, `api`) — a signature
+a non-Rust SDK can reproduce with any language's stdlib JSON encoder,
+rather than needing to reimplement postcard's binary encoding rules.
 
 ## Depends on
 
