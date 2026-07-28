@@ -1,0 +1,30 @@
+[package]
+name = "escrow"
+version = "0.1.0"
+description = "Liquidity Vault + Trade Escrow Vault settlement custody (OFS-4200 §4)."
+license = "Apache-2.0"
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "escrow"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = { version = "1.1.2", features = ["init-if-needed"] }
+anchor-spl = "1.1.2"
+openfiat-programs-shared = { path = "../../shared", version = "0.1.0" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

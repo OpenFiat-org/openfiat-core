@@ -1,0 +1,21 @@
+[package]
+name = "openfiat-programs-shared"
+version = "0.1.0"
+description = "Shared account/enum types (OFS-4200 §2) reused by escrow, staking, and governance."
+license = "Apache-2.0"
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["lib"]
+name = "openfiat_programs_shared"
+
+[features]
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "1.1.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

@@ -21,8 +21,8 @@ behind each program below.
 
 | Program | Status | Purpose |
 |---|---|---|
-| `presale` | Phase 1 scaffold — `initialize` only | OPEN token presale (OFS-4200 §3) — the priority build |
-| `escrow` | Not yet scaffolded (Phase 4) | Liquidity Vault + Trade Escrow Vault settlement |
+| `presale` | Done (Phase 3) — full sale lifecycle, deployed to devnet | OPEN token presale (OFS-4200 §3) |
+| `escrow` | Done (Phase 4) — full vault lifecycle | Liquidity Vault + Trade Escrow Vault settlement |
 | `staking` | Not yet scaffolded (Phase 5) | Per-role OPEN staking, unbonding, slashing |
 | `governance` | Not yet scaffolded (Phase 5) | Proposals, voting, parameter updates, treasury spend |
 
