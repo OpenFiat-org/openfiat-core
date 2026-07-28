@@ -2469,9 +2469,17 @@ dependencies = [
 name = "openfiat-settlement"
 version = "0.1.0"
 dependencies = [
+ "futures",
+ "libp2p",
  "openfiat-crypto",
- "openfiat-trade",
+ "openfiat-gossip",
+ "openfiat-network",
+ "openfiat-reservations",
+ "openfiat-serialization",
+ "openfiat-storage",
  "openfiat-types",
+ "serde",
+ "tokio",
 ]
 
 [[package]]

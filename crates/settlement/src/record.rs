@@ -1,0 +1,60 @@
+//! The settlement shape and its state machine (OFS-2300 §5, §20).
+//!
+//! Actual on-chain escrow release (§16 — "escrow release is performed
+//! exclusively by the OpenFiat Program") is a Solana instruction, not
+//! something this P2P coordination layer invokes directly; `Approved`
+//! transitioning straight to `Completed` here models this crate's own
+//! authority ending where the on-chain program's begins, the same way
+//! `openfiat-reservations`'s authority ends at `EscrowLocked`. `Approved`
+//! and `Completed` are kept as two states anyway (rather than merged, the
+//! way this crate merges `PaymentSubmitted`/`MerchantReviewing`) because
+//! the on-chain release is a real asynchronous step in production, even
+//! though it isn't performed here yet.
+
+use openfiat_reservations::ReservationId;
+use openfiat_types::{Amount, PeerId, PublicKey, Timestamp};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct SettlementId(String);
+
+impl SettlementId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// §20's authoritative settlement state machine, from `EscrowLocked`
+/// onward. `PaymentSubmitted` also stands in for "Merchant Reviewing" —
+/// the same underlying condition (payment declared, awaiting merchant
+/// decision), not a separately persisted state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SettlementState {
+    AwaitingPayment,
+    PaymentSubmitted,
+    Approved,
+    Completed,
+    Rejected,
+    Cancelled,
+    /// Escalated to Dispute (OFS-2400) — that crate takes over resolution
+    /// of a settlement in this state; this crate doesn't depend on it.
+    Disputed,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Settlement {
+    pub id: SettlementId,
+    pub reservation_id: ReservationId,
+    pub buyer: PeerId,
+    pub buyer_public_key: PublicKey,
+    pub seller: PeerId,
+    pub seller_public_key: PublicKey,
+    pub amount: Amount,
+    pub state: SettlementState,
+    pub payment_reference: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}

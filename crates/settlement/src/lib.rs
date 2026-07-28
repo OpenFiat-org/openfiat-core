@@ -1,9 +1,26 @@
 //! `openfiat-settlement` — Settlement coordination with the Solana execution layer.
 //!
-//! Related specification: OFS-2300 (OSP).
-//! This crate currently defines architecture only: module layout and public
-//! surface will be filled in during implementation. No business logic lives
-//! here yet.
+//! Implements OFS-2300 (OSP) on top of `openfiat_gossip`: settlement
+//! events (initiate/payment-submitted/payment-reversed/approved/rejected/
+//! cancelled) travel as gossip events and every node derives its local
+//! settlement state purely by consuming them — the same replication
+//! pattern used throughout this workspace. This crate picks up authority
+//! at `EscrowLocked` (§5, handed off from `openfiat-reservations`) and
+//! its own authority ends where the on-chain program's escrow-release
+//! instruction begins (see `record` module doc) — that Solana-side
+//! integration is a separate, later piece of work.
+
+pub mod error;
+pub mod events;
+pub mod protocol;
+pub mod record;
+pub mod service;
+pub mod store;
+
+pub use error::SettlementError;
+pub use record::{Settlement, SettlementId, SettlementState};
+pub use service::SettlementService;
+pub use store::SettlementRegistry;
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {
