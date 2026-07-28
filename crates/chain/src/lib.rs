@@ -18,12 +18,16 @@ pub mod events;
 mod gossip_service;
 mod mode;
 pub mod protocol;
+mod state;
+mod validate;
 
 pub use blockhash::{BLOCKHASH_VALIDITY, BlockhashCache};
 pub use client::{ChainClient, RpcChainClient, SignatureStatus};
 pub use error::ChainError;
 pub use gossip_service::ChainGossipService;
 pub use mode::NodeChainMode;
+pub use state::ChainState;
+pub use validate::validate_transaction_bytes;
 
 /// Crate version, re-exported for diagnostics.
 pub fn version() -> &'static str {

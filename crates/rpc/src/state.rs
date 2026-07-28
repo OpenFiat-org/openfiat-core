@@ -6,6 +6,7 @@
 //! a thread boundary.
 
 use openfiat_advertisements::AdvertisementRegistry;
+use openfiat_chain::{ChainState, NodeChainMode};
 use openfiat_disputes::DisputeRegistry;
 use openfiat_governance::GovernanceRegistry;
 use openfiat_identity::IdentityRegistry;
@@ -37,6 +38,7 @@ pub struct NodeState<S> {
     pub risk: Rc<RiskIndex<Rc<S>>>,
     pub snapshots: Rc<SnapshotIndex<Rc<S>>>,
     pub sessions: Rc<SessionRegistry<Rc<S>>>,
+    pub chain: Rc<ChainState>,
 }
 
 impl<S: KvStore + 'static> NodeState<S> {
@@ -69,6 +71,11 @@ impl<S: KvStore + 'static> NodeState<S> {
         let risk = Rc::new(RiskIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let snapshots = Rc::new(SnapshotIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let sessions = Rc::new(SessionRegistry::new(Rc::clone(&store)));
+        // `GossipOnly` is the safe, zero-config default — an operator who
+        // wants `RpcConnected` mode configures it explicitly at the
+        // node-composition layer (`openfiat-cli`), same as every other
+        // deployment-specific choice.
+        let chain = Rc::new(ChainState::new(NodeChainMode::GossipOnly));
 
         Self {
             advertisements,
@@ -85,6 +92,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             risk,
             snapshots,
             sessions,
+            chain,
         }
     }
 }

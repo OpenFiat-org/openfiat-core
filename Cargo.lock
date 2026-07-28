@@ -3475,6 +3475,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "openfiat-advertisements",
+ "openfiat-chain",
  "openfiat-crypto",
  "openfiat-disputes",
  "openfiat-governance",

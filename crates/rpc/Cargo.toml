@@ -26,6 +26,7 @@ openfiat-oracles = { path = "../oracles", version = "0.1.0" }
 openfiat-risk = { path = "../risk", version = "0.1.0" }
 openfiat-snapshot = { path = "../snapshot", version = "0.1.0" }
 openfiat-sessions = { path = "../sessions", version = "0.1.0" }
+openfiat-chain = { path = "../chain", version = "0.1.0" }
 openfiat-metrics = { path = "../metrics", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

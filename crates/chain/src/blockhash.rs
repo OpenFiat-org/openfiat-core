@@ -104,6 +104,16 @@ impl BlockhashCache {
         })
     }
 
+    /// How long ago the current blockhash was observed, if one within
+    /// the validity window has been observed — for `getChainStatus`'s
+    /// staleness reporting (OFS-4300 §8).
+    pub fn current_age(&self) -> Option<Duration> {
+        self.current.as_ref().and_then(|(_, observed)| {
+            let elapsed = observed.observed_at.elapsed();
+            (elapsed < self.validity).then_some(elapsed)
+        })
+    }
+
     fn prune_expired(&mut self) {
         let validity = self.validity;
         self.seen

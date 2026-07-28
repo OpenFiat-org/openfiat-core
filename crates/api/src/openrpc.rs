@@ -43,6 +43,8 @@ const NO_PARAM_METHODS: &[&str] = &[
     "getSnapshots",
     "getLatestSnapshot",
     "getCheckpointHeight",
+    "getChainStatus",
+    "getLatestBlockhash",
 ];
 
 fn params_schema_for(method: &str) -> Value {
