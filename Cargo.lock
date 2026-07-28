@@ -2521,9 +2521,16 @@ dependencies = [
 name = "openfiat-sessions"
 version = "0.1.0"
 dependencies = [
+ "futures",
+ "libp2p",
  "openfiat-crypto",
+ "openfiat-gossip",
  "openfiat-network",
+ "openfiat-serialization",
+ "openfiat-storage",
  "openfiat-types",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
