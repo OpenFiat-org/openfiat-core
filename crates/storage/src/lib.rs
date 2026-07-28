@@ -33,6 +33,31 @@ pub trait KvStore {
     fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<Entry>, Self::Error>;
 }
 
+/// Lets one physical store back several domain registries at once —
+/// each still takes its `S` by value, but cloning an `Rc` is cheap and
+/// every registry writes to its own column family, so sharing one
+/// instance this way is exactly how a real node backs everything with a
+/// single RocksDB `Database` rather than one open handle per domain.
+impl<T: KvStore> KvStore for std::rc::Rc<T> {
+    type Error = T::Error;
+
+    fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+        (**self).get(cf, key)
+    }
+
+    fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+        (**self).put(cf, key, value)
+    }
+
+    fn delete(&self, cf: &str, key: &[u8]) -> Result<(), Self::Error> {
+        (**self).delete(cf, key)
+    }
+
+    fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<Entry>, Self::Error> {
+        (**self).iter_prefix(cf, prefix)
+    }
+}
+
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -41,9 +66,20 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mem::MemoryStore;
+    use std::rc::Rc;
 
     #[test]
     fn reports_a_version() {
         assert!(!version().is_empty());
+    }
+
+    #[test]
+    fn an_rc_wrapped_store_shares_state_across_clones() {
+        let store = Rc::new(MemoryStore::new());
+        let first = Rc::clone(&store);
+        let second = Rc::clone(&store);
+        first.put("cf", b"key", b"value").unwrap();
+        assert_eq!(second.get("cf", b"key").unwrap(), Some(b"value".to_vec()));
     }
 }
