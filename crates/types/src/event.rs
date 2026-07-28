@@ -69,7 +69,7 @@ impl EventType {
 /// `payload`'s shape is defined by whichever OFS specification `event_type`
 /// belongs to — this crate has no opinion on it beyond "bytes to be
 /// deserialized once the type is known".
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EventEnvelope {
     pub id: EventId,
     pub event_type: EventType,

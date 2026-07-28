@@ -10,6 +10,7 @@
 use crate::behaviour::{OpenFiatBehaviour, OpenFiatBehaviourEvent};
 use crate::envelope::Envelope;
 use crate::error::NetworkError;
+use crate::heartbeat;
 use crate::identity::{from_libp2p_peer_id, to_libp2p_keypair};
 use futures::StreamExt;
 use libp2p::request_response::OutboundRequestId;
@@ -36,6 +37,11 @@ impl Node {
             .with_quic()
             .with_behaviour(|key| OpenFiatBehaviour::new(key.public()))
             .map_err(|_| NetworkError::Internal)?
+            // libp2p-swarm's own default (10s) is shorter than our ping
+            // interval (`heartbeat::INTERVAL`, 15s): a connection with no
+            // application traffic between heartbeats would idle-time-out
+            // before the first ping ever had a chance to keep it alive.
+            .with_swarm_config(|config| config.with_idle_connection_timeout(heartbeat::TIMEOUT))
             .build();
         Ok(Self { swarm })
     }

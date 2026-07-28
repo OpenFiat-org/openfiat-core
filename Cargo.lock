@@ -2316,8 +2316,15 @@ dependencies = [
 name = "openfiat-gossip"
 version = "0.1.0"
 dependencies = [
+ "futures",
+ "libp2p",
+ "openfiat-crypto",
  "openfiat-network",
+ "openfiat-serialization",
+ "openfiat-storage",
  "openfiat-types",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
