@@ -17,12 +17,15 @@ flowchart TD
     gossip --> oracles["oracles (OFS-7000)"]
     gossip --> risk["risk (OFS-7100)"]
     gossip --> snapshot["snapshot sync (OFS-1300)"]
+    gossip --> chain["chain (OFS-4300)"]
     registry --> rpc["rpc / api"]
     advertisements --> rpc
     notifications --> rpc
     oracles --> rpc
     risk --> rpc
     snapshot --> rpc
+    chain --> rpc
+    chain --> settlement["settlement (OFS-2300)"]
     rpc --> indexer["explorer/indexer (openfiat-apps, git dep)"]
     indexer --> explorerapi["explorer/api (openfiat-apps)"]
 ```
@@ -30,6 +33,12 @@ flowchart TD
 Shared foundational crates (`types`, `serialization`, `crypto`,
 `storage`/`database`) sit underneath `network` and are depended on by
 everything above.
+
+`chain` (OFS-4300) is the bridge to the Solana execution layer OFS-4200's
+on-chain programs run on — it rides on `gossip` for blockhash announcement
+and transaction relay between RPC-connected and gossip-only nodes, and is
+`settlement`'s path to actually submitting the escrow-release instruction,
+closing the gap that crate's own doc comments flag as pending.
 
 ## Canonical `Priority` enum
 
