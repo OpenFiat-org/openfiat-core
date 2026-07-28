@@ -56,7 +56,22 @@ pub struct VoteCast {
     pub voter: PeerId,
     pub voter_public_key: PublicKey,
     pub choice: VoteChoice,
+    /// Self-reported, unverified. A node accepting a vote purely through
+    /// this crate's own `apply_vote` trusts it as-is (this crate has no
+    /// chain connectivity of its own); the real node
+    /// (`crates/rpc::methods::governance::sendVoteCast`) instead defers
+    /// to `apply_vote_with_verified_weight`, which ignores this field
+    /// entirely in favor of `stake_account`'s independently-decoded
+    /// on-chain amount.
     pub weight: u64,
+    /// Base58 address of the `openfiat-staking` `StakeAccount` PDA this
+    /// vote's weight is claimed from (seeds: `[b"stake", voter, role]` —
+    /// OFS-4200 §5). Covered by this event's own signature (see
+    /// `SignedVoteCast::verify`), so a voter can't have it swapped out
+    /// after signing; the account itself is read and independently
+    /// verified — see `crates/rpc::onchain_stake` — never trusted on the
+    /// claim alone.
+    pub stake_account: String,
     pub timestamp: Timestamp,
 }
 

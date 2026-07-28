@@ -72,11 +72,16 @@ impl<S: KvStore + 'static> GovernanceService<S> {
         Ok(signed.create.id)
     }
 
+    /// `stake_account`: base58 address of the `StakeAccount` PDA backing
+    /// `weight`'s claim (see `VoteCast::stake_account`'s own doc) — this
+    /// service has no chain connectivity to verify it itself, so (unlike
+    /// the shipped node's `sendVoteCast`) `weight` is applied as given.
     pub fn cast_vote(
         &mut self,
         proposal_id: ProposalId,
         choice: VoteChoice,
         weight: u64,
+        stake_account: impl Into<String>,
     ) -> Result<(), GovernanceError> {
         let vote = VoteCast {
             proposal_id,
@@ -84,6 +89,7 @@ impl<S: KvStore + 'static> GovernanceService<S> {
             voter_public_key: self.gossip.public_key(),
             choice,
             weight,
+            stake_account: stake_account.into(),
             timestamp: Timestamp::now(),
         };
         let bytes = json::to_bytes(&vote).map_err(|_| GovernanceError::MalformedProposal)?;

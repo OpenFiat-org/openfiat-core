@@ -12,6 +12,7 @@ pub mod dispatch;
 pub mod error;
 pub mod jsonrpc;
 pub mod methods;
+pub mod onchain_stake;
 pub mod server;
 pub mod state;
 

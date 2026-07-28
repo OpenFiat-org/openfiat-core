@@ -37,7 +37,20 @@ use openfiat_storage::KvStore;
 use openfiat_trade::TradeView;
 use openfiat_types::NodeRole;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
+
+/// A gossiped or locally-submitted `VoteCast` (OFS-4000) awaiting real
+/// on-chain verification of the stake it claims as its weight — see
+/// `actor::poll_vote_verifications` for what drains this and
+/// `onchain_stake` for how the claim is checked. `signed_vote_bytes` is
+/// the vote's own wire-serialized `SignedVoteCast`, kept opaque here so
+/// this crate's composition root doesn't need a governance-specific
+/// type to hold it in a queue.
+pub struct PendingVoteVerification {
+    pub stake_account: String,
+    pub signed_vote_bytes: Vec<u8>,
+}
 
 pub struct NodeState<S> {
     pub gossip: RefCell<GossipService<Rc<S>>>,
@@ -63,6 +76,12 @@ pub struct NodeState<S> {
     /// only this half needs `&mut GossipService` to originate anything;
     /// see `new`'s wiring of the two together.
     pub chain_bridge: ChainBridge,
+    /// Governance `VoteCast`s (this node's own `sendVoteCast` submissions
+    /// and every peer's gossiped ones alike — see `new`'s governance
+    /// event-handler wiring) awaiting independent on-chain stake
+    /// verification before any weight is trusted. Drained by
+    /// `actor::poll_vote_verifications`.
+    pending_vote_verifications: Rc<RefCell<VecDeque<PendingVoteVerification>>>,
 }
 
 impl<S: KvStore + 'static> NodeState<S> {
@@ -159,14 +178,41 @@ impl<S: KvStore + 'static> NodeState<S> {
         attach!(reservations);
         attach!(settlements);
         attach!(disputes);
-        attach!(identity);
-        attach!(governance);
         attach!(services);
         attach!(notifications);
         attach!(oracles);
         attach!(risk);
         attach!(snapshots);
         attach!(sessions);
+        attach!(identity);
+
+        // Governance's `VoteCast` is the one event type this node never
+        // applies straight off the wire (self-reported or gossiped
+        // alike) — its claimed weight isn't trustworthy until
+        // independently checked against real on-chain stake (see
+        // `PendingVoteVerification`'s own doc). Every other governance
+        // event still applies directly, same as every other registry.
+        let pending_vote_verifications = Rc::new(RefCell::new(VecDeque::new()));
+        let governance_for_events = Rc::clone(&governance);
+        let queue_for_events = Rc::clone(&pending_vote_verifications);
+        gossip.add_event_handler(move |event| {
+            if event.ofs_spec == openfiat_governance::protocol::OFS_SPEC
+                && event.event_type.as_str() == openfiat_governance::protocol::EVENT_VOTE_CAST
+            {
+                if let Ok(signed) =
+                    wire::from_bytes::<openfiat_governance::events::SignedVoteCast>(&event.payload)
+                {
+                    queue_for_events
+                        .borrow_mut()
+                        .push_back(PendingVoteVerification {
+                            stake_account: signed.vote.stake_account.clone(),
+                            signed_vote_bytes: event.payload.clone(),
+                        });
+                }
+            } else {
+                governance_for_events.apply_event(event);
+            }
+        });
 
         Self {
             gossip: RefCell::new(gossip),
@@ -186,7 +232,33 @@ impl<S: KvStore + 'static> NodeState<S> {
             sessions,
             chain,
             chain_bridge,
+            pending_vote_verifications,
         }
+    }
+
+    /// Queues a governance vote for independent on-chain stake
+    /// verification — see `PendingVoteVerification`'s own doc for why
+    /// its weight can't just be applied here directly.
+    pub fn enqueue_vote_verification(&self, stake_account: String, signed_vote_bytes: Vec<u8>) {
+        self.pending_vote_verifications
+            .borrow_mut()
+            .push_back(PendingVoteVerification {
+                stake_account,
+                signed_vote_bytes,
+            });
+    }
+
+    /// Drains every vote currently queued for verification — called once
+    /// per `actor::poll_vote_verifications` tick. Anything that fails
+    /// verification this round (not yet observable, or a transient RPC
+    /// error) is expected to be re-queued by the caller via
+    /// `enqueue_vote_verification`, same retry shape as `ChainState`'s
+    /// `awaiting_confirmation`.
+    pub fn drain_vote_verifications(&self) -> Vec<PendingVoteVerification> {
+        self.pending_vote_verifications
+            .borrow_mut()
+            .drain(..)
+            .collect()
     }
 
     /// Test-only convenience: a lone in-process node with a throwaway

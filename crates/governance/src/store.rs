@@ -80,8 +80,32 @@ impl<S: KvStore> GovernanceRegistry<S> {
     }
 
     /// §13/§24: only legal while voting is open, and only once per voter.
+    /// Trusts the vote's own self-reported `weight` — safe only for a
+    /// caller with no independent way to check it (this crate has no
+    /// chain connectivity of its own). The shipped node instead calls
+    /// [`Self::apply_vote_with_verified_weight`].
     pub fn apply_vote(&self, signed: SignedVoteCast) -> Result<(), GovernanceError> {
         signed.verify()?;
+        let weight = signed.vote.weight;
+        self.apply_vote_inner(signed, weight)
+    }
+
+    /// Same as [`Self::apply_vote`], but with `weight` overridden by a
+    /// caller-supplied value rather than the vote's own self-reported
+    /// one — used once that value has been independently confirmed
+    /// against real on-chain stake (`crates/rpc::actor::
+    /// poll_vote_verifications` + `crates/rpc::onchain_stake`), closing
+    /// this crate's previously-documented trust gap.
+    pub fn apply_vote_with_verified_weight(
+        &self,
+        signed: SignedVoteCast,
+        verified_weight: u64,
+    ) -> Result<(), GovernanceError> {
+        signed.verify()?;
+        self.apply_vote_inner(signed, verified_weight)
+    }
+
+    fn apply_vote_inner(&self, signed: SignedVoteCast, weight: u64) -> Result<(), GovernanceError> {
         let mut proposal = self
             .get(&signed.vote.proposal_id)
             .ok_or(GovernanceError::ProposalNotFound)?;
@@ -97,7 +121,7 @@ impl<S: KvStore> GovernanceRegistry<S> {
         proposal.votes.push(CastVote {
             voter: signed.vote.voter,
             choice: signed.vote.choice,
-            weight: signed.vote.weight,
+            weight,
             timestamp: signed.vote.timestamp,
         });
         proposal.updated_at = signed.vote.timestamp;
@@ -264,6 +288,7 @@ mod tests {
             voter_public_key: voter.public_key(),
             choice,
             weight,
+            stake_account: String::new(),
             timestamp: Timestamp::now(),
         };
         registry.apply_vote(SignedVoteCast::sign(vote, voter))
@@ -304,6 +329,33 @@ mod tests {
         cast(&registry, &id, &voter, VoteChoice::Approve, 10).unwrap();
         let result = cast(&registry, &id, &voter, VoteChoice::Reject, 10);
         assert_eq!(result, Err(GovernanceError::DuplicateVote));
+    }
+
+    #[test]
+    fn verified_weight_overrides_whatever_the_vote_itself_self_reports() {
+        let author = Keypair::generate();
+        let (registry, id) = registry_with_proposal(&author, "ofp-1");
+        let voter = Keypair::generate();
+        let vote = VoteCast {
+            proposal_id: id.clone(),
+            voter: peer_id_from_public_key(&voter.public_key()).unwrap(),
+            voter_public_key: voter.public_key(),
+            choice: VoteChoice::Approve,
+            weight: 999_999, // an unverified, self-reported lie
+            stake_account: "stake-account-1".to_string(),
+            timestamp: Timestamp::now(),
+        };
+        registry
+            .apply_vote_with_verified_weight(SignedVoteCast::sign(vote, &voter), 42)
+            .unwrap();
+
+        let recorded = registry
+            .get(&id)
+            .unwrap()
+            .vote_by(&peer_id_from_public_key(&voter.public_key()).unwrap())
+            .unwrap()
+            .weight;
+        assert_eq!(recorded, 42);
     }
 
     #[test]

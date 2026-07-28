@@ -47,8 +47,14 @@ pub trait ChainClient: Send + Sync {
         signature: &str,
     ) -> Result<Option<SignatureStatus>, ChainError>;
 
-    /// Raw account data, `None` if the account doesn't exist.
-    async fn get_account(&self, pubkey: &str) -> Result<Option<Vec<u8>>, ChainError>;
+    /// The owning program's base58 pubkey and the account's raw data,
+    /// `None` if the account doesn't exist. The owner is load-bearing,
+    /// not incidental: a caller trusting an account's decoded contents
+    /// (e.g. a staking `StakeAccount`'s claimed weight) needs to know
+    /// which program actually wrote that data before trusting its
+    /// layout — an arbitrary account at some other address decodes to
+    /// arbitrary bytes otherwise.
+    async fn get_account(&self, pubkey: &str) -> Result<Option<(String, Vec<u8>)>, ChainError>;
 }
 
 /// Wraps one or more Solana RPC endpoints for an [`NodeChainMode::RpcConnected`](crate::NodeChainMode) node.
@@ -145,14 +151,16 @@ impl ChainClient for RpcChainClient {
         }))
     }
 
-    async fn get_account(&self, pubkey: &str) -> Result<Option<Vec<u8>>, ChainError> {
+    async fn get_account(&self, pubkey: &str) -> Result<Option<(String, Vec<u8>)>, ChainError> {
         let pk = Pubkey::from_str(pubkey).map_err(|_| ChainError::MalformedTransaction)?;
         let response = self
             .primary()
             .get_account_with_commitment(&pk, CommitmentConfig::confirmed())
             .await
             .map_err(|_| ChainError::ChainUnavailable)?;
-        Ok(response.value.map(|account| account.data))
+        Ok(response
+            .value
+            .map(|account| (account.owner.to_string(), account.data)))
     }
 }
 
@@ -207,7 +215,10 @@ mod tests {
         ) -> Result<Option<SignatureStatus>, ChainError> {
             Ok(Some(SignatureStatus::Success))
         }
-        async fn get_account(&self, _pubkey: &str) -> Result<Option<Vec<u8>>, ChainError> {
+        async fn get_account(
+            &self,
+            _pubkey: &str,
+        ) -> Result<Option<(String, Vec<u8>)>, ChainError> {
             Ok(None)
         }
     }

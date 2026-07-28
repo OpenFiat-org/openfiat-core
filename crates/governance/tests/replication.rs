@@ -104,7 +104,7 @@ async fn a_proposal_passes_and_converges_across_the_cluster() {
 
     for voter in &mut all[1..] {
         voter
-            .cast_vote(proposal_id.clone(), VoteChoice::Approve, 1)
+            .cast_vote(proposal_id.clone(), VoteChoice::Approve, 1, "")
             .unwrap();
     }
     drive_until(&mut all, |services| {

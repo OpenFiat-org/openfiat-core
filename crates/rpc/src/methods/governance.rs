@@ -57,12 +57,23 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedVoteCast =
                     json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                // Signature/authorship is checked now; the claimed
+                // `weight` is not — this node never trusts a vote's own
+                // self-report (see `VoteCast::weight`'s doc). Real
+                // application (proposal existence, voting-window,
+                // duplicate-vote checks, and finally recording the vote)
+                // is deferred to `actor::poll_vote_verifications`, once
+                // `stake_account` has been read and independently
+                // confirmed on-chain.
+                signed
+                    .verify()
+                    .map_err(|e| RpcError::Application(e.code()))?;
                 let gossip_bytes =
                     wire::to_bytes(&signed).expect("SignedVoteCast always serializes");
-                state
-                    .governance
-                    .apply_vote(signed)
-                    .map_err(|e| RpcError::Application(e.code()))?;
+                state.enqueue_vote_verification(
+                    signed.vote.stake_account.clone(),
+                    gossip_bytes.clone(),
+                );
                 crate::dispatch::originate(
                     state,
                     protocol::EVENT_VOTE_CAST,

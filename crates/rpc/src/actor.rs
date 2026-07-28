@@ -17,10 +17,13 @@
 
 use crate::dispatch::MethodTable;
 use crate::error::RpcError;
+use crate::onchain_stake;
 use crate::state::NodeState;
 use openfiat_chain::{ChainClient, NodeChainMode, RpcChainClient, SignatureStatus};
 use openfiat_crypto::Keypair;
+use openfiat_governance::events::SignedVoteCast;
 use openfiat_network::{Multiaddr, Node};
+use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::NodeRole;
 use serde_json::Value;
@@ -85,6 +88,13 @@ pub struct NetworkConfig {
     pub listen_addr: Multiaddr,
     pub bootstrap_peers: Vec<Multiaddr>,
     pub chain_mode: NodeChainMode,
+    /// Base58 program id of the deployed `openfiat-staking` program —
+    /// the authority a governance vote's claimed `StakeAccount` must
+    /// actually be owned by before `poll_vote_verifications` will trust
+    /// its decoded weight. `None` (e.g. no programs deployed yet on this
+    /// cluster) means every pending vote verification is left queued
+    /// indefinitely rather than silently trusted.
+    pub staking_program_id: Option<String>,
 }
 
 impl NetworkConfig {
@@ -99,6 +109,7 @@ impl NetworkConfig {
             listen_addr: "/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap(),
             bootstrap_peers: Vec::new(),
             chain_mode: NodeChainMode::GossipOnly,
+            staking_program_id: None,
         }
     }
 }
@@ -197,6 +208,58 @@ async fn poll_chain<S: KvStore + 'static>(state: &NodeState<S>, client: &dyn Cha
     }
 }
 
+/// Independently verifies every queued governance vote's claimed stake
+/// weight (`NodeState::drain_vote_verifications`) before it is ever
+/// applied — the fix for `crates/governance`'s previously-documented
+/// placeholder (trusting a client-signed `weight` outright, see
+/// `VoteCast::weight`'s own doc). Runs against both this node's own
+/// `sendVoteCast` submissions and every peer's gossiped `VoteCast`
+/// (`NodeState::new`'s governance event-handler wiring queues both
+/// identically), reading the voter's claimed `StakeAccount` PDA
+/// directly rather than trusting anything the client asserts.
+///
+/// `staking_program_id` being `None` (no programs deployed on this
+/// cluster yet) leaves every pending vote queued forever rather than
+/// ever trusting one — the safe default matches `poll_chain`'s own
+/// stance on anything not yet genuinely confirmed.
+async fn poll_vote_verifications<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    client: &dyn ChainClient,
+    staking_program_id: Option<&str>,
+) {
+    for pending in state.drain_vote_verifications() {
+        let Some(staking_program_id) = staking_program_id else {
+            state.enqueue_vote_verification(pending.stake_account, pending.signed_vote_bytes);
+            continue;
+        };
+        match client.get_account(&pending.stake_account).await {
+            Ok(Some((owner, data))) => {
+                if owner == staking_program_id
+                    && let Ok(signed) =
+                        wire::from_bytes::<SignedVoteCast>(&pending.signed_vote_bytes)
+                    && let Ok(decoded) = onchain_stake::decode_stake_account(&data)
+                    && decoded.owner == *signed.vote.voter_public_key.as_bytes()
+                {
+                    let _ = state
+                        .governance
+                        .apply_vote_with_verified_weight(signed, decoded.amount);
+                }
+                // Otherwise the claim itself is bogus (wrong owner
+                // program, undecodable layout, or a `StakeAccount` that
+                // doesn't actually belong to this voter) — dropped for
+                // good, same as `poll_chain`'s handling of a
+                // confirmed-failed relay.
+            }
+            Ok(None) | Err(_) => {
+                // Not yet observable (or a transient RPC error) — retry
+                // on a later tick, same as `poll_chain`'s
+                // `awaiting_confirmation` handling.
+                state.enqueue_vote_verification(pending.stake_account, pending.signed_vote_bytes);
+            }
+        }
+    }
+}
+
 /// Spawns the actor thread. `build_store` and `network` both take effect
 /// *inside* that thread, not before — `S`, `Node`, and everything built
 /// from them never needs to be `Send`, only the values handed in do.
@@ -228,6 +291,7 @@ where
                 }
                 NodeChainMode::GossipOnly => None,
             };
+            let staking_program_id = network.staking_program_id;
             let state = NodeState::new(
                 node,
                 build_store(),
@@ -267,7 +331,9 @@ where
                     }
                     _ = drive_gossip(&state) => {}
                     _ = chain_poll.tick(), if chain_client.is_some() => {
-                        poll_chain(&state, chain_client.as_deref().unwrap()).await;
+                        let client = chain_client.as_deref().unwrap();
+                        poll_chain(&state, client).await;
+                        poll_vote_verifications(&state, client, staking_program_id.as_deref()).await;
                     }
                 }
             }
@@ -310,7 +376,10 @@ mod tests {
         ) -> Result<Option<SignatureStatus>, ChainError> {
             Ok(Some(SignatureStatus::Success))
         }
-        async fn get_account(&self, _pubkey: &str) -> Result<Option<Vec<u8>>, ChainError> {
+        async fn get_account(
+            &self,
+            _pubkey: &str,
+        ) -> Result<Option<(String, Vec<u8>)>, ChainError> {
             Ok(None)
         }
     }
@@ -368,7 +437,10 @@ mod tests {
                 Ok(Some(SignatureStatus::Success))
             }
         }
-        async fn get_account(&self, _pubkey: &str) -> Result<Option<Vec<u8>>, ChainError> {
+        async fn get_account(
+            &self,
+            _pubkey: &str,
+        ) -> Result<Option<(String, Vec<u8>)>, ChainError> {
             Ok(None)
         }
     }
@@ -492,6 +564,161 @@ mod tests {
             Some("real-looking-signature".to_string())
         );
         assert!(state.chain.awaiting_confirmations().is_empty());
+    }
+
+    /// A `ChainClient` fake reporting a fixed, well-formed `StakeAccount`
+    /// for every `get_account` call — enough to prove
+    /// `poll_vote_verifications` reads and trusts the *decoded* amount,
+    /// not whatever a vote's own signed `weight` claims.
+    struct StakeAccountChainClient {
+        owner: [u8; 32],
+        amount: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl ChainClient for StakeAccountChainClient {
+        async fn get_latest_blockhash(&self) -> Result<(String, u64), ChainError> {
+            Ok(("unused".to_string(), 0))
+        }
+        async fn is_blockhash_valid(&self, _blockhash: &str) -> Result<bool, ChainError> {
+            Ok(true)
+        }
+        async fn send_transaction(&self, _tx_bytes: &[u8]) -> Result<String, ChainError> {
+            Ok("unused".to_string())
+        }
+        async fn get_signature_status(
+            &self,
+            _signature: &str,
+        ) -> Result<Option<SignatureStatus>, ChainError> {
+            Ok(None)
+        }
+        async fn get_account(
+            &self,
+            _pubkey: &str,
+        ) -> Result<Option<(String, Vec<u8>)>, ChainError> {
+            Ok(Some((
+                "StakingProgram11111111111111111111111111111".to_string(),
+                crate::onchain_stake::fixture_stake_account_bytes(self.owner, self.amount),
+            )))
+        }
+    }
+
+    fn open_proposal(state: &NodeState<MemoryStore>) -> openfiat_governance::ProposalId {
+        use openfiat_governance::events::{ProposalCreate, SignedProposalCreate};
+        use openfiat_governance::{ProposalCategory, ProposalId};
+        use openfiat_network::identity::peer_id_from_public_key;
+
+        let author = Keypair::generate();
+        let create = ProposalCreate {
+            id: ProposalId::new("ofp-vote-verification-test"),
+            title: "T".to_string(),
+            summary: "S".to_string(),
+            category: ProposalCategory::Protocol,
+            author: peer_id_from_public_key(&author.public_key()).unwrap(),
+            author_public_key: author.public_key(),
+            timestamp: openfiat_types::Timestamp::now(),
+        };
+        state
+            .governance
+            .apply_create(SignedProposalCreate::sign(create, &author))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn poll_vote_verifications_trusts_decoded_weight_not_the_votes_own_claim() {
+        use openfiat_governance::VoteChoice;
+        use openfiat_governance::events::{SignedVoteCast, VoteCast};
+
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let proposal_id = open_proposal(&state);
+
+        let voter = Keypair::generate();
+        let vote = VoteCast {
+            proposal_id: proposal_id.clone(),
+            voter: openfiat_network::identity::peer_id_from_public_key(&voter.public_key())
+                .unwrap(),
+            voter_public_key: voter.public_key(),
+            choice: VoteChoice::Approve,
+            weight: 999_999, // an unverified, self-reported lie
+            stake_account: "stake-1".to_string(),
+            timestamp: openfiat_types::Timestamp::now(),
+        };
+        let signed = SignedVoteCast::sign(vote, &voter);
+        let bytes = wire::to_bytes(&signed).unwrap();
+        state.enqueue_vote_verification("stake-1".to_string(), bytes);
+
+        let client = StakeAccountChainClient {
+            owner: *voter.public_key().as_bytes(),
+            amount: 42,
+        };
+        poll_vote_verifications(
+            &state,
+            &client,
+            Some("StakingProgram11111111111111111111111111111"),
+        )
+        .await;
+
+        let recorded_weight = state
+            .governance
+            .get(&proposal_id)
+            .unwrap()
+            .vote_by(
+                &openfiat_network::identity::peer_id_from_public_key(&voter.public_key()).unwrap(),
+            )
+            .unwrap()
+            .weight;
+        assert_eq!(recorded_weight, 42);
+    }
+
+    #[tokio::test]
+    async fn poll_vote_verifications_drops_a_claim_whose_owner_field_does_not_match_the_voter() {
+        use openfiat_governance::VoteChoice;
+        use openfiat_governance::events::{SignedVoteCast, VoteCast};
+
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let proposal_id = open_proposal(&state);
+
+        let voter = Keypair::generate();
+        let someone_else = Keypair::generate();
+        let vote = VoteCast {
+            proposal_id: proposal_id.clone(),
+            voter: openfiat_network::identity::peer_id_from_public_key(&voter.public_key())
+                .unwrap(),
+            voter_public_key: voter.public_key(),
+            choice: VoteChoice::Approve,
+            weight: 1,
+            stake_account: "stake-1".to_string(),
+            timestamp: openfiat_types::Timestamp::now(),
+        };
+        let signed = SignedVoteCast::sign(vote, &voter);
+        let bytes = wire::to_bytes(&signed).unwrap();
+        state.enqueue_vote_verification("stake-1".to_string(), bytes);
+
+        // The claimed `StakeAccount` really belongs to `someone_else`,
+        // not the voter who signed the vote.
+        let client = StakeAccountChainClient {
+            owner: *someone_else.public_key().as_bytes(),
+            amount: 500,
+        };
+        poll_vote_verifications(
+            &state,
+            &client,
+            Some("StakingProgram11111111111111111111111111111"),
+        )
+        .await;
+
+        assert!(
+            state
+                .governance
+                .get(&proposal_id)
+                .unwrap()
+                .vote_by(
+                    &openfiat_network::identity::peer_id_from_public_key(&voter.public_key())
+                        .unwrap()
+                )
+                .is_none(),
+            "a stake account that doesn't belong to the voter must never be applied"
+        );
     }
 
     #[tokio::test]

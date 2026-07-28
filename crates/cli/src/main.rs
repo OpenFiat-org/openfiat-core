@@ -150,6 +150,13 @@ async fn main() {
         .expect("CLI_LISTEN_ADDR must be a valid multiaddr");
     let bootstrap_peers = bootstrap_peers();
     let chain_mode = chain_mode();
+    // `CLI_STAKING_PROGRAM_ID`: base58 program id of the deployed
+    // `openfiat-staking` program, e.g. from `programs/devnet-
+    // addresses.json`. Unset means this node can't verify any
+    // governance vote's claimed stake weight, so it leaves every one
+    // queued rather than trusting it — see `NetworkConfig::
+    // staking_program_id`'s own doc.
+    let staking_program_id = std::env::var("CLI_STAKING_PROGRAM_ID").ok();
 
     println!(
         "openfiat-node {} — data dir: {data_dir}, gossip identity: {:?}, chain mode: {}",
@@ -173,6 +180,7 @@ async fn main() {
             listen_addr,
             bootstrap_peers,
             chain_mode,
+            staking_program_id,
         },
     );
     let metrics = Arc::new(openfiat_metrics::MetricsRegistry::new());
