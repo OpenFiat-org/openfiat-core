@@ -3,15 +3,18 @@
 //! No OFS spec of its own — this crate exists to give the pieces of this
 //! workspace that need a wallet identity a single shared implementation:
 //! the Phase 7 RPC signed-request auth model (see the `request` module
-//! doc) and, later, Solana staking/governance instruction builders that
-//! need the same keypair to sign transactions with.
+//! doc), loading a node's identity from a Solana-format wallet.json (see
+//! `solana_keyfile`), and, later, Solana staking/governance instruction
+//! builders that need the same keypair to sign transactions with.
 
 pub mod error;
 pub mod request;
+pub mod solana_keyfile;
 pub mod wallet;
 
 pub use error::WalletError;
 pub use request::{RequestEnvelope, SignedRequest, verify_request};
+pub use solana_keyfile::KeyfileError;
 pub use wallet::Wallet;
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.

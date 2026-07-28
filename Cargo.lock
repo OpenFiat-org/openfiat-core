@@ -2643,6 +2643,7 @@ dependencies = [
  "openfiat-serialization",
  "openfiat-types",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
