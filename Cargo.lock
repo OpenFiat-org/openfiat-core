@@ -2285,6 +2285,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "openfiat-conformance"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "libp2p",
+ "openfiat-advertisements",
+ "openfiat-crypto",
+ "openfiat-disputes",
+ "openfiat-gossip",
+ "openfiat-governance",
+ "openfiat-identity",
+ "openfiat-network",
+ "openfiat-notifications",
+ "openfiat-oracles",
+ "openfiat-registry",
+ "openfiat-reputation",
+ "openfiat-reservations",
+ "openfiat-risk",
+ "openfiat-serialization",
+ "openfiat-sessions",
+ "openfiat-settlement",
+ "openfiat-snapshot",
+ "openfiat-storage",
+ "openfiat-trade",
+ "openfiat-types",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "openfiat-crypto"
 version = "0.1.0"
 dependencies = [

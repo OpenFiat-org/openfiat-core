@@ -1,0 +1,34 @@
+[package]
+name = "openfiat-conformance"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Multi-node integration harness + spec conformance test suite. Not part of the shipped node."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+publish = false
+
+[dependencies]
+openfiat-types = { path = "../types", version = "0.1.0" }
+openfiat-crypto = { path = "../crypto", version = "0.1.0" }
+openfiat-network = { path = "../network", version = "0.1.0" }
+openfiat-serialization = { path = "../serialization", version = "0.1.0" }
+openfiat-storage = { path = "../storage", version = "0.1.0" }
+openfiat-gossip = { path = "../gossip", version = "0.1.0" }
+openfiat-advertisements = { path = "../advertisements", version = "0.1.0" }
+openfiat-reservations = { path = "../reservations", version = "0.1.0" }
+openfiat-settlement = { path = "../settlement", version = "0.1.0" }
+openfiat-trade = { path = "../trade", version = "0.1.0" }
+openfiat-disputes = { path = "../disputes", version = "0.1.0" }
+openfiat-identity = { path = "../identity", version = "0.1.0" }
+openfiat-reputation = { path = "../reputation", version = "0.1.0" }
+openfiat-governance = { path = "../governance", version = "0.1.0" }
+openfiat-registry = { path = "../registry", version = "0.1.0" }
+openfiat-notifications = { path = "../notifications", version = "0.1.0" }
+openfiat-oracles = { path = "../oracles", version = "0.1.0" }
+openfiat-risk = { path = "../risk", version = "0.1.0" }
+openfiat-snapshot = { path = "../snapshot", version = "0.1.0" }
+openfiat-sessions = { path = "../sessions", version = "0.1.0" }
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
+libp2p = { version = "0.56.0", features = ["request-response"] }
