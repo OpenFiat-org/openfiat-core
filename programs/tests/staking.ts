@@ -3,13 +3,14 @@ import { Program, BN } from "@anchor-lang/core";
 import { Staking } from "../target/types/staking";
 import {
   TOKEN_2022_PROGRAM_ID,
-  createMint,
   mintTo,
   getOrCreateAssociatedTokenAccount,
   getAccount,
+  transferChecked,
 } from "@solana/spl-token";
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { expect } from "chai";
+import { getSharedMint, getSharedStakingConfig, unit, MINT_DECIMALS } from "./shared-fixtures";
 
 describe("staking", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
@@ -18,9 +19,6 @@ describe("staking", () => {
 
   const program = anchor.workspace.staking as Program<Staking>;
   const admin = (provider.wallet as anchor.Wallet).payer;
-
-  const MINT_DECIMALS = 9;
-  const unit = (n: number) => new BN(n).mul(new BN(10).pow(new BN(MINT_DECIMALS)));
 
   const ROLE_NODE_OPERATOR = { nodeOperator: {} };
   const ROLE_ARBITRATOR = { arbitrator: {} };
@@ -32,9 +30,6 @@ describe("staking", () => {
   let slashingAuthority: Keypair;
   let rewardsAuthority: Keypair;
   let slashDestination: PublicKey;
-
-  const UNBONDING_PERIOD_SECS = 1; // short, so tests don't wait real days
-  const SLASH_BPS = 1000; // 10%
 
   async function airdrop(pubkey: PublicKey, sol = 10) {
     const sig = await connection.requestAirdrop(pubkey, sol * 1_000_000_000);
@@ -93,15 +88,6 @@ describe("staking", () => {
     throw new Error("unreachable");
   }
 
-  function stakingConfigPda() {
-    return PublicKey.findProgramAddressSync([Buffer.from("staking_config")], program.programId)[0];
-  }
-  function stakeVaultPda() {
-    return PublicKey.findProgramAddressSync([Buffer.from("stake_vault")], program.programId)[0];
-  }
-  function rewardsVaultPda() {
-    return PublicKey.findProgramAddressSync([Buffer.from("rewards_vault")], program.programId)[0];
-  }
   function stakeAccountPda(owner: PublicKey, roleByte: number) {
     return PublicKey.findProgramAddressSync(
       [Buffer.from("stake"), owner.toBuffer(), Buffer.from([roleByte])],
@@ -110,54 +96,15 @@ describe("staking", () => {
   }
 
   before(async () => {
-    mint = await createMint(
-      connection,
-      admin,
-      admin.publicKey,
-      null,
-      MINT_DECIMALS,
-      undefined,
-      { commitment: "confirmed" },
-      TOKEN_2022_PROGRAM_ID,
-    );
-
-    slashingAuthority = Keypair.generate();
-    rewardsAuthority = Keypair.generate();
-    slashDestination = await ata(mint, Keypair.generate().publicKey);
-
-    stakingConfig = stakingConfigPda();
-    stakeVault = stakeVaultPda();
-    rewardsVault = rewardsVaultPda();
-
-    await withBlockhashRetry(() =>
-      program.methods
-        .initializeStakingConfig({
-          minStake: unit(1000),
-          minStakeArbitrator: unit(50000),
-          unbondingPeriodSecs: new BN(UNBONDING_PERIOD_SECS),
-          slashBps: SLASH_BPS,
-          slashingAuthority: slashingAuthority.publicKey,
-          slashDestination,
-          rewardsAuthority: rewardsAuthority.publicKey,
-        })
-        .accountsPartial({
-          admin: admin.publicKey,
-          mint,
-          stakingConfig,
-          stakeVault,
-          rewardsVault,
-          tokenProgram: TOKEN_2022_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc({ commitment: "confirmed" }),
-    );
+    mint = await getSharedMint();
+    ({ stakingConfig, stakeVault, rewardsVault, slashingAuthority, rewardsAuthority, slashDestination } =
+      await getSharedStakingConfig(program));
 
     // Seed the rewards vault so claim_rewards has something real to pay out.
     const rewardsFunder = Keypair.generate();
     await airdrop(rewardsFunder.publicKey);
     const funderAta = await ata(mint, rewardsFunder.publicKey);
     await mintTokens(funderAta, unit(10000));
-    const { transferChecked } = await import("@solana/spl-token");
     await transferChecked(
       connection,
       rewardsFunder,
@@ -176,6 +123,12 @@ describe("staking", () => {
   describe("stake -> request_unstake -> withdraw_unstaked", () => {
     let owner: Keypair;
     let stakeAccount: PublicKey;
+    // `stakeVault` is a single global vault shared with every other test
+    // file/describe block in this run (a real production deployment
+    // only ever has one too) — assertions below check the *delta* this
+    // describe block's own actions cause, not the vault's absolute
+    // total, which depends on how much other tests have already staked.
+    let vaultBeforeStake: bigint;
 
     before(async () => {
       owner = Keypair.generate();
@@ -196,6 +149,9 @@ describe("staking", () => {
 
       const ownerAta = await ata(mint, owner.publicKey);
       await mintTokens(ownerAta, unit(20000));
+
+      const before = await getAccount(connection, stakeVault, "confirmed", TOKEN_2022_PROGRAM_ID);
+      vaultBeforeStake = before.amount;
 
       await withBlockhashRetry(() =>
         program.methods
@@ -218,10 +174,14 @@ describe("staking", () => {
       const account = await program.account.stakeAccount.fetch(stakeAccount);
       expect(account.amount.toString()).to.equal(unit(15000).toString());
       const vaultTokens = await getAccount(connection, stakeVault, "confirmed", TOKEN_2022_PROGRAM_ID);
-      expect(vaultTokens.amount.toString()).to.equal(unit(15000).toString());
+      expect((vaultTokens.amount - vaultBeforeStake).toString()).to.equal(unit(15000).toString());
     });
 
     it("moves requested amount from `amount` to `unbonding_amount` immediately, with no token transfer yet", async () => {
+      const vaultBeforeUnstake = (
+        await getAccount(connection, stakeVault, "confirmed", TOKEN_2022_PROGRAM_ID)
+      ).amount;
+
       await withBlockhashRetry(() =>
         program.methods
           .requestUnstake(unit(5000))
@@ -235,7 +195,7 @@ describe("staking", () => {
       expect(account.unbondingAmount.toString()).to.equal(unit(5000).toString());
 
       const vaultTokens = await getAccount(connection, stakeVault, "confirmed", TOKEN_2022_PROGRAM_ID);
-      expect(vaultTokens.amount.toString()).to.equal(unit(15000).toString());
+      expect(vaultTokens.amount.toString()).to.equal(vaultBeforeUnstake.toString());
     });
 
     it("rejects withdraw_unstaked before the unbonding period has elapsed", async () => {

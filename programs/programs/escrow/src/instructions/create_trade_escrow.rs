@@ -58,7 +58,6 @@ pub fn handle_create_trade_escrow(
     ctx: Context<CreateTradeEscrow>,
     reservation_id: u64,
     amount: u64,
-    dispute_authority: Pubkey,
     timeout_secs: i64,
 ) -> Result<()> {
     require!(
@@ -76,7 +75,6 @@ pub fn handle_create_trade_escrow(
     trade_escrow.amount = amount;
     trade_escrow.state = VaultState::Reserved;
     trade_escrow.approved = false;
-    trade_escrow.dispute_authority = dispute_authority;
     trade_escrow.created_at = now;
     trade_escrow.timeout_at = now.checked_add(timeout_secs).ok_or(ErrorCode::Overflow)?;
     trade_escrow.bump = ctx.bumps.trade_escrow;

@@ -25,6 +25,16 @@ custom-panic = []
 anchor-lang = { version = "1.1.2", features = ["init-if-needed"] }
 anchor-spl = "1.1.2"
 openfiat-programs-shared = { path = "../../shared", version = "0.1.0" }
+# "cpi" (-> staking's own "no-entrypoint") so staking's `entrypoint!`
+# doesn't get pulled into this program's own binary — escrow only needs
+# staking's `StakeAccount`/`StakingConfig` types to deserialize accounts
+# directly (Phase 4b's dispute-vote weighting), not a real CPI dispatch.
+staking = { path = "../staking", version = "0.1.0", features = ["cpi"] }
+# Pure-Rust, no syscall dependency — this Anchor version's `solana_program`
+# shim doesn't re-export a hash module, and a commit-reveal scheme only
+# needs *a* collision-resistant hash, not Solana's own syscall-accelerated
+# one (nothing here compares against an on-chain syscall-computed hash).
+sha2 = { version = "0.10", default-features = false }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

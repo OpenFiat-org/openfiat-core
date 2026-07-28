@@ -20,8 +20,26 @@ pub enum ErrorCode {
     NotYetExpired,
     #[msg("Only the buyer or seller on this trade escrow may perform this action")]
     NotAPartyToThisTrade,
-    #[msg("Only this trade escrow's configured dispute authority may perform this action")]
-    NotDisputeAuthority,
+    #[msg("This dispute case's commit window has already closed")]
+    CommitWindowClosed,
+    #[msg("This dispute case's reveal window is not open (either still committing, or already closed)")]
+    NotInRevealWindow,
+    #[msg("This dispute case is already at maximum arbitrator capacity")]
+    DisputeCaseFull,
+    #[msg("This wallet has already committed a vote for this dispute case")]
+    AlreadyCommitted,
+    #[msg("This wallet has not committed a vote for this dispute case")]
+    NoCommitmentFound,
+    #[msg("This wallet has already revealed its vote for this dispute case")]
+    AlreadyRevealed,
+    #[msg("The revealed outcome and salt do not match the stored commitment")]
+    CommitmentMismatch,
+    #[msg("This dispute case's reveal window has not yet closed")]
+    RevealWindowStillOpen,
+    #[msg("This dispute case has already been resolved")]
+    DisputeAlreadyResolved,
+    #[msg("No arbitrator revealed a vote for this dispute case")]
+    NoVotesRevealed,
     #[msg("Arithmetic overflow")]
     Overflow,
 }

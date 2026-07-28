@@ -7,8 +7,10 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
     transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
 };
+use openfiat_programs_shared::VaultState;
 
-use crate::{constants::TRADE_ESCROW_SEED, error::ErrorCode, state::*};
+use crate::constants::{BPS_DENOMINATOR, TRADE_ESCROW_SEED};
+use crate::{error::ErrorCode, state::*};
 
 /// Releases a reservation-marking without ever having funded a trade
 /// escrow (e.g. cancelled/expired before `fund_trade_escrow` ran).
@@ -64,6 +66,113 @@ pub fn unwind_funded_trade_escrow<'info>(
     liquidity_vault.pending_settlement -= amount;
     liquidity_vault.available = liquidity_vault
         .available
+        .checked_add(amount)
+        .ok_or(ErrorCode::Overflow)?;
+    Ok(())
+}
+
+/// Splits `amount` into (buyer_amount, [dev, ecosystem, infra, emergency]),
+/// per `FeeConfig`'s settlement fee rate and 4-way basis-point split.
+/// Shared by `release_escrow` and `execute_dispute_outcome`'s `BuyerWins`
+/// path — both release funds identically once a release is authorized.
+pub fn compute_fee_split(fee_config: &FeeConfig, amount: u64) -> Result<(u64, [u64; 4])> {
+    let fee = (amount as u128)
+        .checked_mul(fee_config.settlement_fee_bps as u128)
+        .ok_or(ErrorCode::Overflow)?
+        .checked_div(BPS_DENOMINATOR as u128)
+        .ok_or(ErrorCode::Overflow)? as u64;
+    let buyer_amount = amount.checked_sub(fee).ok_or(ErrorCode::Overflow)?;
+
+    let splits = [
+        fee_config.dev_treasury_bps,
+        fee_config.ecosystem_treasury_bps,
+        fee_config.infra_treasury_bps,
+        fee_config.emergency_reserve_bps,
+    ];
+    let mut shares = [0u64; 4];
+    let mut allocated = 0u64;
+    for (i, bps) in splits.iter().enumerate() {
+        let share = (fee as u128)
+            .checked_mul(*bps as u128)
+            .ok_or(ErrorCode::Overflow)?
+            .checked_div(BPS_DENOMINATOR as u128)
+            .ok_or(ErrorCode::Overflow)? as u64;
+        shares[i] = share;
+        allocated = allocated.checked_add(share).ok_or(ErrorCode::Overflow)?;
+    }
+    // Rounding remainder (basis-point division truncates) goes to the
+    // emergency reserve rather than being silently lost.
+    let remainder = fee.checked_sub(allocated).ok_or(ErrorCode::Overflow)?;
+    shares[3] = shares[3]
+        .checked_add(remainder)
+        .ok_or(ErrorCode::Overflow)?;
+
+    Ok((buyer_amount, shares))
+}
+
+/// Moves an approved (or dispute-resolved `BuyerWins`) trade escrow's
+/// funds to the buyer plus the fee split's treasury destinations, and
+/// updates `liquidity_vault`'s settled/pending counters. Shared by
+/// `release_escrow` and `execute_dispute_outcome`.
+#[allow(clippy::too_many_arguments)]
+pub fn release_trade_escrow_funds<'info>(
+    trade_escrow: &mut Account<'info, TradeEscrowVault>,
+    trade_escrow_token_vault: &InterfaceAccount<'info, TokenAccount>,
+    buyer_token_account: &InterfaceAccount<'info, TokenAccount>,
+    liquidity_vault: &mut Account<'info, LiquidityVault>,
+    fee_config: &FeeConfig,
+    dev_treasury: &InterfaceAccount<'info, TokenAccount>,
+    ecosystem_treasury: &InterfaceAccount<'info, TokenAccount>,
+    infra_treasury: &InterfaceAccount<'info, TokenAccount>,
+    emergency_reserve: &InterfaceAccount<'info, TokenAccount>,
+    mint: &InterfaceAccount<'info, Mint>,
+    token_program: &Program<'info, Token2022>,
+) -> Result<()> {
+    let amount = trade_escrow.amount;
+    let (buyer_amount, fee_shares) = compute_fee_split(fee_config, amount)?;
+
+    let id_bytes = trade_escrow.reservation_id.to_le_bytes();
+    let bump = trade_escrow.bump;
+    let signer_seeds: &[&[u8]] = &[TRADE_ESCROW_SEED, &id_bytes, &[bump]];
+
+    let decimals = mint.decimals;
+    let token_program_id = token_program.key();
+    let mint_info = mint.to_account_info();
+    let from = trade_escrow_token_vault.to_account_info();
+    let authority = trade_escrow.to_account_info();
+
+    let destinations: [(AccountInfo<'info>, u64); 5] = [
+        (buyer_token_account.to_account_info(), buyer_amount),
+        (dev_treasury.to_account_info(), fee_shares[0]),
+        (ecosystem_treasury.to_account_info(), fee_shares[1]),
+        (infra_treasury.to_account_info(), fee_shares[2]),
+        (emergency_reserve.to_account_info(), fee_shares[3]),
+    ];
+
+    for (to, share_amount) in destinations {
+        if share_amount == 0 {
+            continue;
+        }
+        transfer_checked(
+            CpiContext::new_with_signer(
+                token_program_id,
+                TransferChecked {
+                    from: from.clone(),
+                    mint: mint_info.clone(),
+                    to,
+                    authority: authority.clone(),
+                },
+                &[signer_seeds],
+            ),
+            share_amount,
+            decimals,
+        )?;
+    }
+
+    trade_escrow.state = VaultState::Released;
+    liquidity_vault.pending_settlement -= amount;
+    liquidity_vault.settled = liquidity_vault
+        .settled
         .checked_add(amount)
         .ok_or(ErrorCode::Overflow)?;
     Ok(())

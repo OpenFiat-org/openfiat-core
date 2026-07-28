@@ -14,8 +14,13 @@ declare_id!("HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP");
 /// `openfiat-escrow` — Liquidity Vault + Trade Escrow Vault custody
 /// (OFS-4200 §4). Phase 4: full vault lifecycle — create, deposit,
 /// reserve, withdraw, create/fund a trade escrow, approve, release,
-/// cancel, expire, freeze. Phase 4b adds the dispute-to-chain bridge
-/// (`commit_dispute_vote`/`reveal_dispute_vote`/`execute_dispute_outcome`).
+/// cancel, expire. Phase 4b: the dispute-to-chain bridge —
+/// `open_dispute_case` freezes the escrow and opens a `DisputeCase`;
+/// arbitrators `commit_dispute_vote`/`reveal_dispute_vote`;
+/// `execute_dispute_outcome` permissionlessly tallies the case's own
+/// on-chain, stake-weighted votes (reading `openfiat-staking`'s
+/// `StakeAccount` directly) rather than trusting a caller-supplied
+/// outcome.
 #[program]
 pub mod escrow {
     use super::*;
@@ -47,14 +52,12 @@ pub mod escrow {
         ctx: Context<CreateTradeEscrow>,
         reservation_id: u64,
         amount: u64,
-        dispute_authority: Pubkey,
         timeout_secs: i64,
     ) -> Result<()> {
         crate::instructions::create_trade_escrow::handle_create_trade_escrow(
             ctx,
             reservation_id,
             amount,
-            dispute_authority,
             timeout_secs,
         )
     }
@@ -79,7 +82,34 @@ pub mod escrow {
         crate::instructions::expire_reservation::handle_expire_reservation(ctx)
     }
 
-    pub fn freeze_on_dispute(ctx: Context<FreezeOnDispute>) -> Result<()> {
-        crate::instructions::freeze_on_dispute::handle_freeze_on_dispute(ctx)
+    pub fn open_dispute_case(
+        ctx: Context<OpenDisputeCase>,
+        commit_window_secs: i64,
+        reveal_window_secs: i64,
+    ) -> Result<()> {
+        crate::instructions::open_dispute_case::handle_open_dispute_case(
+            ctx,
+            commit_window_secs,
+            reveal_window_secs,
+        )
+    }
+
+    pub fn commit_dispute_vote(
+        ctx: Context<CommitDisputeVote>,
+        commitment: [u8; 32],
+    ) -> Result<()> {
+        crate::instructions::commit_dispute_vote::handle_commit_dispute_vote(ctx, commitment)
+    }
+
+    pub fn reveal_dispute_vote(
+        ctx: Context<RevealDisputeVote>,
+        outcome: openfiat_programs_shared::DisputeOutcome,
+        salt: [u8; 32],
+    ) -> Result<()> {
+        crate::instructions::reveal_dispute_vote::handle_reveal_dispute_vote(ctx, outcome, salt)
+    }
+
+    pub fn execute_dispute_outcome(ctx: Context<ExecuteDisputeOutcome>) -> Result<()> {
+        crate::instructions::execute_dispute_outcome::handle_execute_dispute_outcome(ctx)
     }
 }

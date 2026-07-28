@@ -620,6 +620,8 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "openfiat-programs-shared",
+ "sha2 0.10.9",
+ "staking",
 ]
 
 [[package]]
