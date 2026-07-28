@@ -2379,9 +2379,6 @@ dependencies = [
 [[package]]
 name = "openfiat-metrics"
 version = "0.1.0"
-dependencies = [
- "openfiat-types",
-]
 
 [[package]]
 name = "openfiat-network"

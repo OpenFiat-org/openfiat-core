@@ -1,8 +1,17 @@
 //! `openfiat-metrics` — Prometheus metrics and telemetry instrumentation.
 //!
-//! This crate currently defines architecture only: module layout and public
-//! surface will be filled in during implementation. No business logic lives
-//! here yet.
+//! `MetricsRegistry` holds atomic `Counter`/`Gauge` handles (real
+//! `Arc<Atomic*>`, safe to share across axum's worker threads — unlike
+//! this workspace's `Rc`-based domain registries) and renders them in
+//! Prometheus's text exposition format for a `/metrics` endpoint.
+
+pub mod counter;
+pub mod gauge;
+pub mod registry;
+
+pub use counter::Counter;
+pub use gauge::Gauge;
+pub use registry::MetricsRegistry;
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {
