@@ -1,9 +1,15 @@
 //! `openfiat-reputation` — Behavioral reputation scoring engine.
 //!
-//! Related specification: OFS-3000 (ORE).
-//! This crate currently defines architecture only: module layout and public
-//! surface will be filled in during implementation. No business logic lives
-//! here yet.
+//! Implements OFS-3000 (ORE) as a pure read-side aggregate over
+//! `openfiat-reservations`, `openfiat-settlement`, and `openfiat-disputes`
+//! — see the `view` module doc for why this crate has no signed events or
+//! store of its own.
+
+pub mod record;
+pub mod view;
+
+pub use record::{MerchantTier, ReputationProfile};
+pub use view::ReputationView;
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {

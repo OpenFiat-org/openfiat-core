@@ -2424,8 +2424,15 @@ dependencies = [
 name = "openfiat-reputation"
 version = "0.1.0"
 dependencies = [
- "openfiat-identity",
+ "openfiat-advertisements",
+ "openfiat-crypto",
+ "openfiat-disputes",
+ "openfiat-network",
+ "openfiat-reservations",
+ "openfiat-settlement",
+ "openfiat-storage",
  "openfiat-types",
+ "serde",
 ]
 
 [[package]]
