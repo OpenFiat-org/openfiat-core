@@ -107,7 +107,7 @@ mod tests {
 
     fn test_router() -> Router {
         router(
-            spawn_actor(MemoryStore::new),
+            spawn_actor(MemoryStore::new, crate::actor::NetworkConfig::for_test()),
             Arc::new(MetricsRegistry::new()),
         )
     }

@@ -49,6 +49,24 @@ pub fn peer_id_from_public_key(public_key: &PublicKey) -> Result<PeerId, Decodin
     )))
 }
 
+/// Recover the public key a freshly-connected peer's `PeerId` embeds,
+/// with no wire round-trip needed. Sound specifically because this
+/// workspace's node identity is always Ed25519 (OFNP §6): the libp2p
+/// peer-id spec mandates the size-inline "identity" multihash (rather
+/// than a one-way hash) whenever the protobuf-encoded public key is
+/// under 42 bytes, which an Ed25519 key always is — so decoding it back
+/// out is a documented guarantee here, not a coincidence to rely on
+/// loosely. Used to auto-populate `GossipService`'s `peer_keys` map on
+/// connection (see `crates/gossip/src/service.rs::handle`), since two
+/// independently-started nodes have no other shared advance knowledge of
+/// each other's signing key.
+pub fn public_key_from_peer_id(id: Libp2pPeerId) -> Option<PublicKey> {
+    let multihash = multihash::Multihash::<64>::from_bytes(&id.to_bytes()).ok()?;
+    let libp2p_key = Libp2pPublicKey::try_decode_protobuf(multihash.digest()).ok()?;
+    let ed25519_key = libp2p_key.try_into_ed25519().ok()?;
+    Some(PublicKey::from_bytes(ed25519_key.to_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,6 +84,14 @@ mod tests {
         let a = peer_id(&to_libp2p_keypair(&Keypair::from_seed([1u8; 32])));
         let b = peer_id(&to_libp2p_keypair(&Keypair::from_seed([2u8; 32])));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn public_key_from_peer_id_recovers_the_originating_keypairs_public_key() {
+        let keypair = Keypair::from_seed([7u8; 32]);
+        let libp2p_peer_id = Libp2pPeerId::from(to_libp2p_keypair(&keypair).public());
+        let recovered = public_key_from_peer_id(libp2p_peer_id).unwrap();
+        assert_eq!(recovered, keypair.public_key());
     }
 
     #[test]

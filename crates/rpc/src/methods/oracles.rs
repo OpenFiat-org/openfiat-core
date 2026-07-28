@@ -4,10 +4,10 @@ use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, meth
 use crate::error::RpcError;
 use crate::state::NodeState;
 use openfiat_oracles::events::SignedOraclePublish;
-use openfiat_oracles::{OracleId, OracleRecord};
-use openfiat_serialization::json;
+use openfiat_oracles::{OracleId, OracleRecord, protocol};
+use openfiat_serialization::{json, wire};
 use openfiat_storage::KvStore;
-use openfiat_types::Timestamp;
+use openfiat_types::{Priority, Timestamp};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -52,10 +52,19 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedOraclePublish =
                     json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedOraclePublish always serializes");
                 let id = state
                     .oracles
                     .apply_publish(signed)
                     .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_PUBLISHED,
+                    protocol::OFS_SPEC,
+                    Priority::Reputation,
+                    gossip_bytes,
+                );
                 Ok(id.as_str().to_string())
             },
         ),

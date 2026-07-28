@@ -10,6 +10,7 @@ repository = "https://github.com/OpenFiat-org/openfiat-core"
 openfiat-types = { path = "../types", version = "0.1.0" }
 openfiat-crypto = { path = "../crypto", version = "0.1.0" }
 openfiat-network = { path = "../network", version = "0.1.0" }
+openfiat-gossip = { path = "../gossip", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
 openfiat-advertisements = { path = "../advertisements", version = "0.1.0" }

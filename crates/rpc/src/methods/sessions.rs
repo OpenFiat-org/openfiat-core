@@ -5,12 +5,13 @@ use crate::dispatch::{
 };
 use crate::error::RpcError;
 use crate::state::NodeState;
-use openfiat_serialization::json;
+use openfiat_serialization::{json, wire};
 use openfiat_sessions::events::{
     SignedSessionCreate, SignedSessionMigrate, SignedSessionRenew, SignedSessionRevoke,
 };
-use openfiat_sessions::{Session, SessionId};
+use openfiat_sessions::{Session, SessionId, protocol};
 use openfiat_storage::KvStore;
+use openfiat_types::Priority;
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
     table.register(
@@ -38,10 +39,19 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSessionCreate =
                     json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedSessionCreate always serializes");
                 let id = state
                     .sessions
                     .apply_create(signed)
                     .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_ESTABLISHED,
+                    protocol::OFS_SPEC,
+                    Priority::SessionReservationSettlement,
+                    gossip_bytes,
+                );
                 Ok(id.as_str().to_string())
             },
         ),
@@ -53,10 +63,20 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSessionRenew =
                     json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedSessionRenew always serializes");
                 state
                     .sessions
                     .apply_renew(signed)
-                    .map_err(|e| RpcError::Application(e.code()))
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_RENEWED,
+                    protocol::OFS_SPEC,
+                    Priority::SessionReservationSettlement,
+                    gossip_bytes,
+                );
+                Ok(())
             },
         ),
     );
@@ -67,10 +87,20 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSessionRevoke =
                     json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedSessionRevoke always serializes");
                 state
                     .sessions
                     .apply_revoke(signed)
-                    .map_err(|e| RpcError::Application(e.code()))
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_REVOKED,
+                    protocol::OFS_SPEC,
+                    Priority::SessionReservationSettlement,
+                    gossip_bytes,
+                );
+                Ok(())
             },
         ),
     );
@@ -81,10 +111,20 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSessionMigrate =
                     json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedSessionMigrate always serializes");
                 state
                     .sessions
                     .apply_migrate(signed)
-                    .map_err(|e| RpcError::Application(e.code()))
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_MIGRATED,
+                    protocol::OFS_SPEC,
+                    Priority::SessionReservationSettlement,
+                    gossip_bytes,
+                );
+                Ok(())
             },
         ),
     );

@@ -18,7 +18,10 @@
 use crate::dispatch::MethodTable;
 use crate::error::RpcError;
 use crate::state::NodeState;
+use openfiat_crypto::Keypair;
+use openfiat_network::{Multiaddr, Node};
 use openfiat_storage::KvStore;
+use openfiat_types::NodeRole;
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -62,10 +65,52 @@ impl RpcHandle {
     }
 }
 
-/// Spawns the actor thread. `build_store` runs *inside* that thread, not
-/// before — `S` (and everything built from it) never needs to be `Send`,
-/// only the construction closure does.
-pub fn spawn_actor<S>(build_store: impl FnOnce() -> S + Send + 'static) -> RpcHandle
+/// This node's real network identity and cluster-bootstrap configuration
+/// — everything `spawn_actor` needs to bring up a genuine, gossip-connected
+/// [`NodeState`] instead of an isolated local registry. Plain data (no
+/// `Rc`/`RefCell`), so it can cross into the actor thread the same way
+/// `build_store`'s closure does.
+pub struct NetworkConfig {
+    pub keypair: Keypair,
+    pub self_roles: Vec<NodeRole>,
+    pub listen_addr: Multiaddr,
+    pub bootstrap_peers: Vec<Multiaddr>,
+}
+
+impl NetworkConfig {
+    /// A lone, unbootstrapped node on an OS-assigned loopback port — for
+    /// tests that only need a real transport to exist, not a cluster.
+    /// Not `cfg(test)`-gated: this crate's own integration tests (under
+    /// `tests/`) link against a normal build, not a test-cfg'd one.
+    pub fn for_test() -> Self {
+        Self {
+            keypair: Keypair::generate(),
+            self_roles: Vec::new(),
+            listen_addr: "/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap(),
+            bootstrap_peers: Vec::new(),
+        }
+    }
+}
+
+/// Drives one iteration of this node's gossip network loop. Holds
+/// `state.gossip`'s `RefCell` guard across the internal `.await` — sound
+/// only because the sole caller is a `tokio::select!` arm (see
+/// `spawn_actor`): losing the race cancels (drops) this future outright
+/// before `dispatch`'s own arm ever runs, so the two paths never actually
+/// interleave a concurrent borrow the way the lint otherwise guards
+/// against.
+#[allow(clippy::await_holding_refcell_ref)]
+async fn drive_gossip<S: KvStore + 'static>(state: &NodeState<S>) {
+    state.gossip.borrow_mut().drive_once().await;
+}
+
+/// Spawns the actor thread. `build_store` and `network` both take effect
+/// *inside* that thread, not before — `S`, `Node`, and everything built
+/// from them never needs to be `Send`, only the values handed in do.
+pub fn spawn_actor<S>(
+    build_store: impl FnOnce() -> S + Send + 'static,
+    network: NetworkConfig,
+) -> RpcHandle
 where
     S: KvStore + 'static,
 {
@@ -82,18 +127,40 @@ where
             .build()
             .expect("failed to start the RPC actor's runtime");
         runtime.block_on(async move {
-            let state = NodeState::new(build_store());
+            let node = Node::new(&network.keypair)
+                .expect("failed to start this node's libp2p transport");
+            let state = NodeState::new(node, build_store(), network.keypair, network.self_roles);
+            {
+                let mut gossip = state.gossip.borrow_mut();
+                gossip
+                    .node
+                    .listen_on(network.listen_addr)
+                    .expect("failed to bind this node's gossip listen address");
+                for peer in network.bootstrap_peers {
+                    gossip
+                        .node
+                        .dial(peer)
+                        .expect("failed to dial a configured bootstrap peer");
+                }
+            }
             let table: MethodTable<S> = crate::methods::build_table();
 
-            while let Some(command) = receiver.recv().await {
-                let result = table.dispatch(&state, &command.method, command.params);
-                if command.method.starts_with("send")
-                    && let Ok(value) = &result
-                {
-                    let _ = events
-                        .send(serde_json::json!({ "method": command.method, "result": value }));
+            loop {
+                tokio::select! {
+                    command = receiver.recv() => {
+                        let Some(command) = command else { break };
+                        let result = table.dispatch(&state, &command.method, command.params);
+                        if command.method.starts_with("send")
+                            && let Ok(value) = &result
+                        {
+                            let _ = events.send(
+                                serde_json::json!({ "method": command.method, "result": value }),
+                            );
+                        }
+                        let _ = command.respond_to.send(result);
+                    }
+                    _ = drive_gossip(&state) => {}
                 }
-                let _ = command.respond_to.send(result);
             }
         });
     });
@@ -108,21 +175,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_call_reaches_the_actor_and_returns_a_result() {
-        let handle = spawn_actor(MemoryStore::new);
+        let handle = spawn_actor(MemoryStore::new, NetworkConfig::for_test());
         let result = handle.call("getVersion", Value::Null).await.unwrap();
         assert!(result["version"].is_string());
     }
 
     #[tokio::test]
     async fn an_unknown_method_returns_method_not_found() {
-        let handle = spawn_actor(MemoryStore::new);
+        let handle = spawn_actor(MemoryStore::new, NetworkConfig::for_test());
         let result = handle.call("doesNotExist", Value::Null).await;
         assert!(matches!(result, Err(RpcError::MethodNotFound(_))));
     }
 
     #[tokio::test]
     async fn a_subscriber_receives_a_notification_for_a_successful_send_method() {
-        let handle = spawn_actor(MemoryStore::new);
+        let handle = spawn_actor(MemoryStore::new, NetworkConfig::for_test());
         let mut subscription = handle.subscribe();
 
         // getVersion doesn't start with "send", so it must not notify.

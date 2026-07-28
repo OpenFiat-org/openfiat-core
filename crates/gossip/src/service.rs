@@ -17,6 +17,7 @@ use libp2p::request_response::{self, Message, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
 use openfiat_crypto::{Keypair, verify};
 use openfiat_network::behaviour::OpenFiatBehaviourEvent;
+use openfiat_network::identity::{from_libp2p_peer_id, public_key_from_peer_id};
 use openfiat_network::{Envelope, Node, PeerId as Libp2pPeerId};
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
@@ -41,10 +42,13 @@ pub struct GossipService<S> {
     self_roles: Vec<NodeRole>,
     subscription: Subscription,
     /// Known peers' public keys, needed to verify signatures on events
-    /// they originate. In a real node this is populated from
-    /// `openfiat-discovery`'s peer cache; kept as a plain map here rather
-    /// than a second `KvStore` generic so this crate doesn't need to know
-    /// discovery's storage backing.
+    /// they originate. Auto-populated on every new connection (see
+    /// `handle`'s `ConnectionEstablished` arm, `public_key_from_peer_id`)
+    /// since Ed25519 peer ids embed their own key; `openfiat-discovery`'s
+    /// peer cache or an explicit `register_peer_key` call (as tests do)
+    /// can also seed it ahead of a connection. Kept as a plain map here
+    /// rather than a second `KvStore` generic so this crate doesn't need
+    /// to know discovery's storage backing.
     peer_keys: HashMap<PeerId, PublicKey>,
     connected: HashSet<Libp2pPeerId>,
     /// Invoked for every event this node stores — whether self-originated
@@ -298,6 +302,15 @@ impl<S: KvStore> GossipService<S> {
         match event {
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                 self.connected.insert(peer_id);
+                // Two independently-started nodes have no advance
+                // knowledge of each other's signing key — recover it
+                // from the connection's own peer id (see
+                // `public_key_from_peer_id`'s doc) so `validate` can
+                // verify events this peer originates without a prior,
+                // separate key-exchange step.
+                if let Some(public_key) = public_key_from_peer_id(peer_id) {
+                    self.register_peer_key(from_libp2p_peer_id(peer_id), public_key);
+                }
                 self.request_recovery(peer_id);
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {

@@ -108,7 +108,7 @@ mod tests {
     fn table_and_state() -> (MethodTable<MemoryStore>, NodeState<MemoryStore>) {
         let mut table = MethodTable::new();
         register(&mut table);
-        (table, NodeState::new(MemoryStore::new()))
+        (table, NodeState::new_for_test(MemoryStore::new()))
     }
 
     #[test]

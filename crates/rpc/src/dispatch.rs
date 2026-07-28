@@ -10,7 +10,7 @@ use crate::state::NodeState;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use openfiat_storage::KvStore;
-use openfiat_types::PeerId;
+use openfiat_types::{EventType, PeerId, Priority};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -95,6 +95,35 @@ pub fn encode_peer_id(peer_id: &PeerId) -> String {
     encode_bytes(peer_id.as_bytes())
 }
 
+/// Re-broadcasts an already-applied signed payload through this node's
+/// gossip — every `sendX` handler calls this *after* applying the
+/// payload to its own registry directly (so a rejected submission still
+/// gets a real `RpcError` back to the caller, which a silently-discarded
+/// gossip-handler failure never would). `event_type`/`ofs_spec`/
+/// `priority` mirror the exact values each domain crate's own
+/// `*Service::originate` already uses; `bytes` is the domain's wire
+/// encoding of the same payload just applied, computed by the caller
+/// before that payload was moved into its own `apply_*` call.
+///
+/// Fire-and-forget: a node missing the role a handful of event types
+/// require to originate (`openfiat_gossip::authorization`) still keeps
+/// the write it just applied locally, it just doesn't propagate — a
+/// degraded outcome, not a fatal one for the caller.
+pub fn originate<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    event_type: &str,
+    ofs_spec: u16,
+    priority: Priority,
+    bytes: Vec<u8>,
+) {
+    if let Ok(event_type) = EventType::new(event_type) {
+        let _ = state
+            .gossip
+            .borrow_mut()
+            .originate(event_type, ofs_spec, priority, 8, bytes);
+    }
+}
+
 /// Params shared by nearly every `getX(id)` method.
 #[derive(Debug, serde::Deserialize)]
 pub struct IdParams {
@@ -125,7 +154,7 @@ mod tests {
     #[test]
     fn dispatch_reports_method_not_found() {
         let table: MethodTable<MemoryStore> = MethodTable::new();
-        let state = NodeState::new(MemoryStore::new());
+        let state = NodeState::new_for_test(MemoryStore::new());
         let result = table.dispatch(&state, "doesNotExist", Value::Null);
         assert!(matches!(result, Err(RpcError::MethodNotFound(_))));
     }
@@ -137,7 +166,7 @@ mod tests {
             "echo",
             method_fn(|_state: &NodeState<MemoryStore>, params: IdParams| Ok(params.id)),
         );
-        let state = NodeState::new(MemoryStore::new());
+        let state = NodeState::new_for_test(MemoryStore::new());
         let result = table
             .dispatch(&state, "echo", serde_json::json!({ "id": "hello" }))
             .unwrap();

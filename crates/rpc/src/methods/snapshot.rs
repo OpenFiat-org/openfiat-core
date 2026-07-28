@@ -6,10 +6,11 @@
 use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, method_fn};
 use crate::error::RpcError;
 use crate::state::NodeState;
-use openfiat_serialization::json;
+use openfiat_serialization::{json, wire};
 use openfiat_snapshot::events::SignedSnapshotAnnounce;
-use openfiat_snapshot::{SnapshotId, SnapshotMetadata};
+use openfiat_snapshot::{SnapshotId, SnapshotMetadata, protocol};
 use openfiat_storage::KvStore;
+use openfiat_types::Priority;
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
     table.register(
@@ -55,10 +56,19 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSnapshotAnnounce =
                     json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedSnapshotAnnounce always serializes");
                 let id = state
                     .snapshots
                     .apply_announce(signed)
                     .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_ANNOUNCED,
+                    protocol::OFS_SPEC,
+                    Priority::Snapshot,
+                    gossip_bytes,
+                );
                 Ok(id.as_str().to_string())
             },
         ),

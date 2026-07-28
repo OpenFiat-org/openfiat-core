@@ -3203,9 +3203,12 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "openfiat-api",
+ "openfiat-crypto",
  "openfiat-database",
  "openfiat-metrics",
+ "openfiat-network",
  "openfiat-rpc",
+ "openfiat-types",
  "openfiat-wallet",
  "tokio",
 ]
@@ -3360,6 +3363,7 @@ dependencies = [
  "async-trait",
  "futures",
  "libp2p",
+ "multihash",
  "openfiat-crypto",
  "openfiat-serialization",
  "openfiat-types",
@@ -3479,6 +3483,7 @@ dependencies = [
  "openfiat-chain",
  "openfiat-crypto",
  "openfiat-disputes",
+ "openfiat-gossip",
  "openfiat-governance",
  "openfiat-identity",
  "openfiat-metrics",

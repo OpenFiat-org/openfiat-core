@@ -7,7 +7,7 @@
 use futures_util::StreamExt;
 use openfiat_crypto::Keypair;
 use openfiat_network::identity::peer_id_from_public_key;
-use openfiat_rpc::{router, spawn_actor};
+use openfiat_rpc::{NetworkConfig, router, spawn_actor};
 use openfiat_sessions::events::{SessionCreate, SignedSessionCreate};
 use openfiat_storage::mem::MemoryStore;
 use openfiat_types::Timestamp;
@@ -16,7 +16,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test]
 async fn a_websocket_client_receives_a_notification_for_a_real_mutation() {
-    let handle = spawn_actor(MemoryStore::new);
+    let handle = spawn_actor(MemoryStore::new, NetworkConfig::for_test());
     let app = router(
         handle.clone(),
         Arc::new(openfiat_metrics::MetricsRegistry::new()),

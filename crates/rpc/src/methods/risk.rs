@@ -6,10 +6,10 @@ use crate::dispatch::{
 use crate::error::RpcError;
 use crate::state::NodeState;
 use openfiat_risk::events::SignedRiskPublish;
-use openfiat_risk::{RiskRecord, ScreeningResult};
-use openfiat_serialization::json;
+use openfiat_risk::{RiskOutcome, RiskRecord, ScreeningResult, protocol};
+use openfiat_serialization::{json, wire};
 use openfiat_storage::KvStore;
-use openfiat_types::Timestamp;
+use openfiat_types::{Priority, Timestamp};
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
     table.register(
@@ -37,11 +37,24 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedRiskPublish =
                     json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedRiskPublish always serializes");
+                let event_type = match signed.publish.outcome {
+                    RiskOutcome::Flagged => protocol::EVENT_FLAGGED,
+                    RiskOutcome::Cleared => protocol::EVENT_CLEARED,
+                };
                 state
                     .risk
                     .apply_publish(signed)
-                    .map_err(|e| RpcError::Application(e.code()))
-                    .map(|_| ())
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    event_type,
+                    protocol::OFS_SPEC,
+                    Priority::Reputation,
+                    gossip_bytes,
+                );
+                Ok(())
             },
         ),
     );

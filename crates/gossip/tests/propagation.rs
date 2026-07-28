@@ -313,3 +313,43 @@ async fn a_forward_filter_suppresses_relaying_without_affecting_local_storage() 
         "a forward filter must only suppress the content it targets, not everything"
     );
 }
+
+/// Two independently-started nodes have no shared advance knowledge of
+/// each other's signing key — this proves `register_peer_key` genuinely
+/// doesn't need to be called by hand (unlike every other test in this
+/// file, which registers keys explicitly since they simulate a harness
+/// that already knows every participant): a connection alone must be
+/// enough for each side to validate the other's originated events.
+#[tokio::test]
+async fn a_connection_alone_lets_two_nodes_validate_each_others_events_with_no_manual_key_registration()
+ {
+    let mut a = make_service(1);
+    let a_addr = listen_addr(&mut a).await;
+    let mut b = make_service(2);
+    b.node.dial(a_addr).unwrap();
+
+    let mut both = vec![a, b];
+    drive_until(&mut both, |services| {
+        services.iter().all(|s| s.connected_peer_count() >= 1)
+    })
+    .await;
+
+    let event_id = both[1]
+        .originate(
+            EventType::new("GossipTestEvent").unwrap(),
+            TEST_OFS_SPEC,
+            Priority::Advertisement,
+            8,
+            b"no-manual-registration-needed".to_vec(),
+        )
+        .unwrap();
+
+    drive_until(&mut both, |services| services[0].has_event(&event_id)).await;
+    assert!(
+        matches!(
+            both[0].get_event(&event_id),
+            Some(envelope) if envelope.payload == b"no-manual-registration-needed"
+        ),
+        "node 0 must have actually stored (i.e. validated, not just received) node 1's event"
+    );
+}

@@ -8,7 +8,8 @@ use openfiat_storage::mem::MemoryStore;
 use tower::ServiceExt;
 
 fn merged_router() -> axum::Router {
-    let rpc_handle = openfiat_rpc::spawn_actor(MemoryStore::new);
+    let rpc_handle =
+        openfiat_rpc::spawn_actor(MemoryStore::new, openfiat_rpc::NetworkConfig::for_test());
     let metrics = std::sync::Arc::new(openfiat_metrics::MetricsRegistry::new());
     openfiat_rpc::router(rpc_handle, metrics).merge(openfiat_api::router())
 }

@@ -6,9 +6,10 @@ use crate::dispatch::{
 use crate::error::RpcError;
 use crate::state::NodeState;
 use openfiat_notifications::events::{SignedDeliveryReport, SignedSubscriptionUpdate};
-use openfiat_notifications::{DeliveryReceipt, Subscription};
-use openfiat_serialization::json;
+use openfiat_notifications::{DeliveryReceipt, Subscription, protocol};
+use openfiat_serialization::{json, wire};
 use openfiat_storage::KvStore;
+use openfiat_types::Priority;
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
     table.register(
@@ -52,10 +53,20 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedSubscriptionUpdate =
                     json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedSubscriptionUpdate always serializes");
                 state
                     .notifications
                     .apply_subscription_update(signed)
-                    .map_err(|e| RpcError::Application(e.code()))
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_SUBSCRIPTION_UPDATED,
+                    protocol::OFS_SPEC,
+                    Priority::Reputation,
+                    gossip_bytes,
+                );
+                Ok(())
             },
         ),
     );
@@ -66,10 +77,21 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let bytes = decode_bytes(&params.data)?;
                 let signed: SignedDeliveryReport =
                     json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedDeliveryReport always serializes");
+                let event_type = signed.report.status.event_type_name();
                 state
                     .notifications
                     .apply_delivery_report(signed)
-                    .map_err(|e| RpcError::Application(e.code()))
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    event_type,
+                    protocol::OFS_SPEC,
+                    Priority::Reputation,
+                    gossip_bytes,
+                );
+                Ok(())
             },
         ),
     );
