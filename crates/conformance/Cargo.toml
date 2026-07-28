@@ -28,6 +28,7 @@ openfiat-oracles = { path = "../oracles", version = "0.1.0" }
 openfiat-risk = { path = "../risk", version = "0.1.0" }
 openfiat-snapshot = { path = "../snapshot", version = "0.1.0" }
 openfiat-sessions = { path = "../sessions", version = "0.1.0" }
+openfiat-chain = { path = "../chain", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }

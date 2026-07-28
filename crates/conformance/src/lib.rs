@@ -14,6 +14,7 @@
 //! README.
 
 use openfiat_advertisements::AdvertisementRegistry;
+use openfiat_chain::{ChainBridge, ChainError};
 use openfiat_crypto::Keypair;
 use openfiat_disputes::DisputeRegistry;
 use openfiat_gossip::{EventStore, GossipError, GossipService, Subscription};
@@ -54,6 +55,7 @@ pub struct FullNode<S> {
     pub risk: Rc<RiskIndex<Rc<S>>>,
     pub snapshots: Rc<SnapshotIndex<Rc<S>>>,
     pub sessions: Rc<SessionRegistry<Rc<S>>>,
+    pub chain: ChainBridge,
 }
 
 impl<S: KvStore + 'static> FullNode<S> {
@@ -90,6 +92,7 @@ impl<S: KvStore + 'static> FullNode<S> {
         let risk = Rc::new(RiskIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let snapshots = Rc::new(SnapshotIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let sessions = Rc::new(SessionRegistry::new(Rc::clone(&store)));
+        let chain = ChainBridge::install(&mut gossip);
 
         macro_rules! attach {
             ($registry:expr) => {{
@@ -126,7 +129,39 @@ impl<S: KvStore + 'static> FullNode<S> {
             risk,
             snapshots,
             sessions,
+            chain,
         }
+    }
+
+    /// OFS-4300 §6 — see [`ChainBridge::announce_blockhash`].
+    pub fn announce_blockhash(&mut self, blockhash: &str, slot: u64) -> Result<(), ChainError> {
+        self.chain
+            .announce_blockhash(&mut self.gossip, blockhash, slot)
+            .map(|_| ())
+    }
+
+    /// This node's current blockhash view — see
+    /// [`ChainBridge::current_blockhash`].
+    pub fn current_blockhash(&self) -> Option<(String, u64)> {
+        self.chain.current_blockhash()
+    }
+
+    /// OFS-4300 §7 — see [`ChainBridge::request_transaction_relay`].
+    pub fn request_transaction_relay(&mut self, tx_bytes: Vec<u8>) -> Result<(), ChainError> {
+        self.chain
+            .request_transaction_relay(&mut self.gossip, tx_bytes)
+            .map(|_| ())
+    }
+
+    /// OFS-4300 §7 — see [`ChainBridge::announce_relay_confirmation`].
+    pub fn announce_relay_confirmation(
+        &mut self,
+        signature: &str,
+        slot_submitted: u64,
+    ) -> Result<(), ChainError> {
+        self.chain
+            .announce_relay_confirmation(&mut self.gossip, signature, slot_submitted)
+            .map(|_| ())
     }
 
     /// Sign, wrap, and broadcast a payload as a new gossip event — the

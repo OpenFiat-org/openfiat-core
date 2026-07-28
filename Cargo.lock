@@ -3224,6 +3224,7 @@ dependencies = [
  "futures",
  "libp2p",
  "openfiat-advertisements",
+ "openfiat-chain",
  "openfiat-crypto",
  "openfiat-disputes",
  "openfiat-gossip",

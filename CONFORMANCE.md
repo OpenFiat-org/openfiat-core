@@ -109,6 +109,18 @@ below rather than pointed at a test that doesn't exist.
 | Reject malformed intelligence records | `risk::store::apply_event` silently drops an unparsable payload before it reaches the registry (structural, same pattern as every other domain's `apply_event`); `risk::store::an_unregistered_publisher_is_rejected` covers the authorization half of "invalid". |
 | Synchronize intelligence updates | `two_of_three_providers_flagging_a_scam_wallet_aggregates_to_reject`. |
 
+## OFS-4300 — Chain Bridge Protocol (OCBP), §12
+
+| Requirement | Verified by |
+| --- | --- |
+| Support both node connectivity modes | `chain::mode` unit tests: `rpc_connected_reports_itself_as_such`, `gossip_only_reports_itself_as_such`. |
+| Never sign a Solana transaction on a user's behalf | Design-level: no code path in `crates/chain` or `crates/rpc::methods::chain` ever holds or constructs a signature — `sendTransaction`'s payload is opaque, already-signed bytes (see OFS-4300 §5, §8); there is no "absence of a capability" to positively test. |
+| Deduplicate blockhash announcements by content, not event id | `chain::blockhash` unit tests (`repeated_observation_of_the_same_pair_is_not_new`, `a_different_slot_for_the_same_blockhash_string_is_a_distinct_pair`); at cluster scale, `openfiat-conformance`'s `tests/chain_bridge.rs::blockhash_dedup_bounds_amplification_under_many_independent_announcers` (10 independent origins, one shared hub, one downstream observer). |
+| Track and use the highest-slot, not-yet-expired blockhash for its own current view | `chain::blockhash` unit tests: `current_tracks_the_highest_slot_seen_even_if_seen_second`, `an_out_of_order_older_slot_does_not_override_the_current_choice`, `an_expired_blockhash_is_no_longer_returned_as_current`. |
+| Expose `getChainStatus`/`getLatestBlockhash`/`sendTransaction` identically regardless of mode | `rpc::methods::chain` unit tests; end to end against a real node in both SDKs' `tests/live_node.*` (Rust and TypeScript). |
+| Reject malformed relay-requested transactions before submission | `chain::validate` unit tests (`rejects_empty_bytes`, `rejects_garbage_bytes`); `rpc::methods::chain::send_transaction_rejects_a_malformed_payload`. |
+| A gossip-only node's transaction relay request reaches an RPC-connected peer and confirms | `openfiat-conformance`'s `tests/chain_bridge.rs::a_gossip_only_nodes_relay_request_is_observed_and_confirmed_by_an_rpc_connected_peer`. |
+
 ## Whole-stack proof
 
 The per-spec tests above each exercise one domain against a bare
@@ -120,3 +132,6 @@ proves the composition:
 - `tests/partition_recovery.rs` — a fully-composed node (every domain, one
   gossip channel) drops offline, misses events in two unrelated domains
   at once, and recovers both on reconnect.
+- `tests/chain_bridge.rs` — a gossip-only node's transaction relay
+  request is observed and confirmed by an RPC-connected peer, and
+  blockhash announcement dedup holds at cluster scale (OFS-4300).

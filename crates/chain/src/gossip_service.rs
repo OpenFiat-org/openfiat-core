@@ -3,9 +3,16 @@
 //! observation (§7). Policy on *what to do* with an incoming relay
 //! request (actually submit it via [`crate::RpcChainClient`], or ignore
 //! it on a `GossipOnly` node) is composed by the caller through
-//! [`ChainGossipService::on_relay_requested`] — this type only owns the
-//! gossip mechanics, the same separation `openfiat-oracles`' own
-//! `OracleService` keeps from `openfiat-registry`.
+//! [`ChainBridge::on_relay_requested`] — this type only owns the gossip
+//! mechanics, the same separation `openfiat-oracles`' own `OracleService`
+//! keeps from `openfiat-registry`.
+//!
+//! Two ways to use this, matching the two node shapes this workspace
+//! already has: [`ChainGossipService`] owns its `GossipService` outright
+//! (a chain-bridge-only node); [`ChainBridge::install`] instead takes
+//! `&mut GossipService<S>`, for a node — like `openfiat-conformance`'s
+//! `FullNode` — that composes many domains onto one shared gossip
+//! instance the same way every other registry there attaches itself.
 
 use crate::blockhash::BlockhashCache;
 use crate::error::ChainError;
@@ -27,15 +34,20 @@ const CHAIN_PRIORITY: Priority = Priority::SessionReservationSettlement;
 type RelayRequestHandler = Box<dyn FnMut(&TransactionRelayRequested)>;
 type RelayConfirmationHandler = Box<dyn FnMut(&TransactionRelayed)>;
 
-pub struct ChainGossipService<S> {
-    pub gossip: GossipService<S>,
+/// The chain bridge's gossip-facing state, independent of who owns the
+/// underlying [`GossipService`] — see the module doc for the two ways
+/// this gets used.
+pub struct ChainBridge {
     cache: Rc<RefCell<BlockhashCache>>,
     relay_request_handlers: Rc<RefCell<Vec<RelayRequestHandler>>>,
     relay_confirmation_handlers: Rc<RefCell<Vec<RelayConfirmationHandler>>>,
 }
 
-impl<S: KvStore + 'static> ChainGossipService<S> {
-    pub fn new(mut gossip: GossipService<S>) -> Self {
+impl ChainBridge {
+    /// Registers this bridge's event handler and forward filter on
+    /// `gossip` — callable alongside any number of other domains'
+    /// `add_event_handler` calls on the same shared instance.
+    pub fn install<S: KvStore + 'static>(gossip: &mut GossipService<S>) -> Self {
         let cache = Rc::new(RefCell::new(BlockhashCache::new()));
         let relay_request_handlers: Rc<RefCell<Vec<RelayRequestHandler>>> =
             Rc::new(RefCell::new(Vec::new()));
@@ -99,7 +111,6 @@ impl<S: KvStore + 'static> ChainGossipService<S> {
         });
 
         Self {
-            gossip,
             cache,
             relay_request_handlers,
             relay_confirmation_handlers,
@@ -120,8 +131,9 @@ impl<S: KvStore + 'static> ChainGossipService<S> {
     /// Originates a `BlockhashAnnounced` (§6) — callers decide their own
     /// announcement cadence (minimum interval/slot-delta); this method
     /// doesn't rate-limit on their behalf.
-    pub fn announce_blockhash(
-        &mut self,
+    pub fn announce_blockhash<S: KvStore + 'static>(
+        &self,
+        gossip: &mut GossipService<S>,
         blockhash: &str,
         slot: u64,
     ) -> Result<EventId, ChainError> {
@@ -131,25 +143,34 @@ impl<S: KvStore + 'static> ChainGossipService<S> {
             slot,
             observed_at: Timestamp::now(),
         };
-        self.originate(protocol::EVENT_BLOCKHASH_ANNOUNCED, &payload)
+        originate(gossip, protocol::EVENT_BLOCKHASH_ANNOUNCED, &payload)
     }
 
     /// Originates a `TransactionRelayRequested` (§7) — the entry point a
     /// `GossipOnly` node uses to get an already-signed transaction onto
     /// the chain via an RPC-connected peer.
-    pub fn request_transaction_relay(&mut self, tx_bytes: Vec<u8>) -> Result<EventId, ChainError> {
+    pub fn request_transaction_relay<S: KvStore + 'static>(
+        &self,
+        gossip: &mut GossipService<S>,
+        tx_bytes: Vec<u8>,
+    ) -> Result<EventId, ChainError> {
         let payload = TransactionRelayRequested {
             tx_bytes,
             requested_at: Timestamp::now(),
         };
-        self.originate(protocol::EVENT_TRANSACTION_RELAY_REQUESTED, &payload)
+        originate(
+            gossip,
+            protocol::EVENT_TRANSACTION_RELAY_REQUESTED,
+            &payload,
+        )
     }
 
     /// Originates a `TransactionRelayed` confirmation echo (§7) — best
     /// effort, called by whichever RPC-connected peer actually submitted
     /// a relayed transaction and observed it land.
-    pub fn announce_relay_confirmation(
-        &mut self,
+    pub fn announce_relay_confirmation<S: KvStore + 'static>(
+        &self,
+        gossip: &mut GossipService<S>,
         signature: &str,
         slot_submitted: u64,
     ) -> Result<EventId, ChainError> {
@@ -157,7 +178,7 @@ impl<S: KvStore + 'static> ChainGossipService<S> {
             signature: signature.to_string(),
             slot_submitted,
         };
-        self.originate(protocol::EVENT_TRANSACTION_RELAYED, &payload)
+        originate(gossip, protocol::EVENT_TRANSACTION_RELAYED, &payload)
     }
 
     /// Registers a callback invoked for every `TransactionRelayRequested`
@@ -165,10 +186,7 @@ impl<S: KvStore + 'static> ChainGossipService<S> {
     /// self-plus-received semantics) — where an `RpcConnected` node's
     /// NodeState composition wires actual submission via
     /// [`crate::RpcChainClient`].
-    pub fn on_relay_requested(
-        &mut self,
-        handler: impl FnMut(&TransactionRelayRequested) + 'static,
-    ) {
+    pub fn on_relay_requested(&self, handler: impl FnMut(&TransactionRelayRequested) + 'static) {
         self.relay_request_handlers
             .borrow_mut()
             .push(Box::new(handler));
@@ -176,22 +194,74 @@ impl<S: KvStore + 'static> ChainGossipService<S> {
 
     /// Registers a callback invoked for every `TransactionRelayed`
     /// confirmation this node stores.
-    pub fn on_relay_confirmed(&mut self, handler: impl FnMut(&TransactionRelayed) + 'static) {
+    pub fn on_relay_confirmed(&self, handler: impl FnMut(&TransactionRelayed) + 'static) {
         self.relay_confirmation_handlers
             .borrow_mut()
             .push(Box::new(handler));
     }
+}
 
-    fn originate(
+fn originate<S: KvStore + 'static>(
+    gossip: &mut GossipService<S>,
+    event_name: &str,
+    payload: &impl serde::Serialize,
+) -> Result<EventId, ChainError> {
+    let bytes = wire::to_bytes(payload).map_err(|_| ChainError::MalformedTransaction)?;
+    let event_type = EventType::new(event_name)
+        .expect("chain bridge event names are valid PascalCase identifiers");
+    gossip
+        .originate(event_type, protocol::OFS_SPEC, CHAIN_PRIORITY, 8, bytes)
+        .map_err(|_| ChainError::ChainUnavailable)
+}
+
+/// A chain-bridge-only node: owns its `GossipService` outright (rather
+/// than composing onto a shared one — see [`ChainBridge`] for that case).
+pub struct ChainGossipService<S> {
+    pub gossip: GossipService<S>,
+    bridge: ChainBridge,
+}
+
+impl<S: KvStore + 'static> ChainGossipService<S> {
+    pub fn new(mut gossip: GossipService<S>) -> Self {
+        let bridge = ChainBridge::install(&mut gossip);
+        Self { gossip, bridge }
+    }
+
+    pub fn current_blockhash(&self) -> Option<(String, u64)> {
+        self.bridge.current_blockhash()
+    }
+
+    pub fn announce_blockhash(
         &mut self,
-        event_name: &str,
-        payload: &impl serde::Serialize,
+        blockhash: &str,
+        slot: u64,
     ) -> Result<EventId, ChainError> {
-        let bytes = wire::to_bytes(payload).map_err(|_| ChainError::MalformedTransaction)?;
-        let event_type = EventType::new(event_name)
-            .expect("chain bridge event names are valid PascalCase identifiers");
-        self.gossip
-            .originate(event_type, protocol::OFS_SPEC, CHAIN_PRIORITY, 8, bytes)
-            .map_err(|_| ChainError::ChainUnavailable)
+        self.bridge
+            .announce_blockhash(&mut self.gossip, blockhash, slot)
+    }
+
+    pub fn request_transaction_relay(&mut self, tx_bytes: Vec<u8>) -> Result<EventId, ChainError> {
+        self.bridge
+            .request_transaction_relay(&mut self.gossip, tx_bytes)
+    }
+
+    pub fn announce_relay_confirmation(
+        &mut self,
+        signature: &str,
+        slot_submitted: u64,
+    ) -> Result<EventId, ChainError> {
+        self.bridge
+            .announce_relay_confirmation(&mut self.gossip, signature, slot_submitted)
+    }
+
+    pub fn on_relay_requested(
+        &mut self,
+        handler: impl FnMut(&TransactionRelayRequested) + 'static,
+    ) {
+        self.bridge.on_relay_requested(handler);
+    }
+
+    pub fn on_relay_confirmed(&mut self, handler: impl FnMut(&TransactionRelayed) + 'static) {
+        self.bridge.on_relay_confirmed(handler);
     }
 }
