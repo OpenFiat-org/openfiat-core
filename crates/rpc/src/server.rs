@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use openfiat_metrics::MetricsRegistry;
 use std::sync::Arc;
+use tower_http::cors::CorsLayer;
 
 #[derive(Clone)]
 struct AppState {
@@ -27,6 +28,16 @@ pub fn router(rpc: RpcHandle, metrics: Arc<MetricsRegistry>) -> Router {
         .route("/health", get(handle_health))
         .route("/metrics", get(handle_metrics))
         .with_state(state)
+        // A third-party browser UI calling this node directly from its own
+        // origin (OFS-8200's whole point — a stable, third-party-facing RPC
+        // surface) needs this node to actually allow that cross-origin
+        // call. Permissive by design, not an oversight: every `sendX`
+        // mutation is already self-authenticating via the caller's own
+        // wallet signature on the payload (verified by the domain, not by
+        // same-origin policy), so there is no session/cookie-based trust
+        // boundary here for CORS to protect — the same reasoning public
+        // Solana RPC endpoints rely on to allow any origin.
+        .layer(CorsLayer::permissive())
 }
 
 async fn handle_rpc(State(state): State<AppState>, body: axum::body::Bytes) -> Response {

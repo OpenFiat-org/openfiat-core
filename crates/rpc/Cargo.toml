@@ -35,6 +35,7 @@ base64 = "0.22"
 axum = { version = "0.8.9", features = ["ws"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.6", features = ["cors"] }
 
 [dev-dependencies]
 async-trait = "0.1.91"
