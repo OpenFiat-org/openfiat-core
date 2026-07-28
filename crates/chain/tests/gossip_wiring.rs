@@ -194,7 +194,7 @@ async fn a_transaction_relay_request_fires_the_registered_handler_on_the_receivi
     .await;
 
     all[0]
-        .request_transaction_relay(b"a-signed-solana-transaction".to_vec())
+        .request_transaction_relay(b"a-signed-solana-transaction".to_vec(), None)
         .unwrap();
     drive_until(&mut all, |_| !seen.borrow().is_empty()).await;
 

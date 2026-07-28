@@ -43,3 +43,12 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tokio-tungstenite = "0.29"
 futures-util = { version = "0.3", default-features = false }
+# Only to build a real (if minimal) VersionedTransaction fixture for
+# poll_chain's confirmation-tracking test — ChainState's own validation
+# rejects arbitrary bytes, matching OFS-4300 §7.
+solana-transaction = "3"
+solana-message = "3"
+solana-keypair = "3"
+solana-hash = "3"
+solana-signer = "3"
+bincode = "1.3"

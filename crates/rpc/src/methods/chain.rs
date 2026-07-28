@@ -10,11 +10,11 @@
 //! rather than submitting them inline — see `ChainState`'s own doc for
 //! why, and what actually drains that queue.
 
-use crate::dispatch::{MethodTable, SendEventParams, decode_bytes, method_fn};
+use crate::dispatch::{MethodTable, decode_bytes, method_fn};
 use crate::error::RpcError;
 use crate::state::NodeState;
 use openfiat_storage::KvStore;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 pub struct ChainStatusResult {
@@ -33,6 +33,21 @@ pub struct LatestBlockhashResult {
 #[derive(Debug, Serialize)]
 pub struct SendTransactionResult {
     pub queued: bool,
+}
+
+/// `settlement_id` is optional and opaque to this crate — when present,
+/// it's carried through `ChainState`'s pending-relay/awaiting-
+/// confirmation tracking so that once this specific transaction is
+/// observed as genuinely confirmed (not merely accepted for submission),
+/// `SettlementRegistry::apply_escrow_released` gets called for it. Not
+/// an OFS-4300-defined field — this workspace's own extension for
+/// correlating a generic chain-bridge relay with the domain event that
+/// triggered it.
+#[derive(Debug, Deserialize)]
+pub struct SendTransactionParams {
+    pub data: String,
+    #[serde(default)]
+    pub settlement_id: Option<String>,
 }
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
@@ -86,12 +101,12 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
         "sendTransaction",
         method_fn(
             |state: &NodeState<S>,
-             params: SendEventParams|
+             params: SendTransactionParams|
              -> Result<SendTransactionResult, RpcError> {
                 let tx_bytes = decode_bytes(&params.data)?;
                 state
                     .chain
-                    .enqueue_relay(tx_bytes)
+                    .enqueue_relay(tx_bytes, params.settlement_id)
                     .map_err(|err| RpcError::Application(err.code()))?;
                 Ok(SendTransactionResult { queued: true })
             },

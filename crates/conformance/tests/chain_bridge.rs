@@ -33,7 +33,7 @@ async fn a_gossip_only_nodes_relay_request_is_observed_and_confirmed_by_an_rpc_c
     });
 
     nodes[1]
-        .request_transaction_relay(b"a-signed-solana-transaction".to_vec())
+        .request_transaction_relay(b"a-signed-solana-transaction".to_vec(), None)
         .unwrap();
     drive_until(&mut nodes, |_nodes| !submitted.borrow().is_empty()).await;
     assert_eq!(submitted.borrow()[0], b"a-signed-solana-transaction");

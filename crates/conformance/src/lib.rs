@@ -147,9 +147,13 @@ impl<S: KvStore + 'static> FullNode<S> {
     }
 
     /// OFS-4300 §7 — see [`ChainBridge::request_transaction_relay`].
-    pub fn request_transaction_relay(&mut self, tx_bytes: Vec<u8>) -> Result<(), ChainError> {
+    pub fn request_transaction_relay(
+        &mut self,
+        tx_bytes: Vec<u8>,
+        correlation: Option<String>,
+    ) -> Result<(), ChainError> {
         self.chain
-            .request_transaction_relay(&mut self.gossip, tx_bytes)
+            .request_transaction_relay(&mut self.gossip, tx_bytes, correlation)
             .map(|_| ())
     }
 

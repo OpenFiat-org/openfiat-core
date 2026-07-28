@@ -18,7 +18,7 @@
 use crate::dispatch::MethodTable;
 use crate::error::RpcError;
 use crate::state::NodeState;
-use openfiat_chain::{ChainClient, NodeChainMode, RpcChainClient};
+use openfiat_chain::{ChainClient, NodeChainMode, RpcChainClient, SignatureStatus};
 use openfiat_crypto::Keypair;
 use openfiat_network::{Multiaddr, Node};
 use openfiat_storage::KvStore;
@@ -116,34 +116,70 @@ async fn drive_gossip<S: KvStore + 'static>(state: &NodeState<S>) {
 }
 
 /// One tick of an `RpcConnected` node's Solana connectivity (OFS-4300
-/// §6-7): fetch and announce a fresh blockhash, then submit whatever is
+/// §6-7): fetch and announce a fresh blockhash, submit whatever is
 /// queued in `state.chain`'s pending-relay queue — a caller's own
 /// `sendTransaction`, or a `GossipOnly` peer's relayed request (see
-/// `NodeState::new`'s wiring of both into the same queue). Every
+/// `NodeState::new`'s wiring of both into the same queue) — then poll
+/// every submitted-but-unconfirmed signature for real on-chain finality.
+///
+/// Submission acceptance and confirmation are deliberately two separate
+/// steps: `ChainClient::send_transaction` succeeding only means the RPC
+/// endpoint accepted it for processing, not that it has landed. Treating
+/// that as "confirmed" (this crate's own earlier behavior) would let a
+/// caller's `settlement_id` correlation fire `apply_escrow_released`
+/// before the funds have actually moved. Every
 /// `state.gossip.borrow_mut()` here is a short-lived temporary scoped to
 /// one synchronous statement, never spanning an `.await`, so this needs
 /// no `RefCell`-across-await allowance the way `drive_gossip` does.
 async fn poll_chain<S: KvStore + 'static>(state: &NodeState<S>, client: &dyn ChainClient) {
     if let Ok((blockhash, slot)) = client.get_latest_blockhash().await {
-        let _ = state
-            .chain_bridge
-            .announce_blockhash(&mut state.gossip.borrow_mut(), &blockhash, slot);
+        let _ =
+            state
+                .chain_bridge
+                .announce_blockhash(&mut state.gossip.borrow_mut(), &blockhash, slot);
     }
 
-    for tx_bytes in state.chain.drain_pending_relay() {
-        if let Ok(signature) = client.send_transaction(&tx_bytes).await {
+    for pending in state.chain.drain_pending_relay() {
+        if let Ok(signature) = client.send_transaction(&pending.tx_bytes).await {
             let slot_submitted = state.chain.current_blockhash().map_or(0, |(_, slot)| slot);
-            let _ = state.chain_bridge.announce_relay_confirmation(
-                &mut state.gossip.borrow_mut(),
-                &signature,
-                slot_submitted,
-            );
+            state
+                .chain
+                .track_awaiting_confirmation(signature, slot_submitted, pending.correlation);
         }
         // A failed submission is silently dropped (OFS-4300's own relay
         // path is explicitly best-effort) — the bytes aren't re-queued
         // since a signed transaction's blockhash eventually expires
         // anyway, and the caller (or a `GossipOnly` peer awaiting relay)
         // can resubmit against a fresher one.
+    }
+
+    for awaiting in state.chain.awaiting_confirmations() {
+        let status = client.get_signature_status(&awaiting.signature).await;
+        match status {
+            Ok(Some(SignatureStatus::Success)) => {
+                state.chain.resolve_confirmation(&awaiting.signature);
+                let _ = state.chain_bridge.announce_relay_confirmation(
+                    &mut state.gossip.borrow_mut(),
+                    &awaiting.signature,
+                    awaiting.slot_submitted,
+                );
+                if let Some(settlement_id) = &awaiting.correlation {
+                    let _ = state.settlements.apply_escrow_released(
+                        &openfiat_settlement::SettlementId::new(settlement_id.clone()),
+                        awaiting.signature.clone(),
+                    );
+                }
+            }
+            Ok(Some(SignatureStatus::Failed)) => {
+                // A confirmed failure — stop polling it, same "no
+                // re-queue" reasoning as a failed submission above.
+                state.chain.resolve_confirmation(&awaiting.signature);
+            }
+            Ok(None) | Err(_) => {
+                // Not yet observed (or a transient RPC error) — stays in
+                // `awaiting_confirmation` for the next tick.
+            }
+        }
     }
 }
 
@@ -170,8 +206,8 @@ where
             .build()
             .expect("failed to start the RPC actor's runtime");
         runtime.block_on(async move {
-            let node = Node::new(&network.keypair)
-                .expect("failed to start this node's libp2p transport");
+            let node =
+                Node::new(&network.keypair).expect("failed to start this node's libp2p transport");
             let chain_client: Option<Box<dyn ChainClient>> = match &network.chain_mode {
                 NodeChainMode::RpcConnected { rpc_urls, .. } => {
                     Some(Box::new(RpcChainClient::new(rpc_urls.clone())))
@@ -230,7 +266,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openfiat_chain::{ChainError, SignatureStatus};
+    use openfiat_chain::ChainError;
     use openfiat_storage::mem::MemoryStore;
 
     /// A `ChainClient` fake, so `poll_chain`'s own glue logic (fetch,
@@ -282,6 +318,166 @@ mod tests {
             "poll_chain's announce_blockhash call must reach ChainState via the same \
              BlockhashAnnounced event handler a peer's announcement would"
         );
+    }
+
+    /// A `ChainClient` fake whose `get_signature_status` reports "not yet
+    /// seen" on its first call and "confirmed" from then on — so a test
+    /// can prove `poll_chain` genuinely waits for real confirmation
+    /// rather than treating mere submission-acceptance as final.
+    struct SlowConfirmChainClient {
+        blockhash: &'static str,
+        slot: u64,
+        status_calls: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl ChainClient for SlowConfirmChainClient {
+        async fn get_latest_blockhash(&self) -> Result<(String, u64), ChainError> {
+            Ok((self.blockhash.to_string(), self.slot))
+        }
+        async fn is_blockhash_valid(&self, _blockhash: &str) -> Result<bool, ChainError> {
+            Ok(true)
+        }
+        async fn send_transaction(&self, _tx_bytes: &[u8]) -> Result<String, ChainError> {
+            Ok("real-looking-signature".to_string())
+        }
+        async fn get_signature_status(
+            &self,
+            _signature: &str,
+        ) -> Result<Option<SignatureStatus>, ChainError> {
+            let calls = self
+                .status_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if calls == 0 {
+                Ok(None) // not yet observed on this first check
+            } else {
+                Ok(Some(SignatureStatus::Success))
+            }
+        }
+        async fn get_account(&self, _pubkey: &str) -> Result<Option<Vec<u8>>, ChainError> {
+            Ok(None)
+        }
+    }
+
+    /// A real (if minimal) bincode-serialized `VersionedTransaction` —
+    /// `ChainState::enqueue_relay` validates against this exact shape
+    /// (OFS-4300 §7), so an arbitrary byte string doesn't pass.
+    fn fixture_transaction_bytes() -> Vec<u8> {
+        use solana_signer::Signer as _;
+        let payer = solana_keypair::Keypair::new();
+        let message = solana_message::Message::new(&[], Some(&payer.pubkey()));
+        let mut tx = solana_transaction::Transaction::new_unsigned(message);
+        tx.sign(&[&payer], solana_hash::Hash::default());
+        let versioned = solana_transaction::versioned::VersionedTransaction::from(tx);
+        bincode::serialize(&versioned)
+            .expect("a freshly-built VersionedTransaction always serializes")
+    }
+
+    /// Builds a `Settlement` in the `Approved` state the same way
+    /// `crates/conformance`'s `trade_lifecycle` test does (Initiate ->
+    /// PaymentSubmitted -> Approved), directly against the registry
+    /// rather than through gossip — `poll_chain`'s own logic is what's
+    /// under test here, not replication.
+    fn approved_settlement(
+        state: &NodeState<openfiat_storage::mem::MemoryStore>,
+    ) -> openfiat_settlement::SettlementId {
+        use openfiat_crypto::Keypair;
+        use openfiat_network::identity::peer_id_from_public_key;
+        use openfiat_settlement::SettlementId;
+        use openfiat_settlement::events::{
+            PaymentSubmitted, SettlementApproved, SettlementInitiate, SignedPaymentSubmitted,
+            SignedSettlementApproved, SignedSettlementInitiate,
+        };
+        use openfiat_types::{Amount, Timestamp};
+
+        let buyer = Keypair::from_seed([3u8; 32]);
+        let seller = Keypair::from_seed([4u8; 32]);
+        let buyer_peer = peer_id_from_public_key(&buyer.public_key()).unwrap();
+        let seller_peer = peer_id_from_public_key(&seller.public_key()).unwrap();
+        let settlement_id = SettlementId::new("set-poll-chain-test");
+
+        let initiate = SettlementInitiate {
+            id: settlement_id.clone(),
+            reservation_id: openfiat_reservations::ReservationId::new("res-poll-chain-test"),
+            buyer: buyer_peer.clone(),
+            buyer_public_key: buyer.public_key(),
+            seller: seller_peer.clone(),
+            seller_public_key: seller.public_key(),
+            amount: Amount::new(50_00, 2),
+            timestamp: Timestamp::now(),
+        };
+        state
+            .settlements
+            .apply_initiate(SignedSettlementInitiate::sign(initiate, &buyer))
+            .unwrap();
+
+        let payment = PaymentSubmitted {
+            settlement_id: settlement_id.clone(),
+            buyer: buyer_peer,
+            payment_reference: Some("REF-1".to_string()),
+            timestamp: Timestamp::now(),
+        };
+        state
+            .settlements
+            .apply_payment_submitted(SignedPaymentSubmitted::sign(payment, &buyer))
+            .unwrap();
+
+        let approved = SettlementApproved {
+            settlement_id: settlement_id.clone(),
+            seller: seller_peer,
+            timestamp: Timestamp::now(),
+        };
+        state
+            .settlements
+            .apply_approved(SignedSettlementApproved::sign(approved, &seller))
+            .unwrap();
+
+        settlement_id
+    }
+
+    #[tokio::test]
+    async fn poll_chain_only_records_escrow_release_once_real_confirmation_is_observed() {
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let settlement_id = approved_settlement(&state);
+
+        state
+            .chain
+            .enqueue_relay(
+                fixture_transaction_bytes(),
+                Some(settlement_id.as_str().to_string()),
+            )
+            .unwrap();
+
+        let client = SlowConfirmChainClient {
+            blockhash: "fake-blockhash-456",
+            slot: 999,
+            status_calls: std::sync::atomic::AtomicU32::new(0),
+        };
+
+        // Tick 1: submits the transaction (now awaiting confirmation) and
+        // checks status once — `SlowConfirmChainClient` reports "not yet
+        // seen", so nothing should be recorded yet.
+        poll_chain(&state, &client).await;
+        assert_eq!(
+            state
+                .settlements
+                .get(&settlement_id)
+                .unwrap()
+                .escrow_release_signature,
+            None,
+            "must not record a release before real confirmation is observed"
+        );
+        assert_eq!(state.chain.awaiting_confirmations().len(), 1);
+
+        // Tick 2: the same signature is still awaiting, and this time the
+        // fake client reports it confirmed.
+        poll_chain(&state, &client).await;
+        let settlement = state.settlements.get(&settlement_id).unwrap();
+        assert_eq!(
+            settlement.escrow_release_signature,
+            Some("real-looking-signature".to_string())
+        );
+        assert!(state.chain.awaiting_confirmations().is_empty());
     }
 
     #[tokio::test]

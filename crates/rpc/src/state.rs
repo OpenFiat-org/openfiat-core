@@ -29,12 +29,12 @@ use openfiat_registry::Registry as ServiceRegistry;
 use openfiat_reputation::ReputationView;
 use openfiat_reservations::ReservationRegistry;
 use openfiat_risk::RiskIndex;
+use openfiat_serialization::wire;
 use openfiat_sessions::SessionRegistry;
 use openfiat_settlement::SettlementRegistry;
 use openfiat_snapshot::SnapshotIndex;
 use openfiat_storage::KvStore;
 use openfiat_trade::TradeView;
-use openfiat_serialization::wire;
 use openfiat_types::NodeRole;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -144,7 +144,8 @@ impl<S: KvStore + 'static> NodeState<S> {
         if is_rpc_connected {
             let chain_for_relay = Rc::clone(&chain);
             chain_bridge.on_relay_requested(move |requested| {
-                let _ = chain_for_relay.enqueue_relay(requested.tx_bytes.clone());
+                let _ = chain_for_relay
+                    .enqueue_relay(requested.tx_bytes.clone(), requested.correlation.clone());
             });
         }
 

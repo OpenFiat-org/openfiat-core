@@ -148,15 +148,19 @@ impl ChainBridge {
 
     /// Originates a `TransactionRelayRequested` (§7) — the entry point a
     /// `GossipOnly` node uses to get an already-signed transaction onto
-    /// the chain via an RPC-connected peer.
+    /// the chain via an RPC-connected peer. `correlation` is an opaque
+    /// caller-supplied tag (e.g. a settlement ID) carried through to
+    /// whichever peer ends up submitting and confirming it.
     pub fn request_transaction_relay<S: KvStore + 'static>(
         &self,
         gossip: &mut GossipService<S>,
         tx_bytes: Vec<u8>,
+        correlation: Option<String>,
     ) -> Result<EventId, ChainError> {
         let payload = TransactionRelayRequested {
             tx_bytes,
             requested_at: Timestamp::now(),
+            correlation,
         };
         originate(
             gossip,
@@ -240,9 +244,13 @@ impl<S: KvStore + 'static> ChainGossipService<S> {
             .announce_blockhash(&mut self.gossip, blockhash, slot)
     }
 
-    pub fn request_transaction_relay(&mut self, tx_bytes: Vec<u8>) -> Result<EventId, ChainError> {
+    pub fn request_transaction_relay(
+        &mut self,
+        tx_bytes: Vec<u8>,
+        correlation: Option<String>,
+    ) -> Result<EventId, ChainError> {
         self.bridge
-            .request_transaction_relay(&mut self.gossip, tx_bytes)
+            .request_transaction_relay(&mut self.gossip, tx_bytes, correlation)
     }
 
     pub fn announce_relay_confirmation(

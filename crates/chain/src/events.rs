@@ -37,6 +37,13 @@ pub struct TransactionRelayRequested {
     /// serializes to) — already signed by its sender, not by this node.
     pub tx_bytes: Vec<u8>,
     pub requested_at: Timestamp,
+    /// Opaque caller-supplied correlation tag (e.g. a settlement ID) —
+    /// this crate never interprets it, only carries it from the
+    /// originating node's `sendTransaction` call through to whichever
+    /// peer ends up actually submitting and confirming it, so that
+    /// node's own local domain registries (already converged via gossip)
+    /// can react once real on-chain confirmation is observed.
+    pub correlation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
