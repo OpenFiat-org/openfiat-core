@@ -135,3 +135,32 @@ proves the composition:
 - `tests/chain_bridge.rs` — a gossip-only node's transaction relay
   request is observed and confirmed by an RPC-connected peer, and
   blockhash announcement dedup holds at cluster scale (OFS-4300).
+
+## On-chain program conformance
+
+The proofs above are all off-chain-protocol-only (a real gossip cluster,
+but no real Solana state). The on-chain programs (`programs/` —
+escrow/staking/governance, OFS-4200) have two further layers of proof,
+neither duplicated in this repository:
+
+- **Program-level**: each program's own `anchor test` suite (`programs/tests/`)
+  against a real `solana-test-validator` — full vault/stake/proposal
+  lifecycles, invariant tests (e.g. no fund movement outside the
+  program's own `invoke_signed` PDA seeds).
+- **Whole-stack, off-chain + on-chain together**: `openfiat-sdks`'s
+  `rust/tests/conformance_*.rs` combine a real off-chain node (this
+  repo's own `openfiat_rpc`/`openfiat_api`, in `RpcConnected` mode) with
+  the real on-chain programs on a local validator:
+  - `conformance_governance.rs` — a real vote's weight is independently
+    verified against real on-chain stake (not the vote's own self-report) —
+    the first end-to-end proof of this crate's `poll_vote_verifications`.
+  - `conformance_dispute.rs` — a full 3-arbitrator on-chain commit-reveal-execute
+    cycle, with this repo's `DisputeRegistry` observing the on-chain
+    outcome's confirmation via `poll_chain`'s correlation routing.
+  - `conformance_trade_lifecycle.rs` — ad → reservation → escrow-lock →
+    payment → approval → escrow-release, chaining a real off-chain trade
+    with real on-chain escrow. Its final relay step is a documented,
+    unresolved environment flake (marked `#[ignore]` with the full
+    investigation in that file's own doc comment) — the underlying
+    mechanism it exercises is proven correct by the passing dispute test
+    above.

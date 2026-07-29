@@ -23,7 +23,14 @@ audited smart contracts; OpenFiat coordinates the peer-to-peer marketplace
 layer (discovery, advertisements, reputation, governance, notifications, and
 more) without centralized infrastructure.
 
-This repository (Core) — reference implementation of the openfiat protocol node, written in rust.
+This repository (Core) is the reference implementation: a real, working
+node (`openfiat-node`) implementing every domain the protocol specifies —
+advertisements, reservations, settlement, disputes, governance,
+notifications, oracles, risk intelligence, snapshots — over a real
+libp2p gossip mesh, plus a real JSON-RPC/WebSocket surface (OFS-8200) and
+real Solana on-chain integration (escrow, staking, and governance
+programs, deployed and exercised end to end against devnet). This is not
+a scaffold — see [Guides](#guides) below for exactly how to run one.
 
 For the full protocol motivation and design, see the
 [whitepaper](https://github.com/OpenFiat-org/openfiat-specs) and the
@@ -33,19 +40,21 @@ For the full protocol motivation and design, see the
 
 ```
 .
-├── Cargo.toml          # workspace manifest (29 crates)
+├── Cargo.toml          # workspace manifest (31 crates)
 ├── deny.toml           # cargo-deny license/advisory policy
+├── programs/            # separate Anchor workspace — on-chain escrow/staking/governance (OFS-4200)
 ├── crates/
 │   ├── types/              serialization/         crypto/
 │   ├── config/             storage/                database/
 │   ├── network/            discovery/              gossip/
+│   ├── chain/  (Solana chain bridge, OFS-4300)
 │   ├── snapshot/           sessions/               registry/
 │   ├── swqos/              identity/               wallet/
 │   ├── reputation/         trade/                  advertisements/
 │   ├── reservations/       settlement/             disputes/
 │   ├── governance/         notifications/          oracles/
 │   ├── risk/               rpc/                    api/
-│   ├── metrics/            cli/  (openfiat-node binary)
+│   ├── metrics/            conformance/            cli/  (openfiat-node binary)
 ├── docs/
 ├── examples/
 └── tests/
@@ -54,7 +63,9 @@ For the full protocol motivation and design, see the
 Each crate under `crates/` maps to one protocol component described in the
 [OpenFiat whitepaper and specifications](https://github.com/OpenFiat-org/openfiat-specs).
 See each crate's `src/lib.rs` doc comment for the specific `OFS-####` it
-implements.
+implements. `programs/` is a deliberately separate Cargo/Anchor workspace
+(it pins its own Solana SDK versions) — see
+[`programs/README.md`](programs/README.md).
 
 
 ## Quick start
@@ -66,21 +77,36 @@ cargo check --workspace
 cargo run --bin openfiat-node
 ```
 
+## Guides
+
+- [**Getting started**](docs/getting-started.md) — the full walkthrough:
+  building, running standalone, connecting to real Solana devnet,
+  running a local multi-node cluster, and deploying/using the on-chain
+  programs.
+- [**Architecture**](docs/architecture.md) — crate dependency graph,
+  wire format, transport, and canonical protocol parameters.
+- [`programs/README.md`](programs/README.md) — the on-chain Anchor
+  workspace: building, testing (`anchor test` against a real
+  `solana-test-validator`), and deploying to devnet.
+- [`CONFORMANCE.md`](CONFORMANCE.md) — what's proven to work end to end
+  today, and against what.
+
 ## Running a node
 
-`openfiat-node` is a real, standalone binary — no container runtime
-required. Each tagged release publishes native builds for both Linux and
-Windows servers (see [Releases](https://github.com/OpenFiat-org/openfiat-core/releases),
-built by [`release.yml`](.github/workflows/release.yml)):
+`openfiat-node` is a real, standalone binary, configured entirely by
+environment variables (no config file, no CLI flags) — see
+[**Getting started §3**](docs/getting-started.md#3-run-standalone-gossip-only)
+for the full list and their defaults:
 
-- **Linux** — see [`packaging/systemd`](packaging/systemd) for a systemd
-  unit (auto-restart, graceful shutdown, sandboxing).
-- **Windows** — see [`packaging/windows`](packaging/windows) for running
-  it as a real Windows Service via NSSM.
+```bash
+cargo build --release --bin openfiat-node
+./target/release/openfiat-node
+```
 
-A local multi-node cluster for development/testing (not a production
-deployment target) is available via Docker Compose — see
-[`openfiat-infra/docker`](https://github.com/OpenFiat-org/openfiat-infra/tree/main/docker).
+For real Solana devnet connectivity, a local multi-node cluster, or
+production deployment (systemd/Windows Service), see the
+[**Getting started guide**](docs/getting-started.md) in full — it covers
+every step, not just the summary here.
 
 
 ## Development
@@ -93,9 +119,11 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo check --workspace
 ```
 
-This repository currently contains **architecture only** — crate
-boundaries, module layout, and public surface — with no business logic.
-See [ROADMAP.md](ROADMAP.md) for implementation sequencing.
+Every crate implements real, tested business logic — not just
+architecture scaffolding. `cargo doc --workspace --no-deps --open` is the
+fastest way to browse what each one actually does; each crate's own
+`src/lib.rs` doc comment names the specific `OFS-####` section it
+implements. See [ROADMAP.md](ROADMAP.md) for what's left.
 
 
 ## Testing
@@ -104,9 +132,12 @@ See [ROADMAP.md](ROADMAP.md) for implementation sequencing.
 cargo test --workspace --all-features
 ```
 
-Protocol-level conformance vectors (once implementations land) are exercised
-via [openfiat-conformance](https://github.com/OpenFiat-org/openfiat-conformance)
-rather than duplicated in this repository.
+`crates/conformance` drives multi-node scenarios end to end (a real
+gossip cluster, real advertisement → reservation → settlement flows, real
+chain-bridge relay/confirmation, partition/recovery) — see
+[`CONFORMANCE.md`](CONFORMANCE.md) for what's covered. The on-chain
+programs (`programs/`) have their own `anchor test` suite against a real
+`solana-test-validator` — see [`programs/README.md`](programs/README.md).
 
 
 ## Contributing
