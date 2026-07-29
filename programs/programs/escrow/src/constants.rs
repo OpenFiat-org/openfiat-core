@@ -32,6 +32,23 @@ pub const FEE_CONFIG_SEED: &[u8] = b"fee_config";
 #[constant]
 pub const DISPUTE_CASE_SEED: &[u8] = b"dispute_case";
 
+/// PDA seed for the singleton arbitration pool token account.
+///
+/// Holds OPEN, not the settlement stablecoin, so it cannot share any
+/// existing vault — a token account holds exactly one mint. Two things
+/// flow through it: arbitration deposits taken from a merchant's vault
+/// while a case is open, and — once a case resolves against the merchant
+/// — the forfeited deposit, which the arbitrators who decided that case
+/// then claim.
+///
+/// Deliberately distinct from the four settlement-fee treasuries. Those
+/// are external wallet-owned accounts routing protocol revenue; this one
+/// is program-owned and holds funds the program still owes to a specific
+/// merchant or a specific set of arbitrators. Reusing a treasury would
+/// mix a liability with revenue.
+#[constant]
+pub const ARBITRATION_POOL_SEED: &[u8] = b"arbitration_pool";
+
 /// Basis-points denominator (10_000 = 100%), matching `presale`'s constant.
 #[constant]
 pub const BPS_DENOMINATOR: u64 = 10_000;

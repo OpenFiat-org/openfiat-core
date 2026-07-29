@@ -23,6 +23,18 @@ pub struct CastVote<'info> {
     )]
     pub proposal: Account<'info, Proposal>,
 
+    /// Read for `role`'s minimum stake, so a balance that has fallen
+    /// below it carries no voting weight. A slash can leave one there:
+    /// `stake`/`request_unstake` refuse to create a below-minimum
+    /// balance, `slash` does not. See
+    /// `staking::StakeAccount::effective_stake`.
+    #[account(
+        seeds = [staking::STAKING_CONFIG_SEED],
+        seeds::program = staking::ID,
+        bump = staking_config.bump,
+    )]
+    pub staking_config: Account<'info, staking::StakingConfig>,
+
     /// This voter's stake under `role` — any role counts toward voting
     /// weight (unlike Phase 4b's dispute-vote reveal, which is
     /// deliberately Arbitrator-only). A voter holding stake under
@@ -55,7 +67,10 @@ pub fn handle_cast_vote(ctx: Context<CastVote>, in_favor: bool, _role: Role) -> 
         ErrorCode::NotInVotingState
     );
 
-    let weight = ctx.accounts.voter_stake.effective_stake();
+    let weight = ctx
+        .accounts
+        .voter_stake
+        .effective_stake(&ctx.accounts.staking_config);
 
     let proposal = &mut ctx.accounts.proposal;
     if in_favor {

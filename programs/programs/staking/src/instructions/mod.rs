@@ -1,5 +1,6 @@
 pub mod claim_rewards;
 pub mod distribute_reward;
+pub mod fund_rewards_vault;
 pub mod initialize_stake_account;
 pub mod initialize_staking_config;
 pub mod migrate_staking_config;
@@ -10,6 +11,7 @@ pub mod withdraw_unstaked;
 
 pub use claim_rewards::*;
 pub use distribute_reward::*;
+pub use fund_rewards_vault::*;
 pub use initialize_stake_account::*;
 pub use initialize_staking_config::*;
 pub use migrate_staking_config::*;

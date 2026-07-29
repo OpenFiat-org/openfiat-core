@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, events::RewardDistributed, state::*};
 
 /// Plan decision #4: callable only by `rewards_authority` — a trusted
 /// off-chain "reward cranker" that has already verified (via gossip-
@@ -28,11 +28,25 @@ pub struct DistributeReward<'info> {
     pub stake_account: Account<'info, StakeAccount>,
 }
 
-pub fn handle_distribute_reward(ctx: Context<DistributeReward>, amount: u64) -> Result<()> {
+pub fn handle_distribute_reward(
+    ctx: Context<DistributeReward>,
+    epoch: u64,
+    amount: u64,
+) -> Result<()> {
     let stake_account = &mut ctx.accounts.stake_account;
     stake_account.pending_rewards = stake_account
         .pending_rewards
         .checked_add(amount)
         .ok_or(ErrorCode::Overflow)?;
+
+    emit!(RewardDistributed {
+        stake_account: stake_account.key(),
+        owner: stake_account.owner,
+        role: stake_account.role,
+        epoch,
+        amount,
+        pending_rewards: stake_account.pending_rewards,
+        timestamp: Clock::get()?.unix_timestamp,
+    });
     Ok(())
 }

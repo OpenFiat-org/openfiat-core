@@ -65,6 +65,56 @@ export interface SharedFeeConfig {
   emergencyReserve: PublicKey;
 }
 
+// A second mint, standing in for OPEN. The settlement stablecoin and OPEN
+// are different mints in production, and the dispute path depends on that:
+// the arbitration deposit is OPEN-denominated while the trade escrow holds
+// the stablecoin, so a merchant's OPEN vault and their settlement vault are
+// different accounts. Sharing one mint here would collapse them into one,
+// which `execute_dispute_outcome` explicitly rejects.
+let openMintPromise: Promise<PublicKey> | null = null;
+export function getSharedOpenMint(): Promise<PublicKey> {
+  if (!openMintPromise) {
+    openMintPromise = createMint(
+      connection,
+      admin,
+      admin.publicKey,
+      null,
+      MINT_DECIMALS,
+      undefined,
+      { commitment: "confirmed" },
+      TOKEN_2022_PROGRAM_ID,
+    );
+  }
+  return openMintPromise;
+}
+
+let arbitrationPoolPromise: Promise<PublicKey> | null = null;
+export function getSharedArbitrationPool(escrow: Program<Escrow>): Promise<PublicKey> {
+  if (!arbitrationPoolPromise) {
+    arbitrationPoolPromise = (async () => {
+      const openMint = await getSharedOpenMint();
+      const { feeConfig } = await getSharedFeeConfig(escrow);
+      const arbitrationPool = PublicKey.findProgramAddressSync(
+        [Buffer.from("arbitration_pool")],
+        escrow.programId,
+      )[0];
+      await escrow.methods
+        .initializeArbitrationPool()
+        .accountsPartial({
+          admin: admin.publicKey,
+          feeConfig,
+          mint: openMint,
+          arbitrationPool,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc({ commitment: "confirmed" });
+      return arbitrationPool;
+    })();
+  }
+  return arbitrationPoolPromise;
+}
+
 let feeConfigPromise: Promise<SharedFeeConfig> | null = null;
 export function getSharedFeeConfig(escrow: Program<Escrow>): Promise<SharedFeeConfig> {
   if (!feeConfigPromise) {
@@ -83,7 +133,7 @@ export function getSharedFeeConfig(escrow: Program<Escrow>): Promise<SharedFeeCo
         .initializeFeeConfig({
           adListingFee: new BN(0),
           disputeFilingFee: new BN(0),
-          settlementFeeBps: 15,
+          settlementFeeBps: 85,
           devTreasury,
           ecosystemTreasury,
           infraTreasury,

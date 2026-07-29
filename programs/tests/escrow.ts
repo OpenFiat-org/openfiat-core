@@ -19,7 +19,15 @@ import {
   Transaction,
 } from "@solana/web3.js";
 import { expect } from "chai";
-import { getSharedMint, getSharedFeeConfig, getSharedStakingConfig, unit, MINT_DECIMALS } from "./shared-fixtures";
+import {
+  getSharedMint,
+  getSharedOpenMint,
+  getSharedArbitrationPool,
+  getSharedFeeConfig,
+  getSharedStakingConfig,
+  unit,
+  MINT_DECIMALS,
+} from "./shared-fixtures";
 
 describe("escrow", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
@@ -54,6 +62,21 @@ describe("escrow", () => {
       TOKEN_2022_PROGRAM_ID,
     );
     return acc.address;
+  }
+
+  async function mintOpenTokens(dest: PublicKey, amount: BN) {
+    const openMintPk = await getSharedOpenMint();
+    await mintTo(
+      connection,
+      admin,
+      openMintPk,
+      dest,
+      admin,
+      BigInt(amount.toString()),
+      [],
+      { commitment: "confirmed" },
+      TOKEN_2022_PROGRAM_ID,
+    );
   }
 
   async function mintTokens(dest: PublicKey, amount: BN) {
@@ -137,7 +160,10 @@ describe("escrow", () => {
     const ORIGINAL = {
       adListingFee: new BN(0),
       disputeFilingFee: new BN(0),
-      settlementFeeBps: 15,
+      // Must match the fixture's own value: `afterEach` restores the shared
+      // singleton from this, so a mismatch silently changes the fee every
+      // later spec settles at.
+      settlementFeeBps: 85,
       devTreasuryBps: 4000,
       ecosystemTreasuryBps: 3000,
       infraTreasuryBps: 2000,
@@ -484,8 +510,8 @@ describe("escrow", () => {
       const escrowAccount = await program.account.tradeEscrowVault.fetch(tradeEscrow);
       expect(escrowAccount.state).to.deep.equal({ released: {} });
 
-      // fee = 1000 * 15bps = 1.5 units -> 1_500_000 base units at 6 decimals
-      const feeBaseUnits = amount.mul(new BN(15)).div(new BN(10_000));
+      // fee = 1000 * 85bps = 8.5 units -> 8_500_000 base units at 6 decimals
+      const feeBaseUnits = amount.mul(new BN(85)).div(new BN(10_000));
       const buyerExpected = amount.sub(feeBaseUnits);
 
       const buyerAccount = await getAccount(connection, buyerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
@@ -667,6 +693,179 @@ describe("escrow", () => {
     });
   });
 
+  // `ad_listing_fee` was stored on FeeConfig from the start and read by no
+  // instruction — the same defect the staking minimums had. Advertisements
+  // are off-chain gossip records, so the fee is charged against the thing
+  // that *is* on-chain: the merchant's OPEN liquidity vault.
+  describe("charge_ad_listing_fee", () => {
+    const LISTING_FEE = unit(1);
+
+    it("debits the merchant's OPEN vault and routes the fee to the treasury", async () => {
+      const openMint = await getSharedOpenMint();
+      const merchant = Keypair.generate();
+      await airdrop(merchant.publicKey);
+
+      const openVault = liquidityVaultPda(merchant.publicKey, openMint);
+      const openTokenVault = liquidityTokenVaultPda(merchant.publicKey, openMint);
+      const openDevTreasury = await ata(openMint, Keypair.generate().publicKey);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .createLiquidityVault()
+          .accountsPartial({
+            merchant: merchant.publicKey,
+            mint: openMint,
+            liquidityVault: openVault,
+            tokenVault: openTokenVault,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            rent: SYSVAR_RENT_PUBKEY,
+          })
+          .signers([merchant])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const merchantOpenAta = await ata(openMint, merchant.publicKey);
+      await mintOpenTokens(merchantOpenAta, unit(10));
+      await withBlockhashRetry(() =>
+        program.methods
+          .depositLiquidity(unit(10))
+          .accountsPartial({
+            merchant: merchant.publicKey,
+            liquidityVault: openVault,
+            tokenVault: openTokenVault,
+            from: merchantOpenAta,
+            mint: openMint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([merchant])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      // Point the shared FeeConfig's treasuries at OPEN-denominated
+      // accounts and set a non-zero listing fee.
+      const openEco = await ata(openMint, Keypair.generate().publicKey);
+      const openInfra = await ata(openMint, Keypair.generate().publicKey);
+      const openEmerg = await ata(openMint, Keypair.generate().publicKey);
+      await withBlockhashRetry(() =>
+        program.methods
+          .updateFeeConfig({
+            adListingFee: LISTING_FEE,
+            disputeFilingFee: new BN(0),
+            settlementFeeBps: 85,
+            devTreasuryBps: 4000,
+            ecosystemTreasuryBps: 3000,
+            infraTreasuryBps: 2000,
+            emergencyReserveBps: 1000,
+            timeoutSecs: new BN(1800),
+          })
+          .accountsPartial({
+            admin: admin.publicKey,
+            feeConfig,
+            mint: openMint,
+            devTreasury: openDevTreasury,
+            ecosystemTreasury: openEco,
+            infraTreasury: openInfra,
+            emergencyReserve: openEmerg,
+          })
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const adId = Array.from(crypto.randomBytes(32));
+      await withBlockhashRetry(() =>
+        program.methods
+          .chargeAdListingFee(adId)
+          .accountsPartial({
+            merchant: merchant.publicKey,
+            feeConfig,
+            liquidityVault: openVault,
+            tokenVault: openTokenVault,
+            devTreasury: openDevTreasury,
+            mint: openMint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([merchant])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const vault = await program.account.liquidityVault.fetch(openVault);
+      expect(vault.available.toString()).to.equal(unit(9).toString());
+      expect(vault.total.toString()).to.equal(unit(9).toString());
+
+      const treasury = await getAccount(connection, openDevTreasury, "confirmed", TOKEN_2022_PROGRAM_ID);
+      expect(treasury.amount.toString()).to.equal(LISTING_FEE.toString());
+    });
+
+    it("refuses when the vault cannot cover the fee", async () => {
+      const openMint = await getSharedOpenMint();
+      const merchant = Keypair.generate();
+      await airdrop(merchant.publicKey);
+      const openVault = liquidityVaultPda(merchant.publicKey, openMint);
+      const openTokenVault = liquidityTokenVaultPda(merchant.publicKey, openMint);
+      const openDevTreasury = (await program.account.feeConfig.fetch(feeConfig)).devTreasury;
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .createLiquidityVault()
+          .accountsPartial({
+            merchant: merchant.publicKey,
+            mint: openMint,
+            liquidityVault: openVault,
+            tokenVault: openTokenVault,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            rent: SYSVAR_RENT_PUBKEY,
+          })
+          .signers([merchant])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      await expectAnchorError(
+        program.methods
+          .chargeAdListingFee(Array.from(crypto.randomBytes(32)))
+          .accountsPartial({
+            merchant: merchant.publicKey,
+            feeConfig,
+            liquidityVault: openVault,
+            tokenVault: openTokenVault,
+            devTreasury: openDevTreasury,
+            mint: openMint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([merchant])
+          .rpc({ commitment: "confirmed" }),
+        "InsufficientAvailableLiquidity",
+      );
+    });
+
+    // Restore the shared singleton for the specs that follow.
+    after(async () => {
+      await withBlockhashRetry(() =>
+        program.methods
+          .updateFeeConfig({
+            adListingFee: new BN(0),
+            disputeFilingFee: new BN(0),
+            settlementFeeBps: 85,
+            devTreasuryBps: 4000,
+            ecosystemTreasuryBps: 3000,
+            infraTreasuryBps: 2000,
+            emergencyReserveBps: 1000,
+            timeoutSecs: new BN(1800),
+          })
+          .accountsPartial({
+            admin: admin.publicKey,
+            feeConfig,
+            mint,
+            devTreasury,
+            ecosystemTreasury,
+            infraTreasury,
+            emergencyReserve,
+          })
+          .rpc({ commitment: "confirmed" }),
+      );
+    });
+  });
+
   describe("dispute-to-chain bridge (Phase 4b)", () => {
     const staking = anchor.workspace.staking as Program<Staking>;
     const ROLE_ARBITRATOR = { arbitrator: {} };
@@ -677,6 +876,8 @@ describe("escrow", () => {
     let stakingConfig: PublicKey;
     let stakeVault: PublicKey;
     let rewardsVault: PublicKey;
+    let openMint: PublicKey;
+    let arbitrationPool: PublicKey;
 
     function tradeEscrowSeed(reservationId: number) {
       return tradeEscrowPda(reservationId);
@@ -733,6 +934,7 @@ describe("escrow", () => {
     async function openFundedTradeEscrow(
       reservationId: number,
       amount: BN,
+      openVaultFunding: BN = unit(0),
     ): Promise<{ merchant: Keypair; buyer: Keypair; liquidityVault: PublicKey }> {
       const merchant = Keypair.generate();
       const buyer = Keypair.generate();
@@ -820,11 +1022,52 @@ describe("escrow", () => {
           .rpc({ commitment: "confirmed" }),
       );
 
+      // The merchant also keeps an OPEN vault. That is where the
+      // arbitration deposit is taken from when a case opens against them,
+      // whoever opened it — see `open_dispute_case`.
+      const openVault = liquidityVaultPda(merchant.publicKey, openMint);
+      const openTokenVault = liquidityTokenVaultPda(merchant.publicKey, openMint);
+      await withBlockhashRetry(() =>
+        program.methods
+          .createLiquidityVault()
+          .accountsPartial({
+            merchant: merchant.publicKey,
+            mint: openMint,
+            liquidityVault: openVault,
+            tokenVault: openTokenVault,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            rent: SYSVAR_RENT_PUBKEY,
+          })
+          .signers([merchant])
+          .rpc({ commitment: "confirmed" }),
+      );
+      if (!openVaultFunding.isZero()) {
+        const merchantOpenAta = await ata(openMint, merchant.publicKey);
+        await mintOpenTokens(merchantOpenAta, openVaultFunding);
+        await withBlockhashRetry(() =>
+          program.methods
+            .depositLiquidity(openVaultFunding)
+            .accountsPartial({
+              merchant: merchant.publicKey,
+              liquidityVault: openVault,
+              tokenVault: openTokenVault,
+              from: merchantOpenAta,
+              mint: openMint,
+              tokenProgram: TOKEN_2022_PROGRAM_ID,
+            })
+            .signers([merchant])
+            .rpc({ commitment: "confirmed" }),
+        );
+      }
+
       return { merchant, buyer, liquidityVault };
     }
 
     before(async () => {
       ({ stakingConfig, stakeVault, rewardsVault } = await getSharedStakingConfig(staking));
+      openMint = await getSharedOpenMint();
+      arbitrationPool = await getSharedArbitrationPool(program);
     });
 
     it("tallies a stake-weighted majority (BuyerWins) and releases funds accordingly", async () => {
@@ -843,6 +1086,12 @@ describe("escrow", () => {
             payer: admin.publicKey,
             tradeEscrow,
             disputeCase,
+            feeConfig,
+            depositMint: openMint,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+            arbitrationPool,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
           })
           .signers([buyer])
@@ -895,6 +1144,7 @@ describe("escrow", () => {
             .accountsPartial({
               arbitrator: arb.publicKey,
               disputeCase,
+              stakingConfig,
               arbitratorStake: stakeAccountPda(arb.publicKey),
             })
             .signers([arb])
@@ -925,6 +1175,10 @@ describe("escrow", () => {
             ecosystemTreasury,
             infraTreasury,
             emergencyReserve,
+            depositMint: openMint,
+            arbitrationPool,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
             tokenProgram: TOKEN_2022_PROGRAM_ID,
           })
           .rpc({ commitment: "confirmed" }),
@@ -933,7 +1187,7 @@ describe("escrow", () => {
       escrowAccount = await program.account.tradeEscrowVault.fetch(tradeEscrow);
       expect(escrowAccount.state).to.deep.equal({ released: {} });
 
-      const feeBaseUnits = amount.mul(new BN(15)).div(new BN(10_000));
+      const feeBaseUnits = amount.mul(new BN(85)).div(new BN(10_000));
       const buyerExpected = amount.sub(feeBaseUnits);
       const buyerTokens = await getAccount(connection, buyerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
       expect(buyerTokens.amount.toString()).to.equal(buyerExpected.toString());
@@ -958,6 +1212,12 @@ describe("escrow", () => {
             payer: admin.publicKey,
             tradeEscrow,
             disputeCase,
+            feeConfig,
+            depositMint: openMint,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+            arbitrationPool,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
           })
           .signers([merchant])
@@ -1000,6 +1260,7 @@ describe("escrow", () => {
             .accountsPartial({
               arbitrator: arb.publicKey,
               disputeCase,
+              stakingConfig,
               arbitratorStake: stakeAccountPda(arb.publicKey),
             })
             .signers([arb])
@@ -1035,6 +1296,10 @@ describe("escrow", () => {
             ecosystemTreasury,
             infraTreasury,
             emergencyReserve,
+            depositMint: openMint,
+            arbitrationPool,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
             tokenProgram: TOKEN_2022_PROGRAM_ID,
           })
           .rpc({ commitment: "confirmed" }),
@@ -1059,7 +1324,7 @@ describe("escrow", () => {
     it("rejects a commit from an arbitrator below the role minimum, blocking the seat-squatting attack", async () => {
       const reservationId = 9003;
       const amount = unit(400);
-      const { buyer } = await openFundedTradeEscrow(reservationId, amount);
+      const { merchant, buyer } = await openFundedTradeEscrow(reservationId, amount);
 
       const tradeEscrow = tradeEscrowSeed(reservationId);
       const disputeCase = disputeCasePda(reservationId);
@@ -1072,6 +1337,12 @@ describe("escrow", () => {
             payer: admin.publicKey,
             tradeEscrow,
             disputeCase,
+            feeConfig,
+            depositMint: openMint,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+            arbitrationPool,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
           })
           .signers([buyer])
@@ -1126,7 +1397,7 @@ describe("escrow", () => {
     it("rejects a partially-staked arbitrator, not just a zero-balance one", async () => {
       const reservationId = 9004;
       const amount = unit(400);
-      const { buyer } = await openFundedTradeEscrow(reservationId, amount);
+      const { merchant, buyer } = await openFundedTradeEscrow(reservationId, amount);
 
       const tradeEscrow = tradeEscrowSeed(reservationId);
       const disputeCase = disputeCasePda(reservationId);
@@ -1139,6 +1410,12 @@ describe("escrow", () => {
             payer: admin.publicKey,
             tradeEscrow,
             disputeCase,
+            feeConfig,
+            depositMint: openMint,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+            arbitrationPool,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
           })
           .signers([buyer])
@@ -1186,7 +1463,7 @@ describe("escrow", () => {
     it("rejects dispute windows outside the permitted range", async () => {
       const reservationId = 9005;
       const amount = unit(300);
-      const { buyer } = await openFundedTradeEscrow(reservationId, amount);
+      const { merchant, buyer } = await openFundedTradeEscrow(reservationId, amount);
 
       const tradeEscrow = tradeEscrowSeed(reservationId);
       const disputeCase = disputeCasePda(reservationId);
@@ -1207,6 +1484,12 @@ describe("escrow", () => {
               payer: admin.publicKey,
               tradeEscrow,
               disputeCase,
+              feeConfig,
+              depositMint: openMint,
+              merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+              merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+              arbitrationPool,
+              tokenProgram: TOKEN_2022_PROGRAM_ID,
               systemProgram: SystemProgram.programId,
             })
             .signers([buyer])
@@ -1238,6 +1521,12 @@ describe("escrow", () => {
             payer: admin.publicKey,
             tradeEscrow,
             disputeCase,
+            feeConfig,
+            depositMint: openMint,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+            arbitrationPool,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
           })
           .signers([buyer])
@@ -1268,6 +1557,7 @@ describe("escrow", () => {
           .accountsPartial({
             arbitrator: arb.publicKey,
             disputeCase,
+            stakingConfig,
             arbitratorStake: stakeAccountPda(arb.publicKey),
           })
           .signers([arb])
@@ -1299,6 +1589,10 @@ describe("escrow", () => {
             ecosystemTreasury,
             infraTreasury,
             emergencyReserve,
+            depositMint: openMint,
+            arbitrationPool,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
             tokenProgram: TOKEN_2022_PROGRAM_ID,
           })
           .rpc({ commitment: "confirmed" }),
@@ -1333,6 +1627,12 @@ describe("escrow", () => {
             payer: admin.publicKey,
             tradeEscrow,
             disputeCase,
+            feeConfig,
+            depositMint: openMint,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+            arbitrationPool,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
           })
           .signers([buyer])
@@ -1363,6 +1663,10 @@ describe("escrow", () => {
               ecosystemTreasury,
               infraTreasury,
               emergencyReserve,
+              depositMint: openMint,
+              arbitrationPool,
+              merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+              merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
               tokenProgram: TOKEN_2022_PROGRAM_ID,
             })
             .rpc({ commitment: "confirmed" }),

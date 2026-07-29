@@ -64,7 +64,9 @@ pub fn handle_commit_dispute_vote(
     let now = Clock::get()?.unix_timestamp;
 
     require!(
-        ctx.accounts.arbitrator_stake.effective_stake()
+        ctx.accounts
+            .arbitrator_stake
+            .effective_stake(&ctx.accounts.staking_config)
             >= ctx.accounts.staking_config.min_stake_for(Role::Arbitrator),
         ErrorCode::ArbitratorStakeBelowMinimum
     );

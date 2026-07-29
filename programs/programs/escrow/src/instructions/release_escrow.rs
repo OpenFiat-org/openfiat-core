@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, Token2022, TokenAccount};
 use openfiat_programs_shared::VaultState;
 
+use crate::events::EscrowReleased;
 use crate::instructions::shared_logic::release_trade_escrow_funds;
 use crate::{constants::*, error::ErrorCode, state::*};
 
@@ -66,7 +67,8 @@ pub struct ReleaseEscrow<'info> {
 }
 
 pub fn handle_release_escrow(ctx: Context<ReleaseEscrow>) -> Result<()> {
-    release_trade_escrow_funds(
+    let amount = ctx.accounts.trade_escrow.amount;
+    let (buyer_amount, fee_shares) = release_trade_escrow_funds(
         &mut ctx.accounts.trade_escrow,
         &ctx.accounts.trade_escrow_token_vault,
         &ctx.accounts.buyer_token_account,
@@ -78,5 +80,24 @@ pub fn handle_release_escrow(ctx: Context<ReleaseEscrow>) -> Result<()> {
         &ctx.accounts.emergency_reserve,
         &ctx.accounts.mint,
         &ctx.accounts.token_program,
-    )
+    )?;
+
+    emit!(EscrowReleased {
+        reservation_id: ctx.accounts.trade_escrow.reservation_id,
+        buyer: ctx.accounts.trade_escrow.buyer,
+        seller: ctx.accounts.trade_escrow.seller,
+        mint: ctx.accounts.mint.key(),
+        amount,
+        buyer_amount,
+        fee: amount
+            .checked_sub(buyer_amount)
+            .ok_or(ErrorCode::Overflow)?,
+        dev_treasury_amount: fee_shares[0],
+        ecosystem_treasury_amount: fee_shares[1],
+        infra_treasury_amount: fee_shares[2],
+        emergency_reserve_amount: fee_shares[3],
+        via_dispute: false,
+        timestamp: Clock::get()?.unix_timestamp,
+    });
+    Ok(())
 }

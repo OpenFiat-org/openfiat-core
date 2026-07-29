@@ -44,6 +44,16 @@ pub enum ErrorCode {
     ArbitratorStakeBelowMinimum,
     #[msg("Dispute commit/reveal windows must be within the protocol's permitted range")]
     DisputeWindowOutOfRange,
+    #[msg("The deposit vault and the settlement liquidity vault must be different accounts")]
+    DepositVaultAliasesSettlementVault,
+    #[msg("No fee is configured for this action")]
+    NoFeeConfigured,
+    #[msg("This dispute case has not been resolved with a decisive outcome")]
+    DisputeNotDecided,
+    #[msg("This wallet did not vote with the winning outcome on this dispute case")]
+    NotAWinningArbitrator,
+    #[msg("This arbitrator has already claimed its share of this dispute's reward")]
+    RewardAlreadyClaimed,
     #[msg("Arithmetic overflow")]
     Overflow,
 }

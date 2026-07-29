@@ -77,9 +77,19 @@ pub struct FeeConfig {
     pub ad_listing_fee: u64,
     pub dispute_filing_fee: u64,
     /// Basis points of a released trade's amount taken as the settlement
-    /// fee. `[PROPOSED — NEEDS SIGN-OFF]` default: 15 (0.15%), matching
-    /// the taker fee referenced by `openfiat-app`'s own mock governance
-    /// data (OFIP-0021).
+    /// fee. Default: **85 (0.85%)** — `[DECISION — protocol steward]`,
+    /// superseding the 15 bps this previously carried.
+    ///
+    /// Borne by the **buyer**, per buy/sell, in the stablecoin being
+    /// traded: `release_trade_escrow_funds` deducts it from the escrowed
+    /// amount before paying the buyer out, so the merchant receives their
+    /// full sale proceeds and the buyer receives `amount - fee`. That is
+    /// one of three fees with three different payers — the merchant bears
+    /// the ad-listing fee (`charge_ad_listing_fee`) and the arbitration
+    /// deposit (`open_dispute_case`); the buyer bears this one.
+    ///
+    /// Governance-updatable via `update_fee_config`, never a constant.
+    /// The four-way split below remains `[PROPOSED — NEEDS SIGN-OFF]`.
     pub settlement_fee_bps: u16,
     pub dev_treasury: Pubkey,
     pub ecosystem_treasury: Pubkey,
@@ -135,5 +145,49 @@ pub struct DisputeCase {
     /// weight `execute_dispute_outcome` tallies with.
     #[max_len(MAX_ARBITRATORS)]
     pub weights: Vec<u64>,
+    /// Whether each seat has already drawn its share of the reward. Reset
+    /// with the other per-round arrays, so only the round that actually
+    /// decided the case can claim (OFS-4100 §9.3).
+    #[max_len(MAX_ARBITRATORS)]
+    pub reward_claimed: Vec<bool>,
+    /// The merchant's OPEN liquidity vault the deposit was taken from, and
+    /// where it returns if the merchant is not found at fault.
+    ///
+    /// The deposit always comes from the merchant, whoever opened the
+    /// case. That asymmetry is deliberate: a buyer is often a one-time
+    /// participant and must face no cost barrier to raising a dispute,
+    /// while the merchant is the party running an ongoing business off an
+    /// ongoing vault.
+    pub deposit_vault: Pubkey,
+    /// The OPEN mint the deposit is denominated in, pinned at open time so
+    /// a claim or refund cannot be routed through a different mint.
+    pub deposit_mint: Pubkey,
+    /// Deposit taken at `open_dispute_case`, per `FeeConfig`.
+    ///
+    /// Zero when the configured fee was zero **or** the merchant's vault
+    /// could not cover it — see `open_dispute_case`, which deliberately
+    /// opens the case anyway rather than letting an underfunded merchant
+    /// block a buyer's dispute.
+    pub deposit: u64,
+    /// Set by `execute_dispute_outcome`. `Some` when a round produced a
+    /// stake-weighted verdict; stays `None` when the case exhausted its
+    /// rounds without deciding — which is what separates a deposit that
+    /// was decided against the merchant from one that was never resolved.
+    pub outcome: Option<DisputeOutcome>,
+    /// Total revealed weight behind [`Self::outcome`] — the denominator
+    /// each winning arbitrator's pro-rata share is computed against.
+    pub winning_weight: u64,
+    /// Forfeited deposit now held in the arbitration pool and claimable by
+    /// the arbitrators who decided this case. Zero unless the merchant was
+    /// found at fault.
+    pub reward_pool: u64,
+    /// Of [`Self::reward_pool`], how much is still unclaimed. Tracked so
+    /// the final claimant can take the truncation remainder rather than
+    /// leaving dust stranded in the pool.
+    pub reward_remaining: u64,
+    /// Whether the deposit has already been settled — returned to the
+    /// merchant or moved into the claimable pool. Guards against a second
+    /// settlement if `execute_dispute_outcome` is somehow re-entered.
+    pub deposit_settled: bool,
     pub bump: u8,
 }

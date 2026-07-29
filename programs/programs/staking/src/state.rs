@@ -88,7 +88,30 @@ impl StakeAccount {
     /// lower-overhead pattern for a pure read, and the reason no
     /// `get_effective_stake` instruction is dispatched anywhere in this
     /// program's `#[program]` module.
-    pub fn effective_stake(&self) -> u64 {
-        self.amount
+    ///
+    /// A balance below the role's minimum counts as **zero**, not as
+    /// itself. `stake` and `request_unstake` already refuse to *create*
+    /// such a balance ([`StakingConfig::is_legal_balance`]), but `slash`
+    /// can land one involuntarily: slashing a 10,000-OPEN arbitrator by
+    /// 10% leaves 9,000, which is non-zero and below the minimum. Without
+    /// this check that account kept full governance voting weight and full
+    /// dispute-tally weight while no longer qualifying for the role at
+    /// all — the exact "silent middle" `is_legal_balance` exists to rule
+    /// out, reachable through the one path that does not consult it.
+    ///
+    /// Resolving it here rather than inside `slash` keeps the penalty
+    /// proportional. Having `slash` sweep the illegal remainder to zero
+    /// would also restore the invariant, but it turns a 10% penalty into
+    /// total forfeiture for anyone staked at the minimum — which is the
+    /// common case for arbitrators, and flatly contradicts OFS-2400 §16's
+    /// "partial, moderate stake slash". The account keeps its tokens and
+    /// simply confers no weight until it is topped back up or fully
+    /// withdrawn.
+    pub fn effective_stake(&self, config: &StakingConfig) -> u64 {
+        if self.amount >= config.min_stake_for(self.role) {
+            self.amount
+        } else {
+            0
+        }
     }
 }

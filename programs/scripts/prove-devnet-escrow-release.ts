@@ -35,7 +35,7 @@ import { join } from "node:path";
 const MINT = new PublicKey(
   process.env.SETTLEMENT_MINT ?? "SK1JEbfsjjTG2WELNirmM7iJVcdnwerqfF32kCnoWsM",
 );
-/** 1,000 USDC at 6dp — large enough that a 15 bps fee splits without collapsing to zero. */
+/** 1,000 USDC at 6dp — large enough that an 85 bps fee splits without collapsing to zero. */
 const AMOUNT = new BN("1000000000");
 const OWNERS = {
   dev: new PublicKey("HLEB5akyStXEZfsTtgpnzexC4gyvDS5QNiYm1vDSHX4p"),
@@ -214,10 +214,10 @@ async function main() {
     emergency: await balance(treasuries.emergency),
   };
 
-  // Mirrors compute_fee_split: 15 bps of the amount, then 40/30/20/10 of the
+  // Mirrors compute_fee_split: 85 bps of the amount, then 40/30/20/10 of the
   // fee, with the truncation remainder swept to the emergency reserve.
   const amount = BigInt(AMOUNT.toString());
-  const fee = (amount * 15n) / 10_000n;
+  const fee = (amount * 85n) / 10_000n;
   const expected: Record<string, bigint> = {
     buyer: amount - fee,
     dev: (fee * 4000n) / 10_000n,
@@ -229,7 +229,7 @@ async function main() {
     fee - (expected.dev + expected.ecosystem + expected.infra + expected.emergency);
 
   let ok = true;
-  console.log(`\ntrade amount ${amount} base units, fee ${fee} (15 bps)`);
+  console.log(`\ntrade amount ${amount} base units, fee ${fee} (85 bps)`);
   for (const k of ["buyer", "dev", "ecosystem", "infra", "emergency"] as const) {
     const delta = after[k] - before[k];
     const pass = delta === expected[k];

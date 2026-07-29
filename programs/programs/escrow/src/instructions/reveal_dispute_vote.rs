@@ -15,6 +15,17 @@ pub struct RevealDisputeVote<'info> {
     )]
     pub dispute_case: Account<'info, DisputeCase>,
 
+    /// Read for the Arbitrator-role minimum, so a stake that has fallen
+    /// below it — a slash between commit and reveal can do that — weighs
+    /// zero rather than weighing its full face value. See
+    /// `staking::StakeAccount::effective_stake`.
+    #[account(
+        seeds = [staking::STAKING_CONFIG_SEED],
+        seeds::program = staking::ID,
+        bump = staking_config.bump,
+    )]
+    pub staking_config: Account<'info, staking::StakingConfig>,
+
     /// This arbitrator's own Arbitrator-role stake — read directly (no
     /// CPI dispatch) per `staking::StakeAccount::effective_stake`'s own
     /// doc comment. Seeds pin the role to `Arbitrator`, so a wallet with
@@ -62,6 +73,9 @@ pub fn handle_reveal_dispute_vote(
     );
 
     dispute_case.revealed_outcomes[index] = Some(outcome);
-    dispute_case.weights[index] = ctx.accounts.arbitrator_stake.effective_stake();
+    dispute_case.weights[index] = ctx
+        .accounts
+        .arbitrator_stake
+        .effective_stake(&ctx.accounts.staking_config);
     Ok(())
 }

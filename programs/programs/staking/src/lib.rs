@@ -1,5 +1,6 @@
 pub mod constants;
 pub mod error;
+pub mod events;
 pub mod instructions;
 pub mod state;
 
@@ -7,6 +8,7 @@ use anchor_lang::prelude::*;
 use openfiat_programs_shared::Role;
 
 pub use constants::*;
+pub use events::*;
 pub use instructions::*;
 pub use state::*;
 
@@ -65,8 +67,22 @@ pub mod staking {
         crate::instructions::slash::handle_slash(ctx, misconduct_code)
     }
 
-    pub fn distribute_reward(ctx: Context<DistributeReward>, amount: u64) -> Result<()> {
-        crate::instructions::distribute_reward::handle_distribute_reward(ctx, amount)
+    /// `epoch` is the reward cranker's own epoch number — recorded in the
+    /// emitted event so a distribution run is groupable and a double-pay
+    /// is visible. This program does not enforce uniqueness on it; see
+    /// `distribute_reward`'s own doc for why idempotence stays off-chain.
+    pub fn distribute_reward(
+        ctx: Context<DistributeReward>,
+        epoch: u64,
+        amount: u64,
+    ) -> Result<()> {
+        crate::instructions::distribute_reward::handle_distribute_reward(ctx, epoch, amount)
+    }
+
+    /// Adds OPEN to the pool `claim_rewards` pays out of. Permissionless —
+    /// see `fund_rewards_vault`'s own doc.
+    pub fn fund_rewards_vault(ctx: Context<FundRewardsVault>, amount: u64) -> Result<()> {
+        crate::instructions::fund_rewards_vault::handle_fund_rewards_vault(ctx, amount)
     }
 
     pub fn claim_rewards(ctx: Context<ClaimRewards>) -> Result<()> {

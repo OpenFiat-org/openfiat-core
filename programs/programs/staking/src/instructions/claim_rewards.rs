@@ -3,7 +3,7 @@ use anchor_spl::token_interface::{
     transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
 };
 
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, events::RewardsClaimed, state::*};
 
 #[derive(Accounts)]
 pub struct ClaimRewards<'info> {
@@ -58,5 +58,16 @@ pub fn handle_claim_rewards(ctx: Context<ClaimRewards>) -> Result<()> {
     )?;
 
     ctx.accounts.stake_account.pending_rewards = 0;
+
+    // Emitted after zeroing, because this log is the only surviving record
+    // that the reward existed — `pending_rewards` is destroyed here.
+    emit!(RewardsClaimed {
+        stake_account: ctx.accounts.stake_account.key(),
+        owner: ctx.accounts.owner.key(),
+        role: ctx.accounts.stake_account.role,
+        amount,
+        destination: ctx.accounts.to.key(),
+        timestamp: Clock::get()?.unix_timestamp,
+    });
     Ok(())
 }

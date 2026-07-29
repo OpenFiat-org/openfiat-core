@@ -208,7 +208,7 @@ pub fn release_trade_escrow_funds<'info>(
     emergency_reserve: &InterfaceAccount<'info, TokenAccount>,
     mint: &InterfaceAccount<'info, Mint>,
     token_program: &Program<'info, Token2022>,
-) -> Result<()> {
+) -> Result<(u64, [u64; 4])> {
     let amount = trade_escrow.amount;
     let (buyer_amount, fee_shares) = compute_fee_split(fee_config, amount)?;
 
@@ -256,5 +256,5 @@ pub fn release_trade_escrow_funds<'info>(
         .settled
         .checked_add(amount)
         .ok_or(ErrorCode::Overflow)?;
-    Ok(())
+    Ok((buyer_amount, fee_shares))
 }

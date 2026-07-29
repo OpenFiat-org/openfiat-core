@@ -338,7 +338,7 @@ describe("staking", () => {
 
       await expectAnchorError(
         program.methods
-          .distributeReward(unit(100))
+          .distributeReward(new BN(1), unit(100))
           .accountsPartial({ rewardsAuthority: owner.publicKey, stakingConfig, stakeAccount })
           .signers([owner])
           .rpc({ commitment: "confirmed" }),
@@ -347,7 +347,7 @@ describe("staking", () => {
 
       await withBlockhashRetry(() =>
         program.methods
-          .distributeReward(unit(100))
+          .distributeReward(new BN(1), unit(100))
           .accountsPartial({ rewardsAuthority: rewardsAuthority.publicKey, stakingConfig, stakeAccount })
           .signers([rewardsAuthority])
           .rpc({ commitment: "confirmed" }),
@@ -377,6 +377,121 @@ describe("staking", () => {
       expect(account.pendingRewards.toString()).to.equal("0");
       const ownerTokens = await getAccount(connection, ownerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
       expect(ownerTokens.amount.toString()).to.equal(unit(100).toString());
+    });
+  });
+
+  describe("fund_rewards_vault", () => {
+    it("tops the pool up from any wallet, and is what makes a claim possible at all", async () => {
+      const before = await getAccount(connection, rewardsVault, "confirmed", TOKEN_2022_PROGRAM_ID);
+
+      // Deliberately not the admin: funding is permissionless, because the
+      // only thing it can do is increase a pool that pays stakers.
+      const donor = Keypair.generate();
+      await airdrop(donor.publicKey);
+      const donorAta = await ata(mint, donor.publicKey);
+      await mintTokens(donorAta, unit(500));
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .fundRewardsVault(unit(500))
+          .accountsPartial({
+            funder: donor.publicKey,
+            mint,
+            stakingConfig,
+            rewardsVault,
+            from: donorAta,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([donor])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const after = await getAccount(connection, rewardsVault, "confirmed", TOKEN_2022_PROGRAM_ID);
+      expect((after.amount - before.amount).toString()).to.equal(unit(500).toString());
+    });
+
+    it("rejects a zero-amount deposit rather than emitting a meaningless event", async () => {
+      const donor = Keypair.generate();
+      await airdrop(donor.publicKey);
+      const donorAta = await ata(mint, donor.publicKey);
+      await expectAnchorError(
+        program.methods
+          .fundRewardsVault(new BN(0))
+          .accountsPartial({
+            funder: donor.publicKey,
+            mint,
+            stakingConfig,
+            rewardsVault,
+            from: donorAta,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([donor])
+          .rpc({ commitment: "confirmed" }),
+        "ZeroAmount",
+      );
+    });
+  });
+
+  // `slash` is the one path that can leave a balance in the illegal middle —
+  // non-zero but under the role minimum. `stake`/`request_unstake` refuse to
+  // create one. The penalty stays proportional (a 10% slash is 10%, not a
+  // wipeout), and the account simply stops carrying weight.
+  describe("slash below the role minimum", () => {
+    it("keeps the penalty proportional and zeroes the account's effective stake", async () => {
+      const owner = Keypair.generate();
+      await airdrop(owner.publicKey);
+      const stakeAccount = stakeAccountPda(owner.publicKey, 1); // Arbitrator
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .initializeStakeAccount(ROLE_ARBITRATOR)
+          .accountsPartial({ owner: owner.publicKey, stakeAccount, systemProgram: SystemProgram.programId })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      // Exactly the Arbitrator minimum — the common case, and the one where
+      // sweeping the remainder to zero would have turned a 10% penalty into
+      // total forfeiture.
+      const ownerAta = await ata(mint, owner.publicKey);
+      await mintTokens(ownerAta, unit(10000));
+      await withBlockhashRetry(() =>
+        program.methods
+          .stake(unit(10000))
+          .accountsPartial({
+            owner: owner.publicKey,
+            mint,
+            stakingConfig,
+            stakeAccount,
+            stakeVault,
+            from: ownerAta,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .slash(7)
+          .accountsPartial({
+            slashingAuthority: slashingAuthority.publicKey,
+            mint,
+            stakingConfig,
+            stakeAccount,
+            stakeVault,
+            destination: slashDestination,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([slashingAuthority])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      // 10% taken, not 100%: the balance survives, below the 10,000 minimum.
+      const account = await program.account.stakeAccount.fetch(stakeAccount);
+      expect(account.amount.toString()).to.equal(unit(9000).toString());
+      expect(account.slashedTotal.toString()).to.equal(unit(1000).toString());
+      expect(account.amount.lt(unit(10000))).to.equal(true);
     });
   });
 

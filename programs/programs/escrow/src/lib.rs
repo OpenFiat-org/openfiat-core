@@ -1,11 +1,13 @@
 pub mod constants;
 pub mod error;
+pub mod events;
 pub mod instructions;
 pub mod state;
 
 use anchor_lang::prelude::*;
 
 pub use constants::*;
+pub use events::*;
 pub use instructions::*;
 pub use state::*;
 
@@ -30,6 +32,31 @@ pub mod escrow {
         params: InitializeFeeConfigParams,
     ) -> Result<()> {
         crate::instructions::initialize_fee_config::handle_initialize_fee_config(ctx, params)
+    }
+
+    /// Creates the singleton arbitration pool. One-time, admin-gated —
+    /// see `initialize_arbitration_pool`.
+    pub fn initialize_arbitration_pool(ctx: Context<InitializeArbitrationPool>) -> Result<()> {
+        crate::instructions::initialize_arbitration_pool::handle_initialize_arbitration_pool(ctx)
+    }
+
+    /// Charges a merchant the advertisement-listing fee against their OPEN
+    /// liquidity vault. `advertisement_id` is the off-chain listing's own
+    /// id, recorded only in the emitted event.
+    pub fn charge_ad_listing_fee(
+        ctx: Context<ChargeAdListingFee>,
+        advertisement_id: [u8; 32],
+    ) -> Result<()> {
+        crate::instructions::charge_ad_listing_fee::handle_charge_ad_listing_fee(
+            ctx,
+            advertisement_id,
+        )
+    }
+
+    /// Pays one arbitrator their pro-rata share of a forfeited arbitration
+    /// deposit. Pull-based — see `claim_arbitration_reward`.
+    pub fn claim_arbitration_reward(ctx: Context<ClaimArbitrationReward>) -> Result<()> {
+        crate::instructions::claim_arbitration_reward::handle_claim_arbitration_reward(ctx)
     }
 
     pub fn update_fee_config(
