@@ -20,6 +20,7 @@ openfiat-trade = { path = "../trade", version = "0.1.0" }
 openfiat-disputes = { path = "../disputes", version = "0.1.0" }
 openfiat-identity = { path = "../identity", version = "0.1.0" }
 openfiat-reputation = { path = "../reputation", version = "0.1.0" }
+openfiat-rewards = { path = "../rewards", version = "0.1.0" }
 openfiat-governance = { path = "../governance", version = "0.1.0" }
 openfiat-registry = { path = "../registry", version = "0.1.0" }
 openfiat-notifications = { path = "../notifications", version = "0.1.0" }

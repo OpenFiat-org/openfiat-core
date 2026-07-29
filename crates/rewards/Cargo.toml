@@ -1,0 +1,11 @@
+[package]
+name = "openfiat-rewards"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Node-operator reward computation (OFS-4100 §9): epoch liveness observation, eligibility, and the emission share each node is owed."
+repository = "https://github.com/OpenFiat-org/openfiat-core"
+
+[dependencies]
+openfiat-types = { path = "../types", version = "0.1.0" }
+serde = { version = "1.0.229", features = ["derive"] }

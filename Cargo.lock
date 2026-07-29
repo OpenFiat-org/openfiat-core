@@ -3456,6 +3456,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "openfiat-rewards"
+version = "0.1.0"
+dependencies = [
+ "openfiat-types",
+ "serde",
+]
+
+[[package]]
 name = "openfiat-risk"
 version = "0.1.0"
 dependencies = [
@@ -3496,6 +3504,7 @@ dependencies = [
  "openfiat-registry",
  "openfiat-reputation",
  "openfiat-reservations",
+ "openfiat-rewards",
  "openfiat-risk",
  "openfiat-serialization",
  "openfiat-sessions",

@@ -13,6 +13,7 @@ pub mod oracles;
 pub mod providers;
 pub mod reputation;
 pub mod reservations;
+pub mod rewards;
 pub mod risk;
 pub mod sessions;
 pub mod settlement;
@@ -32,6 +33,7 @@ pub fn build_table<S: KvStore + 'static>() -> MethodTable<S> {
     disputes::register(&mut table);
     identity::register(&mut table);
     reputation::register(&mut table);
+    rewards::register(&mut table);
     governance::register(&mut table);
     providers::register(&mut table);
     notifications::register(&mut table);

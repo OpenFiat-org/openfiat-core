@@ -28,6 +28,7 @@ use openfiat_oracles::OracleIndex;
 use openfiat_registry::Registry as ServiceRegistry;
 use openfiat_reputation::ReputationView;
 use openfiat_reservations::ReservationRegistry;
+use openfiat_rewards::{LivenessLedger, RewardParams};
 use openfiat_risk::RiskIndex;
 use openfiat_serialization::wire;
 use openfiat_sessions::SessionRegistry;
@@ -69,6 +70,15 @@ pub struct NodeState<S> {
     pub snapshots: Rc<SnapshotIndex<Rc<S>>>,
     pub sessions: Rc<SessionRegistry<Rc<S>>>,
     pub chain: Rc<ChainState>,
+    /// Per-epoch liveness observations feeding OFS-4100 §9.2's node
+    /// reward share, recorded from every signed envelope this node
+    /// receives. Local by construction — see `openfiat_rewards::liveness`
+    /// on why a node can only honestly speak to what it heard itself.
+    pub reward_observations: Rc<RefCell<LivenessLedger>>,
+    /// The reward parameters this node measures against. Held here rather
+    /// than read at each use so a schedule and the observations behind it
+    /// can never be computed under two different epoch lengths.
+    pub reward_params: RewardParams,
     /// The Chain Bridge's gossip-facing half (OFS-4300 §6-7) — installed
     /// on the same shared `gossip` above, alongside every registry's
     /// `apply_event`. Kept separate from `chain` (which is what
@@ -144,6 +154,25 @@ impl<S: KvStore + 'static> NodeState<S> {
         // node's poll loop) or a peer's (a `GossipOnly` node's only
         // source) alike, so both modes answer those two methods
         // identically per OFS-4300 §8's own requirement.
+        // Every signed envelope is a liveness datapoint for whoever
+        // originated it (OFS-4100 §9.2). Installed ahead of the
+        // domain handlers and matching no event type in particular:
+        // presence is the signal, not what the peer happened to say.
+        let reward_observations: Rc<RefCell<LivenessLedger>> =
+            Rc::new(RefCell::new(LivenessLedger::new()));
+        let reward_params = RewardParams::default();
+        let observations_for_gossip = Rc::clone(&reward_observations);
+        gossip.add_event_handler(move |event| {
+            let is_announcement = event.ofs_spec == openfiat_chain::protocol::OFS_SPEC
+                && event.event_type.as_str() == openfiat_chain::protocol::EVENT_BLOCKHASH_ANNOUNCED;
+            observations_for_gossip.borrow_mut().observe(
+                &reward_params,
+                &event.origin,
+                event.timestamp,
+                is_announcement,
+            );
+        });
+
         let chain_for_blockhash = Rc::clone(&chain);
         gossip.add_event_handler(move |event| {
             if event.ofs_spec == openfiat_chain::protocol::OFS_SPEC
@@ -231,6 +260,8 @@ impl<S: KvStore + 'static> NodeState<S> {
             snapshots,
             sessions,
             chain,
+            reward_observations,
+            reward_params,
             chain_bridge,
             pending_vote_verifications,
         }
@@ -285,5 +316,40 @@ mod tests {
         assert!(state.advertisements.all().is_empty());
         assert!(state.trades.all().is_empty());
         assert!(state.services.all().is_empty());
+        assert!(
+            state.reward_observations.borrow().epochs_held().is_empty(),
+            "a fresh node has observed nobody"
+        );
+    }
+
+    /// The reward ledger is only worth anything if the node actually
+    /// feeds it, so this drives a real envelope through the real gossip
+    /// service rather than calling `LivenessLedger::observe` directly —
+    /// the wiring is the thing under test, not the arithmetic.
+    #[test]
+    fn every_gossiped_event_records_liveness_for_whoever_originated_it() {
+        use openfiat_types::{EventType, Priority, Timestamp};
+
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let me = state.gossip.borrow().node.local_peer_id();
+
+        state
+            .gossip
+            .borrow_mut()
+            .originate(
+                EventType::new("BlockhashAnnounced").expect("valid event type"),
+                openfiat_chain::protocol::OFS_SPEC,
+                Priority::SessionReservationSettlement,
+                4,
+                Vec::new(),
+            )
+            .expect("a node may originate its own chain event");
+
+        let epoch = state.reward_params.epoch_index(Timestamp::now());
+        let observed = state.reward_observations.borrow().epoch(epoch);
+        let live = observed
+            .get(&me)
+            .expect("originating an event must register the originator as live");
+        assert!(live.availability_bps(&state.reward_params) > 0);
     }
 }
