@@ -29,9 +29,53 @@ use crate::{constants::*, error::ErrorCode, events::RewardsVaultFunded, state::*
 /// instruction emits [`RewardsVaultFunded`], so the pool's funding history
 /// is reconstructable from logs (§9.4) instead of being inferable only by
 /// diffing balances.
+///
+/// # Banned wallets are the one exception, and it was a close call
+///
+/// "Permissionless" above means no *authority* — it does not extend to a
+/// wallet on OFS-7100 §12's ban list. That sits in real tension with the
+/// paragraph above, so the reasoning is recorded rather than left to be
+/// re-derived.
+///
+/// Against gating: this is a one-way donation. The funder receives no
+/// stake account, no claim, no receipt, no position — the tokens leave
+/// their control permanently. Refusing therefore denies a banned party
+/// nothing they wanted, while costing the pool a contribution. On that
+/// reading the gate punishes the protocol more than the listed wallet.
+///
+/// For gating, and decisive: accepting means knowingly taking tokens from
+/// a wallet governance has declared stolen or sanctioned and distributing
+/// them to honest stakers, who cannot refuse them and had no part in the
+/// decision. Pushing that contamination onto uninvolved third parties is
+/// worse than declining a donation nobody was counting on — realistically
+/// this pool is funded by the two sources §9.1 names, not by walk-up
+/// donors, so the expected cost of refusing is near zero. §12 also says
+/// "any vault" without exception, and the rewards vault is a vault;
+/// carving out the first exception invites the argument for the next.
+///
+/// What the gate is not: a laundering defence. A determined actor donates
+/// from a fresh, unlisted wallet and this check never fires. What it buys
+/// is narrower and still worth having — the protocol does not knowingly
+/// accept from a wallet it has itself listed.
 #[derive(Accounts)]
 pub struct FundRewardsVault<'info> {
     pub funder: Signer<'info>,
+
+    /// CHECK: OFS-7100 §12 deposit gate, enforced by *proof of
+    /// non-existence*. Unchecked and uninitialized on purpose — the
+    /// wallet is banned iff this address is occupied, so in the passing
+    /// case there is nothing to deserialize. The soundness lives in the
+    /// constraint, not the type: `seeds`/`seeds::program` force this to
+    /// be the one canonical ban address for `funder` under
+    /// `openfiat-governance`, so a banned caller cannot substitute an
+    /// unrelated empty account and appear unbanned. Removing either line
+    /// silently disables the ban for this instruction.
+    #[account(
+        seeds = [openfiat_programs_shared::BAN_SEED, funder.key().as_ref()],
+        bump,
+        seeds::program = openfiat_programs_shared::GOVERNANCE_PROGRAM_ID,
+    )]
+    pub ban_record: UncheckedAccount<'info>,
 
     pub mint: InterfaceAccount<'info, Mint>,
 
@@ -52,6 +96,11 @@ pub struct FundRewardsVault<'info> {
 }
 
 pub fn handle_fund_rewards_vault(ctx: Context<FundRewardsVault>, amount: u64) -> Result<()> {
+    require!(
+        !openfiat_programs_shared::wallet_is_banned(&ctx.accounts.ban_record),
+        ErrorCode::WalletBanned
+    );
+
     require!(amount > 0, ErrorCode::ZeroAmount);
 
     transfer_checked(

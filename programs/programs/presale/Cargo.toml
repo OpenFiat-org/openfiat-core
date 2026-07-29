@@ -25,6 +25,10 @@ custom-panic = []
 [dependencies]
 anchor-lang = { version = "1.1.2", features = ["init-if-needed"] }
 anchor-spl = "1.1.2"
+# Only for the OFS-7100 §12 ban gate's seed + governance program id.
+# Presale takes no dependency on `governance` itself: the gate is proof
+# of non-existence, so it never deserializes a BanRecord.
+openfiat-programs-shared = { path = "../../shared", version = "0.1.0" }
 
 
 [lints.rust]

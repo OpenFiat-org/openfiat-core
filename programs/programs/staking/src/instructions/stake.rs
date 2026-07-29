@@ -9,6 +9,22 @@ use crate::{constants::*, error::ErrorCode, state::*};
 pub struct Stake<'info> {
     pub owner: Signer<'info>,
 
+    /// CHECK: OFS-7100 §12 deposit gate, enforced by *proof of
+    /// non-existence*. Unchecked and uninitialized on purpose — the
+    /// wallet is banned iff this address is occupied, so in the passing
+    /// case there is nothing to deserialize. The soundness lives in the
+    /// constraint, not the type: `seeds`/`seeds::program` force this to
+    /// be the one canonical ban address for `owner` under
+    /// `openfiat-governance`, so a banned caller cannot substitute an
+    /// unrelated empty account and appear unbanned. Removing either line
+    /// silently disables the ban for this instruction.
+    #[account(
+        seeds = [openfiat_programs_shared::BAN_SEED, owner.key().as_ref()],
+        bump,
+        seeds::program = openfiat_programs_shared::GOVERNANCE_PROGRAM_ID,
+    )]
+    pub ban_record: UncheckedAccount<'info>,
+
     #[account(
         seeds = [STAKING_CONFIG_SEED],
         bump = staking_config.bump,
@@ -36,6 +52,11 @@ pub struct Stake<'info> {
 }
 
 pub fn handle_stake(ctx: Context<Stake>, amount: u64) -> Result<()> {
+    require!(
+        !openfiat_programs_shared::wallet_is_banned(&ctx.accounts.ban_record),
+        ErrorCode::WalletBanned
+    );
+
     // Checked before the transfer, so a stake that would land below the
     // role's minimum fails without having moved any tokens.
     let new_amount = ctx

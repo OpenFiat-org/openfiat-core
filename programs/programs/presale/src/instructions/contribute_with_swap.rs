@@ -37,6 +37,22 @@ pub struct ContributeWithSwap<'info> {
     #[account(mut)]
     pub buyer: Signer<'info>,
 
+    /// CHECK: OFS-7100 §12 deposit gate, enforced by *proof of
+    /// non-existence*. Unchecked and uninitialized on purpose — the
+    /// wallet is banned iff this address is occupied, so in the passing
+    /// case there is nothing to deserialize. The soundness lives in the
+    /// constraint, not the type: `seeds`/`seeds::program` force this to
+    /// be the one canonical ban address for `buyer` under
+    /// `openfiat-governance`, so a banned caller cannot substitute an
+    /// unrelated empty account and appear unbanned. Removing either line
+    /// silently disables the ban for this instruction.
+    #[account(
+        seeds = [openfiat_programs_shared::BAN_SEED, buyer.key().as_ref()],
+        bump,
+        seeds::program = openfiat_programs_shared::GOVERNANCE_PROGRAM_ID,
+    )]
+    pub ban_record: UncheckedAccount<'info>,
+
     #[account(
         mut,
         seeds = [SALE_CONFIG_SEED, &sale_nonce.to_le_bytes()],
@@ -77,6 +93,11 @@ pub fn handle_contribute_with_swap(
     expected_usdc_out: u64,
     swap_instruction_data: Vec<u8>,
 ) -> Result<()> {
+    require!(
+        !openfiat_programs_shared::wallet_is_banned(&ctx.accounts.ban_record),
+        ErrorCode::WalletBanned
+    );
+
     let now = Clock::get()?.unix_timestamp;
     let sale_config = &ctx.accounts.sale_config;
 
