@@ -23,6 +23,7 @@ use openfiat_chain::{ChainClient, NodeChainMode, RpcChainClient, SignatureStatus
 use openfiat_crypto::Keypair;
 use openfiat_governance::events::SignedVoteCast;
 use openfiat_network::{Multiaddr, Node};
+use openfiat_notifications::{HttpGateway, NotificationProvider};
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::NodeRole;
@@ -63,6 +64,15 @@ const REGISTRY_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// parameter change, not a code change.
 const REGISTRY_EXPIRATION_THRESHOLD: std::time::Duration =
     std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// How often this node drains the notifications its gossip handlers have
+/// planned (`notify::NotificationDispatcher`) and hands them to the bound
+/// gateways.
+///
+/// One second: notifications are user-facing, so latency is the whole
+/// point, and an empty queue costs a timer wakeup. The queue is drained
+/// in full each tick, so the interval bounds latency, not throughput.
+const NOTIFICATION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 struct RpcCommand {
     method: String,
@@ -208,10 +218,18 @@ async fn poll_chain<S: KvStore + 'static>(state: &NodeState<S>, client: &dyn Cha
                         .map(|(domain, id)| (domain, id.to_string()))
                 }) {
                     Some(("settlement", id)) => {
-                        let _ = state.settlements.apply_escrow_released(
-                            &openfiat_settlement::SettlementId::new(id),
-                            awaiting.signature.clone(),
-                        );
+                        let settlement_id = openfiat_settlement::SettlementId::new(id);
+                        let _ = state
+                            .settlements
+                            .apply_escrow_released(&settlement_id, awaiting.signature.clone());
+                        // `EscrowReleased` is the one wired trigger with
+                        // no gossip event behind it — the confirmation
+                        // itself is the observation. Planned here, after
+                        // the settlement has been updated, and delivered
+                        // on the next `poll_notifications` tick.
+                        state
+                            .notification_dispatcher
+                            .observe_escrow_release(&settlement_id, &awaiting.signature);
                     }
                     Some(("dispute", id)) => {
                         let _ = state.disputes.apply_onchain_execution(
@@ -232,6 +250,40 @@ async fn poll_chain<S: KvStore + 'static>(state: &NodeState<S>, client: &dyn Cha
                 // `awaiting_confirmation` for the next tick.
             }
         }
+    }
+}
+
+/// One tick of the notification delivery path (OFS-6000): hand every
+/// planned delivery to its bound gateway's endpoint, and record what the
+/// handoff actually did.
+///
+/// The gossip handler that planned these deliveries could not perform
+/// them itself — it runs synchronously inside the event loop, and an
+/// unresponsive gateway would stall gossip and chain polling with it. So
+/// planning and delivering are split, exactly the way `poll_chain` splits
+/// submission from confirmation.
+///
+/// Every failure is contained here. `HttpGateway::send` has a hard
+/// timeout, a failed handoff is recorded as `Failed` and dropped rather
+/// than retried (the notification's own source event is long since
+/// applied, and re-sending a stale one is worse than not), and nothing in
+/// this function can affect any domain registry.
+async fn poll_notifications<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    provider: &dyn NotificationProvider,
+) {
+    for delivery in state.drain_notifications() {
+        let outcome = provider.send(&delivery.endpoint, &delivery.payload).await;
+        if let Err(error) = &outcome {
+            eprintln!(
+                "openfiat-notifications: handoff of {} to {} failed: {error}",
+                delivery.payload.notification_id.as_str(),
+                delivery.endpoint
+            );
+        }
+        state
+            .notifications
+            .record_handoff(&delivery.payload.notification_id, outcome.is_ok());
     }
 }
 
@@ -344,6 +396,11 @@ where
             // Unconditional, unlike `chain_poll`: a GossipOnly node replicates
             // the registry just the same and must expire stale entries too.
             let mut registry_sweep = tokio::time::interval(REGISTRY_SWEEP_INTERVAL);
+            // Unconditional, like `registry_sweep`: notifications are
+            // driven by gossiped protocol events, which a `GossipOnly`
+            // node sees just as well as an `RpcConnected` one.
+            let mut notification_poll = tokio::time::interval(NOTIFICATION_POLL_INTERVAL);
+            let notification_provider = HttpGateway::default();
 
             loop {
                 tokio::select! {
@@ -367,6 +424,9 @@ where
                     }
                     _ = registry_sweep.tick() => {
                         state.services.expire_stale(REGISTRY_EXPIRATION_THRESHOLD);
+                    }
+                    _ = notification_poll.tick() => {
+                        poll_notifications(&state, &notification_provider).await;
                     }
                 }
             }
@@ -809,5 +869,147 @@ mod tests {
             .expect("expected a notification for a successful sendX call");
         assert_eq!(notification["method"], Value::from("sendSessionEstablish"));
         assert_eq!(notification["result"], Value::from("sess-1"));
+    }
+
+    /// A `NotificationProvider` that records what it was asked to send
+    /// and answers with a configured outcome — so `poll_notifications`'s
+    /// own drain-and-record logic is testable without a socket. The real
+    /// HTTP behaviour (timeouts, non-2xx, the exact bytes on the wire) is
+    /// covered against a real server in `openfiat_notifications::gateway`.
+    struct RecordingProvider {
+        sent: std::sync::Mutex<Vec<(String, openfiat_notifications::NotificationId)>>,
+        outcome: Result<(), openfiat_notifications::NotificationError>,
+    }
+
+    #[async_trait::async_trait]
+    impl openfiat_notifications::NotificationProvider for RecordingProvider {
+        fn channels(&self) -> Vec<openfiat_types::NotificationChannel> {
+            vec![openfiat_types::NotificationChannel::Email]
+        }
+        async fn send(
+            &self,
+            endpoint: &str,
+            payload: &openfiat_notifications::NotificationPayload,
+        ) -> Result<(), openfiat_notifications::NotificationError> {
+            self.sent
+                .lock()
+                .unwrap()
+                .push((endpoint.to_string(), payload.notification_id.clone()));
+            self.outcome.clone()
+        }
+    }
+
+    /// Builds a node with one gateway registered, one subscribed wallet,
+    /// and one planned delivery already queued.
+    fn state_with_one_queued_notification() -> (
+        NodeState<MemoryStore>,
+        openfiat_notifications::NotificationId,
+    ) {
+        use openfiat_crypto::seal;
+        use openfiat_network::identity::peer_id_from_public_key;
+        use openfiat_notifications::events::{SignedSubscriptionUpdate, SubscriptionUpdate};
+        use openfiat_notifications::{NotificationCategory, SubscriptionDestination};
+        use openfiat_registry::{Registration, SignedRegistration};
+        use openfiat_types::{NotificationChannel, ServiceId, ServiceType, Timestamp};
+
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let gateway = Keypair::generate();
+        let wallet = Keypair::generate();
+        let wallet_id = peer_id_from_public_key(&wallet.public_key()).unwrap();
+
+        state
+            .services
+            .apply_registration(SignedRegistration::sign(
+                Registration {
+                    service_id: ServiceId::new("gw-1"),
+                    service_type: ServiceType::Notifications(NotificationChannel::Email),
+                    provider: peer_id_from_public_key(&gateway.public_key()).unwrap(),
+                    provider_public_key: gateway.public_key(),
+                    endpoints: vec!["https://gw.example/deliver".to_string()],
+                    supported_ofs: vec![6000],
+                    region: None,
+                    capabilities: vec![],
+                    pricing: None,
+                    payout_wallet: None,
+                    timestamp: Timestamp::now(),
+                },
+                &gateway,
+            ))
+            .unwrap();
+        state
+            .notifications
+            .apply_subscription_update(SignedSubscriptionUpdate::sign(
+                SubscriptionUpdate {
+                    wallet: wallet_id.clone(),
+                    wallet_public_key: wallet.public_key(),
+                    enabled_categories: vec![NotificationCategory::Trading],
+                    destinations: vec![SubscriptionDestination {
+                        service_id: ServiceId::new("gw-1"),
+                        channel: NotificationChannel::Email,
+                        sealed: seal(&gateway.public_key(), b"user@example.com").unwrap(),
+                    }],
+                    timestamp: Timestamp::now(),
+                },
+                &wallet,
+            ))
+            .unwrap();
+
+        let plan = state.notifications.plan(
+            openfiat_notifications::NotificationTrigger::SettlementApproved,
+            b"source-event",
+            &wallet_id,
+        );
+        let delivery = plan.deliveries.into_iter().next().unwrap();
+        let id = delivery.payload.notification_id.clone();
+        state.notifications.record_queued(&delivery);
+        state.enqueue_notification(delivery);
+        (state, id)
+    }
+
+    #[tokio::test]
+    async fn poll_notifications_hands_every_queued_delivery_to_its_gateway() {
+        let (state, id) = state_with_one_queued_notification();
+        let provider = RecordingProvider {
+            sent: std::sync::Mutex::new(Vec::new()),
+            outcome: Ok(()),
+        };
+
+        poll_notifications(&state, &provider).await;
+
+        assert_eq!(
+            provider.sent.lock().unwrap().as_slice(),
+            &[("https://gw.example/deliver".to_string(), id.clone())]
+        );
+        assert_eq!(
+            state.notifications.dispatch(&id).unwrap().status,
+            openfiat_notifications::DeliveryStatus::Sent
+        );
+        assert!(
+            state.drain_notifications().is_empty(),
+            "a handed-off delivery must not be re-sent on the next tick"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_handoff_is_recorded_and_not_retried() {
+        let (state, id) = state_with_one_queued_notification();
+        let provider = RecordingProvider {
+            sent: std::sync::Mutex::new(Vec::new()),
+            outcome: Err(openfiat_notifications::NotificationError::ProviderUnavailable),
+        };
+
+        poll_notifications(&state, &provider).await;
+
+        assert_eq!(
+            state.notifications.dispatch(&id).unwrap().status,
+            openfiat_notifications::DeliveryStatus::Failed
+        );
+        assert!(state.drain_notifications().is_empty());
+
+        // The second tick must be a no-op, not a re-send: the source
+        // event is long applied, and replaying a stale notification is
+        // worse than dropping it.
+        poll_notifications(&state, &provider).await;
+        assert_eq!(provider.sent.lock().unwrap().len(), 1);
     }
 }

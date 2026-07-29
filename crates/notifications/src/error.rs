@@ -14,6 +14,10 @@ pub enum NotificationError {
     MalformedEvent,
     ServiceNotFound,
     SubscriptionNotFound,
+    /// A delivery report referencing a notification this node never
+    /// dispatched — see `NotificationRegistry::apply_delivery_report`
+    /// for why an unverifiable report is dropped rather than trusted.
+    UnknownNotification,
     /// §5's plugin `NotificationProvider::send` failing because the
     /// provider itself couldn't be reached (transient).
     ProviderUnavailable,
@@ -31,6 +35,7 @@ impl NotificationError {
             Self::Unauthorized => ErrorCode::InvalidRequest,
             Self::MalformedEvent => ErrorCode::DeserializationError,
             Self::ServiceNotFound => ErrorCode::ResourceNotFound,
+            Self::UnknownNotification => ErrorCode::ResourceNotFound,
             Self::SubscriptionNotFound => ErrorCode::SubscriptionNotFound,
             Self::ProviderUnavailable => ErrorCode::NotificationProviderUnavailable,
             Self::DeliveryFailed(_) => ErrorCode::DeliveryFailed,

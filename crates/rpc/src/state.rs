@@ -24,6 +24,7 @@ use openfiat_governance::GovernanceRegistry;
 use openfiat_identity::IdentityRegistry;
 use openfiat_network::Node;
 use openfiat_notifications::NotificationRegistry;
+use openfiat_notifications::routing::PlannedDelivery;
 use openfiat_oracles::OracleIndex;
 use openfiat_registry::Registry as ServiceRegistry;
 use openfiat_registry::earnings::EarningsLedger;
@@ -99,6 +100,17 @@ pub struct NodeState<S> {
     /// verification before any weight is trusted. Drained by
     /// `actor::poll_vote_verifications`.
     pending_vote_verifications: Rc<RefCell<VecDeque<PendingVoteVerification>>>,
+    /// Notifications this node has planned but not yet handed to a
+    /// gateway (OFS-6000). Queued synchronously by `notify`'s gossip
+    /// handler — which must never do I/O, or it would stall the event
+    /// loop — and drained by `actor::poll_notifications`, which owns the
+    /// HTTP hop. Same shape, and the same reasoning, as
+    /// `pending_vote_verifications`.
+    pending_notifications: Rc<RefCell<VecDeque<PlannedDelivery>>>,
+    /// Turns observed protocol events into those planned notifications.
+    /// Held so `actor::poll_chain` can also report the one trigger that
+    /// has no gossip event of its own (`EscrowReleased`).
+    pub notification_dispatcher: Rc<crate::notify::NotificationDispatcher<Rc<S>>>,
 }
 
 impl<S: KvStore + 'static> NodeState<S> {
@@ -251,8 +263,28 @@ impl<S: KvStore + 'static> NodeState<S> {
             }
         });
 
+        // Installed last on purpose: it reads the state every handler
+        // above just wrote (a settlement's counterparties, a dispute's
+        // parties) rather than re-deriving it from the payload. It only
+        // ever enqueues, so nothing it does — a missing gateway, an
+        // unreachable endpoint — can disturb the domain path that
+        // produced the event.
+        let pending_notifications: Rc<RefCell<VecDeque<PlannedDelivery>>> =
+            Rc::new(RefCell::new(VecDeque::new()));
+        let notification_dispatcher = Rc::new(crate::notify::NotificationDispatcher::new(
+            Rc::clone(&notifications),
+            Rc::clone(&advertisements),
+            Rc::clone(&settlements),
+            Rc::clone(&disputes),
+            Rc::clone(&pending_notifications),
+        ));
+        let dispatcher_for_events = Rc::clone(&notification_dispatcher);
+        gossip.add_event_handler(move |event| dispatcher_for_events.observe(event));
+
         Self {
             gossip: RefCell::new(gossip),
+            pending_notifications,
+            notification_dispatcher,
             advertisements,
             reservations,
             settlements,
@@ -274,6 +306,20 @@ impl<S: KvStore + 'static> NodeState<S> {
             chain_bridge,
             pending_vote_verifications,
         }
+    }
+
+    /// Every notification currently planned and awaiting its gateway
+    /// handoff. Drained once per `actor::poll_notifications` tick.
+    pub fn drain_notifications(&self) -> Vec<PlannedDelivery> {
+        self.pending_notifications.borrow_mut().drain(..).collect()
+    }
+
+    /// Queue a planned delivery for the next handoff tick — the
+    /// counterpart to `enqueue_vote_verification`, for anything that
+    /// plans a notification outside the gossip handler (see
+    /// `notify::NotificationDispatcher::observe_escrow_release`).
+    pub fn enqueue_notification(&self, delivery: PlannedDelivery) {
+        self.pending_notifications.borrow_mut().push_back(delivery);
     }
 
     /// Queues a governance vote for independent on-chain stake

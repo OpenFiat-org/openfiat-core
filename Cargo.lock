@@ -3256,9 +3256,13 @@ dependencies = [
 name = "openfiat-crypto"
 version = "0.1.0"
 dependencies = [
+ "chacha20poly1305",
+ "curve25519-dalek 5.0.0",
  "ed25519-dalek 3.0.0",
  "openfiat-types",
  "rand 0.10.2",
+ "serde",
+ "serde_json",
  "sha2 0.11.0",
 ]
 
@@ -3377,6 +3381,7 @@ dependencies = [
 name = "openfiat-notifications"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "futures",
  "libp2p",
  "openfiat-crypto",
@@ -3386,7 +3391,9 @@ dependencies = [
  "openfiat-serialization",
  "openfiat-storage",
  "openfiat-types",
+ "reqwest",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

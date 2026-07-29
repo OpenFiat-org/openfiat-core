@@ -14,9 +14,15 @@ openfiat-gossip = { path = "../gossip", version = "0.1.0" }
 openfiat-registry = { path = "../registry", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
+async-trait = "0.1.91"
+# Already in this workspace's tree via `openfiat-chain`'s `solana-client`,
+# with the same `rustls-tls` backend — so the gateway hop adds no second
+# HTTP client and no second TLS stack.
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
 futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
 libp2p = { version = "0.56.0", features = ["request-response"] }
