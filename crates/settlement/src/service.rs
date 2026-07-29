@@ -8,7 +8,7 @@ use crate::events::{
     SignedSettlementCancelled, SignedSettlementInitiate, SignedSettlementRejected,
 };
 use crate::protocol;
-use crate::record::{Settlement, SettlementId};
+use crate::record::{PaymentDiscrepancy, Settlement, SettlementId};
 use crate::store::SettlementRegistry;
 use openfiat_gossip::GossipService;
 use openfiat_reservations::ReservationId;
@@ -138,15 +138,20 @@ impl<S: KvStore + 'static> SettlementService<S> {
             .apply_escrow_released(settlement_id, signature)
     }
 
+    /// `discrepancy` classifies the rejection for OFS-3000 §14; pass
+    /// `PaymentDiscrepancy::Other` when the rejection is not about the
+    /// payment's details, so it doesn't count against the payer.
     pub fn reject(
         &mut self,
         settlement_id: SettlementId,
         reason: String,
+        discrepancy: PaymentDiscrepancy,
     ) -> Result<(), SettlementError> {
         let action = SettlementRejected {
             settlement_id,
             seller: self.gossip.node.local_peer_id(),
             reason,
+            discrepancy,
             timestamp: Timestamp::now(),
         };
         let bytes = json::to_bytes(&action).map_err(|_| SettlementError::MalformedSettlement)?;

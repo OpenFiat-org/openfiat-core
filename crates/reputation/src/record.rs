@@ -22,13 +22,31 @@ pub enum MerchantTier {
 /// Reservation state (§5: "Every wallet possesses its own reputation
 /// profile... tied to the wallet, not to a device or application").
 ///
-/// Availability (§13 — online time, response latency) and Payment
-/// Accuracy (§14 — payment-detail mismatches) need signals this
-/// workspace doesn't produce yet (node-level presence tracking, payment-
-/// detail mismatch reporting); `reservations_missed` covers the one §13
-/// signal ("missed reservations") this crate can already compute, and the
-/// rest are deferred the same way `identity`'s OTP delivery and
-/// `settlement`'s on-chain escrow release are.
+/// ## Availability (§13) and Payment Accuracy (§14)
+///
+/// Both dimensions are computed here from the timestamps and typed
+/// rejection reasons that settlement's already-signed events carry —
+/// no new event type, no new gossip channel, and nothing self-asserted
+/// (§20, §26). Of §13's five listed signals:
+///
+/// - *Response rate* and *response latency* — computed, as the gap
+///   between the buyer's signed "I paid" and the merchant's signed
+///   approve/reject.
+/// - *Missed reservations* — computed, as `reservations_missed`.
+/// - *Reservation acceptance* — **not a signal in this protocol.** A
+///   reservation against an active advertisement whose amount is within
+///   the published limits is accepted automatically
+///   (`ReservationRegistry::apply_request`); there is no merchant
+///   accept/decline step to measure, so an acceptance rate would be a
+///   constant 1.0 dressed up as information.
+/// - *Online time* — **not computable.** Merchant session presence is
+///   deliberately not protocol state (see `openfiat-advertisements`'
+///   `AdvertisementStatus`: "Merchant session presence (Online/Busy/Away)
+///   is a UI/notification-layer concern, not modeled here"), and the only
+///   way to introduce it would be a wallet asserting its own uptime —
+///   precisely the self-reported signal §20 and §26 exclude. It stays
+///   deferred until presence is attested by something a third party can
+///   verify.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ReputationProfile {
     pub wallet: PeerId,
@@ -38,6 +56,23 @@ pub struct ReputationProfile {
     pub disputes_involved: u64,
     pub disputes_lost: u64,
     pub reservations_missed: u64,
+    /// §13: payment declarations this wallet, as merchant, was asked to
+    /// rule on. The denominator of the response rate.
+    pub payment_responses_due: u64,
+    /// §13: how many of those it actually approved or rejected.
+    pub payment_responses_made: u64,
+    /// §14: payment declarations this wallet made as payer. The
+    /// denominator of the discrepancy rate.
+    pub payments_submitted: u64,
+    /// §14: rejections attributed to this wallet as payer, counting only
+    /// genuine payment-detail faults — see
+    /// `PaymentDiscrepancy::is_payment_accuracy_fault`.
+    pub payment_discrepancies: u64,
+    /// §13: raw total, kept public because `getReputation` serializes
+    /// this struct and a client that only saw the mean could not
+    /// re-aggregate across wallets. The mean is
+    /// [`Self::average_response_latency_ms`].
+    pub response_latency_sum_ms: u64,
     /// Lifetime volume (§10), bucketed by decimal precision as a coarse
     /// proxy for asset — `Amount` has no currency/mint identifier yet, so
     /// summing across genuinely different assets that happen to share a
@@ -57,6 +92,11 @@ impl ReputationProfile {
             disputes_involved: 0,
             disputes_lost: 0,
             reservations_missed: 0,
+            payment_responses_due: 0,
+            payment_responses_made: 0,
+            payments_submitted: 0,
+            payment_discrepancies: 0,
+            response_latency_sum_ms: 0,
             total_volume: Vec::new(),
             completed_duration_sum_ms: 0,
             first_active_at: None,
@@ -96,6 +136,30 @@ impl ReputationProfile {
             .collect()
     }
 
+    /// §13: how often this wallet, as merchant, answered a payment
+    /// declaration at all. `None` when none has been put to it.
+    pub fn response_rate(&self) -> Option<f64> {
+        (self.payment_responses_due > 0)
+            .then(|| self.payment_responses_made as f64 / self.payment_responses_due as f64)
+    }
+
+    /// §13: mean time in milliseconds from a buyer declaring payment to
+    /// this wallet approving or rejecting it. Averaged over responses
+    /// actually made — an unanswered declaration has no latency to
+    /// average, and is already counted against [`Self::response_rate`].
+    pub fn average_response_latency_ms(&self) -> Option<f64> {
+        (self.payment_responses_made > 0)
+            .then(|| self.response_latency_sum_ms as f64 / self.payment_responses_made as f64)
+    }
+
+    /// §14: share of this wallet's payment declarations that a merchant
+    /// rejected over the payment's own details. `None` until it has paid
+    /// at least once.
+    pub fn payment_discrepancy_rate(&self) -> Option<f64> {
+        (self.payments_submitted > 0)
+            .then(|| self.payment_discrepancies as f64 / self.payments_submitted as f64)
+    }
+
     /// §12: time since this wallet's first observed trade.
     pub fn merchant_age_ms(&self, now: Timestamp) -> Option<u64> {
         self.first_active_at
@@ -127,6 +191,21 @@ impl ReputationProfile {
             }
             None => self.total_volume.push(amount),
         }
+    }
+
+    /// A payment declaration was put to this wallet as merchant, and
+    /// answered `latency_ms` later.
+    pub(crate) fn record_payment_response(&mut self, latency_ms: u64) {
+        self.payment_responses_due += 1;
+        self.payment_responses_made += 1;
+        self.response_latency_sum_ms += latency_ms;
+    }
+
+    /// A payment declaration was put to this wallet as merchant and is
+    /// still unanswered — counted against the response rate, with no
+    /// latency to record.
+    pub(crate) fn record_payment_response_outstanding(&mut self) {
+        self.payment_responses_due += 1;
     }
 
     pub(crate) fn record_completed_duration(&mut self, duration_ms: u64) {
