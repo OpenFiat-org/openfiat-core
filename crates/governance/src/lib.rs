@@ -18,7 +18,7 @@ pub mod store;
 pub use error::GovernanceError;
 pub use record::{CastVote, Proposal, ProposalCategory, ProposalId, ProposalStatus, VoteChoice};
 pub use service::GovernanceService;
-pub use store::GovernanceRegistry;
+pub use store::{GovernanceRegistry, VotePreview};
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {

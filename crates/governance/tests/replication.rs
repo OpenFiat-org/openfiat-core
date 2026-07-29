@@ -114,13 +114,48 @@ async fn a_proposal_passes_and_converges_across_the_cluster() {
     })
     .await;
 
-    // Every node resolves the same outcome independently from the same
-    // replicated votes — simulating the voting window's real close (7
-    // days by default) with a far-future `now` rather than waiting for it.
+    // What replication actually guarantees: every node ends up holding the
+    // same VOTES. It does not, and must not, mean every node computes the
+    // same OUTCOME from them — that was the assumption this test previously
+    // encoded, and it is false in the shipped node. A vote only reaches
+    // local state once its weight has been verified against on-chain stake,
+    // so a node without an RPC endpoint holds none and would have concluded
+    // "rejected" from an empty set while its peers concluded "accepted".
+    //
+    // Resolution therefore comes from the governance program's own tally,
+    // which every node reads rather than recomputes. Simulating the voting
+    // window's real close (7 days by default) with a far-future `now`.
     for service in &all {
         let proposal = service.get(&proposal_id).unwrap();
         let far_future = Timestamp::from_millis(proposal.voting_closes_at.as_millis() + 1);
-        assert_eq!(service.registry().resolve_expired(far_future), 1);
+        let preview = service
+            .registry()
+            .local_vote_preview(&proposal_id, far_future)
+            .unwrap();
+        assert_eq!(preview.voters_seen, 3, "all three votes replicated here");
+        assert!(preview.voting_closed);
+        assert_eq!(
+            proposal.status,
+            ProposalStatus::Voting,
+            "a closed window is not a resolution — only the chain decides"
+        );
+    }
+
+    // Adopting the chain's result gives every node the same status, by
+    // reading the same value rather than by coincidentally agreeing.
+    for service in &all {
+        let far_future = Timestamp::from_millis(
+            service
+                .get(&proposal_id)
+                .unwrap()
+                .voting_closes_at
+                .as_millis()
+                + 1,
+        );
+        service
+            .registry()
+            .apply_onchain_resolution(&proposal_id, ProposalStatus::Accepted, far_future)
+            .unwrap();
     }
 
     for service in &all {
