@@ -781,6 +781,9 @@ describe("escrow", () => {
             liquidityVault: openVault,
             tokenVault: openTokenVault,
             devTreasury: openDevTreasury,
+            ecosystemTreasury: openEco,
+            infraTreasury: openInfra,
+            emergencyReserve: openEmerg,
             mint: openMint,
             tokenProgram: TOKEN_2022_PROGRAM_ID,
           })
@@ -792,8 +795,23 @@ describe("escrow", () => {
       expect(vault.available.toString()).to.equal(unit(9).toString());
       expect(vault.total.toString()).to.equal(unit(9).toString());
 
-      const treasury = await getAccount(connection, openDevTreasury, "confirmed", TOKEN_2022_PROGRAM_ID);
-      expect(treasury.amount.toString()).to.equal(LISTING_FEE.toString());
+      // Listing fees are protocol revenue and split 40/30/20/10 exactly
+      // like the settlement fee, rather than landing wholly in one
+      // treasury. 1 OPEN divides evenly, so there is no rounding dust.
+      const balances = await Promise.all(
+        [openDevTreasury, openEco, openInfra, openEmerg].map(async (t) =>
+          (await getAccount(connection, t, "confirmed", TOKEN_2022_PROGRAM_ID)).amount.toString(),
+        ),
+      );
+      expect(balances).to.deep.equal([
+        (LISTING_FEE.toNumber() * 0.4).toString(),
+        (LISTING_FEE.toNumber() * 0.3).toString(),
+        (LISTING_FEE.toNumber() * 0.2).toString(),
+        (LISTING_FEE.toNumber() * 0.1).toString(),
+      ]);
+      expect(
+        balances.reduce((sum, v) => sum + BigInt(v), 0n).toString(),
+      ).to.equal(LISTING_FEE.toString());
     });
 
     it("refuses when the vault cannot cover the fee", async () => {
@@ -802,7 +820,8 @@ describe("escrow", () => {
       await airdrop(merchant.publicKey);
       const openVault = liquidityVaultPda(merchant.publicKey, openMint);
       const openTokenVault = liquidityTokenVaultPda(merchant.publicKey, openMint);
-      const openDevTreasury = (await program.account.feeConfig.fetch(feeConfig)).devTreasury;
+      const liveFeeConfig = await program.account.feeConfig.fetch(feeConfig);
+      const openDevTreasury = liveFeeConfig.devTreasury;
 
       await withBlockhashRetry(() =>
         program.methods
@@ -829,6 +848,9 @@ describe("escrow", () => {
             liquidityVault: openVault,
             tokenVault: openTokenVault,
             devTreasury: openDevTreasury,
+            ecosystemTreasury: liveFeeConfig.ecosystemTreasury,
+            infraTreasury: liveFeeConfig.infraTreasury,
+            emergencyReserve: liveFeeConfig.emergencyReserve,
             mint: openMint,
             tokenProgram: TOKEN_2022_PROGRAM_ID,
           })

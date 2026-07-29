@@ -3,6 +3,7 @@ use anchor_spl::token_interface::{
     transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
 };
 
+use crate::instructions::shared_logic::split_fee_four_ways;
 use crate::{constants::*, error::ErrorCode, events::AdListingFeeCharged, state::*};
 
 /// Charges a merchant the advertisement-listing fee against their OPEN
@@ -53,8 +54,11 @@ pub struct ChargeAdListingFee<'info> {
         seeds = [FEE_CONFIG_SEED],
         bump = fee_config.bump,
         constraint = fee_config.dev_treasury == dev_treasury.key() @ ErrorCode::Unauthorized,
+        constraint = fee_config.ecosystem_treasury == ecosystem_treasury.key() @ ErrorCode::Unauthorized,
+        constraint = fee_config.infra_treasury == infra_treasury.key() @ ErrorCode::Unauthorized,
+        constraint = fee_config.emergency_reserve == emergency_reserve.key() @ ErrorCode::Unauthorized,
     )]
-    pub fee_config: Account<'info, FeeConfig>,
+    pub fee_config: Box<Account<'info, FeeConfig>>,
 
     /// The merchant's OPEN vault. `mint` is the fee's denomination, which
     /// is what makes this the OPEN vault rather than a settlement one.
@@ -65,26 +69,32 @@ pub struct ChargeAdListingFee<'info> {
         has_one = merchant,
         constraint = liquidity_vault.mint == mint.key(),
     )]
-    pub liquidity_vault: Account<'info, LiquidityVault>,
+    pub liquidity_vault: Box<Account<'info, LiquidityVault>>,
 
     #[account(
         mut,
         seeds = [LIQUIDITY_VAULT_TOKENS_SEED, merchant.key().as_ref(), mint.key().as_ref()],
         bump = liquidity_vault.token_vault_bump,
     )]
-    pub token_vault: InterfaceAccount<'info, TokenAccount>,
+    pub token_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    /// Listing fees are protocol revenue, so they follow the same route as
-    /// any other: the development treasury. Splitting them four ways like
-    /// the settlement fee would need four more accounts on every listing
-    /// for what is a single small flat charge.
-    ///
-    /// `[PROPOSED — NEEDS SIGN-OFF]` — OFS-4100 §6 sets the fee's amount
-    /// but names no destination for it.
+    /// Listing fees are protocol revenue and route exactly like every other
+    /// fee: the same four-way basis-point split as the settlement fee, via
+    /// the shared `split_fee_four_ways`. An earlier version sent the whole
+    /// amount to the development treasury to save four accounts on each
+    /// listing; that made one revenue stream settle differently from the
+    /// rest, which is an accounting discrepancy rather than an
+    /// optimisation.
     #[account(mut, constraint = dev_treasury.mint == mint.key())]
-    pub dev_treasury: InterfaceAccount<'info, TokenAccount>,
+    pub dev_treasury: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut, constraint = ecosystem_treasury.mint == mint.key())]
+    pub ecosystem_treasury: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut, constraint = infra_treasury.mint == mint.key())]
+    pub infra_treasury: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut, constraint = emergency_reserve.mint == mint.key())]
+    pub emergency_reserve: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
 
     pub token_program: Program<'info, Token2022>,
 }
@@ -110,20 +120,34 @@ pub fn handle_charge_ad_listing_fee(
         &[bump],
     ];
 
-    transfer_checked(
-        CpiContext::new_with_signer(
-            ctx.accounts.token_program.key(),
-            TransferChecked {
-                from: ctx.accounts.token_vault.to_account_info(),
-                mint: ctx.accounts.mint.to_account_info(),
-                to: ctx.accounts.dev_treasury.to_account_info(),
-                authority: ctx.accounts.liquidity_vault.to_account_info(),
-            },
-            &[signer_seeds],
-        ),
-        amount,
-        ctx.accounts.mint.decimals,
-    )?;
+    let shares = split_fee_four_ways(&ctx.accounts.fee_config, amount)?;
+    let destinations = [
+        ctx.accounts.dev_treasury.to_account_info(),
+        ctx.accounts.ecosystem_treasury.to_account_info(),
+        ctx.accounts.infra_treasury.to_account_info(),
+        ctx.accounts.emergency_reserve.to_account_info(),
+    ];
+    for (share, destination) in shares.iter().zip(destinations) {
+        // A split can round to zero on a small fee; transferring zero is
+        // legal but wasteful, so skip it rather than paying for a no-op.
+        if *share == 0 {
+            continue;
+        }
+        transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.key(),
+                TransferChecked {
+                    from: ctx.accounts.token_vault.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    to: destination,
+                    authority: ctx.accounts.liquidity_vault.to_account_info(),
+                },
+                &[signer_seeds],
+            ),
+            *share,
+            ctx.accounts.mint.decimals,
+        )?;
+    }
 
     let liquidity_vault = &mut ctx.accounts.liquidity_vault;
     liquidity_vault.available = liquidity_vault

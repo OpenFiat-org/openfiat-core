@@ -164,6 +164,19 @@ pub fn compute_fee_split(fee_config: &FeeConfig, amount: u64) -> Result<(u64, [u
         .ok_or(ErrorCode::Overflow)? as u64;
     let buyer_amount = amount.checked_sub(fee).ok_or(ErrorCode::Overflow)?;
 
+    Ok((buyer_amount, split_fee_four_ways(fee_config, fee)?))
+}
+
+/// Divides an already-determined fee across the four treasury
+/// sub-accounts by `FeeConfig`'s basis-point split.
+///
+/// Separate from [`compute_fee_split`] because not every fee is a
+/// percentage of a trade: the ad-listing fee is a flat amount that is
+/// nonetheless protocol revenue and routes exactly the same way. Both
+/// callers share this so the two can never drift apart — a listing fee
+/// that split differently from a settlement fee would be a silent
+/// accounting discrepancy rather than a visible bug.
+pub fn split_fee_four_ways(fee_config: &FeeConfig, fee: u64) -> Result<[u64; 4]> {
     let splits = [
         fee_config.dev_treasury_bps,
         fee_config.ecosystem_treasury_bps,
@@ -188,7 +201,7 @@ pub fn compute_fee_split(fee_config: &FeeConfig, amount: u64) -> Result<(u64, [u
         .checked_add(remainder)
         .ok_or(ErrorCode::Overflow)?;
 
-    Ok((buyer_amount, shares))
+    Ok(shares)
 }
 
 /// Moves an approved (or dispute-resolved `BuyerWins`) trade escrow's
