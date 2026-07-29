@@ -42,9 +42,8 @@
 //! nonce it authorises is already spent.
 
 use crate::error::RegistryError;
+use openfiat_crypto::challenge::{Challenge, ChallengeError, ChallengeLedger};
 use openfiat_types::{Amount, ServiceId, Timestamp};
-use rand::rngs::{StdRng, SysRng};
-use rand::{RngExt, SeedableRng};
 use std::collections::HashMap;
 
 /// How long an unanswered challenge stays valid.
@@ -101,7 +100,22 @@ impl ProviderEarnings {
     }
 }
 
+/// The domain separator for this handshake's signing bytes.
+///
+/// Held as a constant rather than inlined because it is now the one thing
+/// tying [`EarningsChallenge`] to the generic
+/// [`openfiat_crypto::challenge::Challenge`] underneath it: the wire bytes
+/// are produced by that type, and this names which handshake they belong
+/// to. Changing it invalidates every signature released SDKs produce.
+const SIGNING_DOMAIN: &str = "openfiat-earnings";
+
 /// A single-use, expiring challenge bound to one Service ID.
+///
+/// Kept as its own wire type rather than exposing
+/// [`openfiat_crypto::challenge::Challenge`] directly: this shape is
+/// already consumed by released SDKs, which name the field `service_id`
+/// rather than `subject`. The storage underneath is the shared ledger; only
+/// the serialized form is local.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EarningsChallenge {
     pub service_id: ServiceId,
@@ -114,13 +128,28 @@ impl EarningsChallenge {
     /// The exact bytes a provider signs. Includes the Service ID, so a
     /// nonce issued for one service cannot be replayed against another
     /// even before single-use consumption.
+    ///
+    /// Delegates to the shared primitive rather than formatting the string
+    /// here, so the two cannot drift into producing different bytes for the
+    /// same challenge — which would be silent and would break every signer.
     pub fn signing_bytes(&self) -> Vec<u8> {
-        format!(
-            "openfiat-earnings:{}:{}",
-            self.service_id.as_str(),
-            self.nonce
-        )
-        .into_bytes()
+        self.as_challenge().signing_bytes(SIGNING_DOMAIN)
+    }
+
+    fn as_challenge(&self) -> Challenge {
+        Challenge {
+            subject: self.service_id.as_str().to_string(),
+            nonce: self.nonce.clone(),
+            expires_at: self.expires_at,
+        }
+    }
+
+    fn from_challenge(challenge: Challenge, service_id: &ServiceId) -> Self {
+        Self {
+            service_id: service_id.clone(),
+            nonce: challenge.nonce,
+            expires_at: challenge.expires_at,
+        }
     }
 }
 
@@ -134,7 +163,7 @@ impl EarningsChallenge {
 #[derive(Default)]
 pub struct EarningsLedger {
     entries: HashMap<String, Vec<EarningEntry>>,
-    challenges: HashMap<String, EarningsChallenge>,
+    challenges: ChallengeLedger,
 }
 
 impl EarningsLedger {
@@ -154,25 +183,30 @@ impl EarningsLedger {
             .push(entry);
     }
 
-    /// Issue a fresh challenge for `service_id`, replacing any
-    /// outstanding one. Replacing rather than accumulating keeps a
-    /// requester from piling up valid nonces.
+    /// Issue a fresh challenge for `service_id`, alongside any already
+    /// outstanding.
+    ///
+    /// This used to replace the outstanding challenge for a service, on the
+    /// reasoning that replacing stops a requester piling up valid nonces.
+    /// That reasoning was sound about accumulation and wrong about who could
+    /// trigger it. Issuing cannot require a signature — demanding one to
+    /// obtain the thing you sign is circular — so it is an anonymous write,
+    /// and keying by service meant ANY caller could request a challenge for
+    /// somebody else's `service_id` in a loop and invalidate the one that
+    /// provider was part-way through signing. That is an unauthenticated
+    /// denial of service against `getProviderEarnings`, needing no stake, no
+    /// credentials and no relationship to the service.
+    ///
+    /// The shared ledger keys by nonce instead, so an outstanding challenge
+    /// is reachable only by someone who already knows its random 32 bytes.
+    /// Accumulation is still handled, just not by clobbering: it prunes
+    /// expired entries on issue and caps outstanding at
+    /// [`ChallengeLedger::MAX_OUTSTANDING`].
     pub fn issue_challenge(&mut self, service_id: &ServiceId, now: Timestamp) -> EarningsChallenge {
-        // Same OS-entropy pattern `openfiat_crypto::Keypair::generate`
-        // uses: `SysRng` is fallible-only, so it seeds an infallible
-        // `StdRng` once.
-        let mut rng = StdRng::try_from_rng(&mut SysRng).expect("OS entropy source unavailable");
-        let nonce: [u8; 32] = rng.random();
-        let challenge = EarningsChallenge {
-            service_id: service_id.clone(),
-            nonce: nonce.iter().map(|b| format!("{b:02x}")).collect(),
-            expires_at: Timestamp::from_millis(
-                now.as_millis().saturating_add(CHALLENGE_TTL_SECS * 1_000),
-            ),
-        };
-        self.challenges
-            .insert(service_id.as_str().to_string(), challenge.clone());
-        challenge
+        let challenge = self
+            .challenges
+            .issue(service_id.as_str(), now, CHALLENGE_TTL_SECS);
+        EarningsChallenge::from_challenge(challenge, service_id)
     }
 
     /// Consume the outstanding challenge for `service_id` if `nonce`
@@ -187,22 +221,23 @@ impl EarningsLedger {
         nonce: &str,
         now: Timestamp,
     ) -> Result<EarningsChallenge, RegistryError> {
-        let key = service_id.as_str().to_string();
-        let challenge = self
-            .challenges
-            .get(&key)
-            .ok_or(RegistryError::UnknownChallenge)?;
-        if challenge.nonce != nonce {
-            return Err(RegistryError::UnknownChallenge);
-        }
-        let challenge = self
-            .challenges
-            .remove(&key)
-            .expect("just observed under the same key");
-        if challenge.expires_at.as_millis() < now.as_millis() {
-            return Err(RegistryError::ChallengeExpired);
-        }
-        Ok(challenge)
+        // The shared ledger removes before checking the subject, so a nonce
+        // presented against the wrong service is spent rather than left
+        // available to try again elsewhere.
+        self.challenges
+            .consume(service_id.as_str(), nonce, now)
+            .map(|challenge| EarningsChallenge::from_challenge(challenge, service_id))
+            .map_err(|error| match error {
+                ChallengeError::Unknown => RegistryError::UnknownChallenge,
+                ChallengeError::Expired => RegistryError::ChallengeExpired,
+            })
+    }
+
+    /// How many challenges are outstanding. Diagnostics only — exposed
+    /// because accumulation is now the trade-off this design accepts in
+    /// exchange for removing the lockout, so it is worth being able to see.
+    pub fn outstanding_challenges(&self) -> usize {
+        self.challenges.outstanding()
     }
 
     /// This service's statement. Empty until something credits it.
@@ -346,15 +381,62 @@ mod tests {
     }
 
     #[test]
-    fn reissuing_invalidates_the_previous_challenge() {
+    fn reissuing_leaves_the_previous_challenge_usable() {
+        // The inverse of what this asserted before. Replacing on reissue was
+        // deliberate — it stopped nonces accumulating — but it made issuance,
+        // which cannot require a signature, able to destroy somebody else's
+        // in-flight handshake.
         let mut ledger = EarningsLedger::new();
         let now = Timestamp::from_millis(1_000);
         let first = ledger.issue_challenge(&svc(), now);
         ledger.issue_challenge(&svc(), now);
-        assert_eq!(
-            ledger.consume_challenge(&svc(), &first.nonce, now),
-            Err(RegistryError::UnknownChallenge),
-            "an outstanding nonce must not survive being replaced"
+        assert!(
+            ledger.consume_challenge(&svc(), &first.nonce, now).is_ok(),
+            "a second issue must not invalidate a nonce already in flight"
+        );
+    }
+
+    #[test]
+    fn a_stranger_requesting_challenges_cannot_lock_a_service_out() {
+        // The vulnerability this migration exists to close, stated as a test
+        // so it cannot come back. `issue_challenge` takes no signature and
+        // cannot: demanding one to obtain the thing you sign is circular. So
+        // anyone can call it for any service_id. Under the previous
+        // subject-keyed storage each such call destroyed the provider's
+        // outstanding challenge, denying it `getProviderEarnings` for as long
+        // as the caller kept going — no stake, no credentials, no
+        // relationship to the service required.
+        let mut ledger = EarningsLedger::new();
+        let now = Timestamp::from_millis(1_000);
+        let genuine = ledger.issue_challenge(&svc(), now);
+
+        for _ in 0..64 {
+            ledger.issue_challenge(&svc(), now);
+        }
+
+        assert!(
+            ledger
+                .consume_challenge(&svc(), &genuine.nonce, now)
+                .is_ok(),
+            "the provider's own nonce must survive an attacker's flood"
+        );
+    }
+
+    #[test]
+    fn accumulated_challenges_stay_bounded() {
+        // The cost of not clobbering: unanswered challenges pile up instead of
+        // replacing each other. Bounded by the shared ledger rather than left
+        // to grow, so removing the lockout does not open a memory-exhaustion
+        // route in its place.
+        let mut ledger = EarningsLedger::new();
+        let now = Timestamp::from_millis(1_000);
+        for _ in 0..ChallengeLedger::MAX_OUTSTANDING + 128 {
+            ledger.issue_challenge(&svc(), now);
+        }
+        assert!(
+            ledger.outstanding_challenges() <= ChallengeLedger::MAX_OUTSTANDING,
+            "outstanding challenges must stay capped, got {}",
+            ledger.outstanding_challenges()
         );
     }
 }
