@@ -18,6 +18,7 @@ use openfiat_advertisements::AdvertisementRegistry;
 use openfiat_chain::events::BlockhashAnnounced;
 use openfiat_chain::{ChainBridge, ChainState, NodeChainMode};
 use openfiat_crypto::Keypair;
+use openfiat_crypto::challenge::ChallengeLedger;
 use openfiat_disputes::DisputeRegistry;
 use openfiat_gossip::{EventStore, GossipService, Subscription};
 use openfiat_governance::GovernanceRegistry;
@@ -37,7 +38,7 @@ use openfiat_sessions::SessionRegistry;
 use openfiat_settlement::SettlementRegistry;
 use openfiat_snapshot::SnapshotIndex;
 use openfiat_storage::KvStore;
-use openfiat_trade::TradeView;
+use openfiat_trade::{CounterpartyView, TradeView};
 use openfiat_types::NodeRole;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -53,6 +54,13 @@ use std::rc::Rc;
 pub struct PendingVoteVerification {
     pub stake_account: String,
     pub signed_vote_bytes: Vec<u8>,
+    /// How many times this claim has already been looked up without a
+    /// usable answer (account not yet visible, or a transient RPC error).
+    /// Bounded by `actor::VOTE_VERIFICATION_MAX_ATTEMPTS` so an account
+    /// that will never exist cannot be retried forever — an unbounded
+    /// retry is how a queue silently grows and a node quietly stops
+    /// finishing governance verification.
+    pub attempts: u32,
 }
 
 pub struct NodeState<S> {
@@ -61,6 +69,17 @@ pub struct NodeState<S> {
     pub reservations: Rc<ReservationRegistry<Rc<S>>>,
     pub settlements: Rc<SettlementRegistry<Rc<S>>>,
     pub trades: TradeView<Rc<S>>,
+    /// One wallet's own trading history folded per counterparty — the
+    /// data behind "you have traded 6 times with this wallet". Reachable
+    /// only through `methods::counterparties`, which will not answer for
+    /// a wallet the caller cannot prove they control; see that module
+    /// for why this one aggregate is gated when no other read is.
+    pub counterparties: CounterpartyView<Rc<S>>,
+    /// The outstanding wallet-ownership challenges guarding that
+    /// aggregate. In memory only, deliberately: persisting them would
+    /// leave a node operator a record of who asked about whom, which is
+    /// the exact trail this feature exists to avoid creating.
+    pub counterparty_challenges: Rc<RefCell<ChallengeLedger>>,
     pub disputes: Rc<DisputeRegistry<Rc<S>>>,
     pub identity: Rc<IdentityRegistry<Rc<S>>>,
     pub reputation: ReputationView<Rc<S>>,
@@ -149,6 +168,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             Rc::clone(&settlements),
         ));
         let trades = TradeView::new(Rc::clone(&reservations), Rc::clone(&settlements));
+        let counterparties = CounterpartyView::new(Rc::clone(&settlements), Rc::clone(&disputes));
         let reputation = ReputationView::new(
             Rc::clone(&reservations),
             Rc::clone(&settlements),
@@ -256,6 +276,7 @@ impl<S: KvStore + 'static> NodeState<S> {
                         .push_back(PendingVoteVerification {
                             stake_account: signed.vote.stake_account.clone(),
                             signed_vote_bytes: event.payload.clone(),
+                            attempts: 0,
                         });
                 }
             } else {
@@ -289,6 +310,8 @@ impl<S: KvStore + 'static> NodeState<S> {
             reservations,
             settlements,
             trades,
+            counterparties,
+            counterparty_challenges: Rc::new(RefCell::new(ChallengeLedger::new())),
             disputes,
             identity,
             reputation,
@@ -331,15 +354,28 @@ impl<S: KvStore + 'static> NodeState<S> {
             .push_back(PendingVoteVerification {
                 stake_account,
                 signed_vote_bytes,
+                attempts: 0,
             });
+    }
+
+    /// Puts a drained claim back for another look, carrying its own
+    /// attempt count with it. Separate from `enqueue_vote_verification`
+    /// precisely so a retry cannot reset that count and loop forever —
+    /// the caller (`actor::poll_vote_verifications`) is the one that
+    /// decides when a claim has been retried enough, and says so out loud.
+    pub fn requeue_vote_verification(&self, pending: PendingVoteVerification) {
+        self.pending_vote_verifications
+            .borrow_mut()
+            .push_back(pending);
     }
 
     /// Drains every vote currently queued for verification — called once
     /// per `actor::poll_vote_verifications` tick. Anything that fails
     /// verification this round (not yet observable, or a transient RPC
     /// error) is expected to be re-queued by the caller via
-    /// `enqueue_vote_verification`, same retry shape as `ChainState`'s
-    /// `awaiting_confirmation`.
+    /// `requeue_vote_verification`, same retry shape as `ChainState`'s
+    /// `awaiting_confirmation` — but bounded, unlike that one, because
+    /// nothing else ever removes an entry that will never resolve.
     pub fn drain_vote_verifications(&self) -> Vec<PendingVoteVerification> {
         self.pending_vote_verifications
             .borrow_mut()

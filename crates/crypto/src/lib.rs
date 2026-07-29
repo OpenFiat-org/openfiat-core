@@ -6,12 +6,19 @@
 //! cannot do: addressing a secret to a single peer's published identity
 //! key. Nothing here ever exposes raw private key bytes outside
 //! [`keypair::Keypair`] itself.
+//!
+//! [`challenge`] sits one level up from those primitives: it is the
+//! sign-this-nonce handshake that turns "I hold this key" into an
+//! answerable question, which is the only form of authentication a
+//! protocol with no accounts can offer.
 
+pub mod challenge;
 pub mod hash;
 pub mod keypair;
 pub mod seal;
 pub mod verify;
 
+pub use challenge::{CHALLENGE_TTL_SECS, Challenge, ChallengeError, ChallengeLedger};
 pub use hash::sha256;
 pub use keypair::Keypair;
 pub use seal::{SealError, SealedBox, open, seal};

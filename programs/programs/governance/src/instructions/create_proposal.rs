@@ -53,6 +53,32 @@ pub struct CreateProposal<'info> {
     )]
     pub proposal: Account<'info, Proposal>,
 
+    /// What this proposal will be entitled to do if it passes, fixed
+    /// here and never writable again.
+    ///
+    /// Attached at creation rather than by a later "attach action"
+    /// instruction, and that timing is the security property, not a
+    /// convenience. An action that could be added or changed after
+    /// voting opened would let a proposer collect votes on a harmless
+    /// proposal and then point the passed vote at a wallet nobody
+    /// agreed to exclude. `init` here means the action is visible to
+    /// the first voter and identical to the last.
+    ///
+    /// Every proposal carries one, including the purely informational
+    /// ones that carry `GovernanceAction::None`. Making it optional
+    /// would save those proposals a few thousand lamports of rent and
+    /// cost every reader — on-chain and off — a branch on whether the
+    /// account exists, which is the sort of branch that eventually gets
+    /// one path wrong.
+    #[account(
+        init,
+        payer = proposer,
+        space = 8 + ProposalAction::INIT_SPACE,
+        seeds = [PROPOSAL_ACTION_SEED, proposal.key().as_ref()],
+        bump
+    )]
+    pub proposal_action: Account<'info, ProposalAction>,
+
     pub token_program: Program<'info, Token2022>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
@@ -65,6 +91,7 @@ pub fn handle_create_proposal(
     title_hash: [u8; 32],
     summary_hash: [u8; 32],
     voting_period_secs: i64,
+    action: GovernanceAction,
 ) -> Result<()> {
     require!(
         !openfiat_programs_shared::wallet_is_banned(&ctx.accounts.ban_record),
@@ -72,6 +99,25 @@ pub fn handle_create_proposal(
     );
 
     require!(voting_period_secs > 0, ErrorCode::InvalidVoteLock);
+
+    // A ban-list action fixes its own category, so the bar it has to
+    // clear is not the proposer's to choose. `Standards` is where
+    // OFS-7100 §12 lives — it is protocol policy, not a numeric
+    // parameter (`Parameter`) and not a disbursement (`Treasury`) — and
+    // it settles the thresholds for both directions at once: listing and
+    // delisting face the identical quorum and majority. §12.2 requires
+    // that symmetry, and §15 depends on it, since a readmission harder
+    // to win than the exclusion that preceded it makes every false
+    // positive permanent in practice.
+    match action {
+        GovernanceAction::ListWallet { .. } | GovernanceAction::DelistWallet { .. } => {
+            require!(
+                category == ProposalCategory::Standards,
+                ErrorCode::WrongCategoryForBanAction
+            );
+        }
+        GovernanceAction::None => {}
+    }
 
     let deposit_amount = ctx.accounts.governance_config.deposit_amount;
     transfer_checked(
@@ -118,5 +164,11 @@ pub fn handle_create_proposal(
     proposal.deposit_settled = false;
     proposal.executed = false;
     proposal.bump = ctx.bumps.proposal;
+
+    let proposal_key = proposal.key();
+    let proposal_action = &mut ctx.accounts.proposal_action;
+    proposal_action.proposal = proposal_key;
+    proposal_action.action = action;
+    proposal_action.bump = ctx.bumps.proposal_action;
     Ok(())
 }

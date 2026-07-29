@@ -3188,6 +3188,7 @@ dependencies = [
  "openfiat-storage",
  "openfiat-types",
  "serde",
+ "serde_json",
  "solana-client",
  "solana-commitment-config",
  "solana-hash 3.1.0",
@@ -3623,6 +3624,7 @@ version = "0.1.0"
 dependencies = [
  "openfiat-advertisements",
  "openfiat-crypto",
+ "openfiat-disputes",
  "openfiat-gossip",
  "openfiat-network",
  "openfiat-reservations",

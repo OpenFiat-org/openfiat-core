@@ -60,7 +60,12 @@ Every environment variable this binary reads, with its real default:
 | `CLI_BOOTSTRAP_PEERS` | *(empty)* | Comma-separated multiaddrs to dial on startup, e.g. `/ip4/203.0.113.10/udp/4001/quic-v1`. Empty means this node is its own bootstrap (fine for a lone node or the first node in a new cluster). |
 | `CLI_SOLANA_RPC_URLS` | *(empty)* | Comma-separated Solana RPC endpoint(s). **Unset is the default and stays `GossipOnly`** — set this to opt into `NodeChainMode::RpcConnected` (§4 below). |
 | `CLI_SOLANA_WS_URL` | *(empty)* | Optional Solana WebSocket endpoint, recorded but not yet used for subscription-based polling. |
-| `CLI_STAKING_PROGRAM_ID` | *(empty)* | Base58 program id of the deployed `openfiat-staking` program. Required for this node to independently verify a governance vote's real on-chain stake weight (OFS-4000, Phase 6's `poll_vote_verifications`) — without it, every pending vote verification is left queued rather than ever trusted. See §5 for the real devnet id. |
+
+Every variable above is *operational* — it decides how this node reaches
+the network, never what the network's rules are. Program ids, PDA seeds
+and the OPEN mint are compiled in (§5) and are deliberately not settable
+here: a node that could be pointed at a different staking program could
+be made to count governance votes weighted by stake that does not exist.
 
 ## 4. Run with real Solana devnet connectivity
 
@@ -71,7 +76,6 @@ real:
 
 ```bash
 CLI_SOLANA_RPC_URLS=https://api.devnet.solana.com \
-CLI_STAKING_PROGRAM_ID=HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx \
 ./target/release/openfiat-node
 ```
 

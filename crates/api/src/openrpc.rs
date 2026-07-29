@@ -20,6 +20,7 @@ use openfiat_storage::mem::MemoryStore;
 use serde_json::{Value, json};
 
 const WALLET_PARAM_METHODS: &[&str] = &[
+    "getCounterpartiesChallenge",
     "getIdentityClaimsByWallet",
     "getReputation",
     "getSubscription",
@@ -48,6 +49,24 @@ const NO_PARAM_METHODS: &[&str] = &[
 ];
 
 fn params_schema_for(method: &str) -> Value {
+    // The one read on this surface that answers only for the caller's own
+    // wallet, so its params are the ownership proof rather than a lookup
+    // key. Documented explicitly because the `getX(id)` fallback below
+    // would otherwise describe it as an ordinary open read — misleading
+    // for an integrator and, worse, for anyone auditing what this node
+    // exposes.
+    if method == "getCounterparties" {
+        return json!({
+            "type": "object",
+            "properties": {
+                "wallet": { "type": "string", "description": "base64-encoded PeerId — must be the wallet the signature below proves control of; any other wallet is refused" },
+                "public_key": { "type": "string", "description": "base64-encoded raw 32-byte Ed25519 public key, which must derive to `wallet`" },
+                "nonce": { "type": "string", "description": "the nonce from a preceding getCounterpartiesChallenge — single-use and expiring" },
+                "signature": { "type": "string", "description": "base64-encoded 64-byte Ed25519 signature over `openfiat-counterparties:<wallet>:<nonce>`" },
+            },
+            "required": ["wallet", "public_key", "nonce", "signature"],
+        });
+    }
     if method == "getMedianExchangeRate" {
         return json!({ "type": "object", "properties": { "base": { "type": "string" }, "quote": { "type": "string" } }, "required": ["base", "quote"] });
     }
@@ -144,6 +163,28 @@ mod tests {
             documented.len(),
             table.method_names().len(),
             "documented method count must match the dispatch table exactly — no orphaned entries"
+        );
+    }
+
+    /// The counterparty read is the only method here that refuses to
+    /// answer for a wallet other than the caller's own. If it ever fell
+    /// back to the generic `getX(id)` schema, the published reference
+    /// would describe a private aggregate as an open lookup.
+    #[test]
+    fn the_counterparty_read_documents_its_ownership_proof_not_an_id_lookup() {
+        let document = build_document();
+        let method = document["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "getCounterparties")
+            .expect("the method must be dispatchable and documented");
+        let properties = &method["params"][0]["schema"]["properties"];
+        assert!(properties["signature"].is_object());
+        assert!(properties["public_key"].is_object());
+        assert!(
+            properties["id"].is_null(),
+            "it must not be described as a generic getX(id) read"
         );
     }
 

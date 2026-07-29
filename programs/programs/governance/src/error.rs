@@ -36,4 +36,16 @@ pub enum ErrorCode {
     MintMismatch,
     #[msg("This wallet is on the governance ban list (OFS-7100 §12)")]
     WalletBanned,
+    #[msg("This proposal did not meet quorum, so it authorizes nothing")]
+    QuorumNotMet,
+    #[msg(
+        "This proposal's execution timelock (vote_lock_secs after voting closed) has not elapsed"
+    )]
+    ExecutionTimelockActive,
+    #[msg("Ban-list actions require the Standards category")]
+    WrongCategoryForBanAction,
+    #[msg("This proposal does not authorize this action against this wallet")]
+    ProposalActionMismatch,
+    #[msg("vote_lock_secs exceeds MAX_VOTE_LOCK_SECS")]
+    VoteLockTooLong,
 }

@@ -25,6 +25,17 @@ import {
 } from "@solana/web3.js";
 
 export const MINT_DECIMALS = 6;
+/**
+ * The shared `GovernanceConfig`'s vote lock, kept at one second so any
+ * suite can carry a proposal past its timelock without waiting.
+ *
+ * Exported because it is a shared-singleton invariant, not a local
+ * detail: a suite that writes a longer lock here must restore this value
+ * afterwards, or every later suite executing a proposal waits that long
+ * and hangs. `governance.ts`'s `update_governance_config` block restores
+ * it for exactly that reason.
+ */
+export const SHARED_VOTE_LOCK_SECS = new BN(1);
 export const unit = (n: number) => new BN(n).mul(new BN(10).pow(new BN(MINT_DECIMALS)));
 
 const provider = anchor.AnchorProvider.env();
@@ -280,7 +291,7 @@ export function getSharedGovernanceConfig(
         .initializeGovernanceConfig({
           ...cfg,
           forfeitDestination,
-          voteLockSecs: new BN(1),
+          voteLockSecs: SHARED_VOTE_LOCK_SECS,
         })
         .accountsPartial({
           admin: admin.publicKey,

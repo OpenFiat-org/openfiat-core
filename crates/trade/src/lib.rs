@@ -6,9 +6,16 @@
 //! therefore a read-time view over `openfiat-reservations` and
 //! `openfiat-settlement`'s own replicated state, not a third independent
 //! state machine — see the `view` module.
+//!
+//! The `counterparties` module is the same idea applied to a different
+//! question: not "what is the state of this trade" but "how many times
+//! have these two wallets traded", answered by folding the settlements
+//! one wallet is party to. It stores nothing and gossips nothing either.
 
+pub mod counterparties;
 pub mod view;
 
+pub use counterparties::{CounterpartySummary, CounterpartyView};
 pub use view::{Trade, TradeStatus, TradeView};
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.

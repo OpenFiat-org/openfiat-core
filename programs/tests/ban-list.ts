@@ -33,6 +33,25 @@ import {
   getSharedGovernanceConfig,
   unit,
 } from "./shared-fixtures";
+import {
+  ACTION_NONE,
+  CATEGORY_STANDARDS,
+  banWallet,
+  castVote,
+  createProposal,
+  delistAction,
+  delistingBuilder,
+  finalize,
+  getQuorumVoter,
+  listAction,
+  listingBuilder,
+  nextProposalId,
+  passProposal,
+  proposalActionPda,
+  proposalPda,
+  sleepUntilChainTime,
+  unbanWallet,
+} from "./governance-cycle";
 
 describe("ban list (OFS-7100 §12)", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
@@ -57,6 +76,7 @@ describe("ban list (OFS-7100 §12)", () => {
   let governanceConfig: PublicKey;
   let depositVault: PublicKey;
   let depositAmount: BN;
+  let quorumVoter: Keypair;
 
   async function airdrop(pubkey: PublicKey, sol = 10) {
     const sig = await connection.requestAirdrop(pubkey, sol * 1_000_000_000);
@@ -155,39 +175,6 @@ describe("ban list (OFS-7100 §12)", () => {
     )[0];
   }
 
-  async function listWallet(
-    wallet: PublicKey,
-    reason: any = REASON_SANCTIONS,
-    evidenceHash: number[] = [...crypto.randomBytes(32)]
-  ) {
-    await withBlockhashRetry(() =>
-      governance.methods
-        .listWallet(wallet, reason, evidenceHash)
-        .accountsPartial({
-          admin: admin.publicKey,
-          governanceConfig,
-          banRecord: banPda(wallet),
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc({ commitment: "confirmed" })
-    );
-  }
-
-  async function delistWallet(wallet: PublicKey) {
-    await withBlockhashRetry(() =>
-      governance.methods
-        .delistWallet(wallet)
-        .accountsPartial({
-          admin: admin.publicKey,
-          governanceConfig,
-          banRecord: banPda(wallet),
-        })
-        .rpc({ commitment: "confirmed" })
-    );
-  }
-
-  /// A funded merchant with an escrow liquidity vault ready to receive a
-  /// deposit — the shortest path to exercising `deposit_liquidity`.
   async function setUpMerchant(): Promise<{
     merchant: Keypair;
     from: PublicKey;
@@ -262,6 +249,33 @@ describe("ban list (OFS-7100 §12)", () => {
       .signers([owner]);
   }
 
+  /// Bans a wallet the only way it can now be banned — pass a proposal
+  /// naming it, then execute that proposal — and returns the proposal
+  /// that did it. See `governance-cycle.ts` for the machinery.
+  const listWallet = (
+    wallet: PublicKey,
+    reason: any = REASON_SANCTIONS,
+    evidenceHash?: number[]
+  ) =>
+    evidenceHash === undefined
+      ? banWallet(governance, staking, wallet, reason)
+      : banWallet(governance, staking, wallet, reason, evidenceHash);
+
+  const delistWallet = (wallet: PublicKey) =>
+    unbanWallet(governance, staking, wallet);
+
+  const executeListing = (
+    proposal: PublicKey,
+    wallet: PublicKey,
+    submitter?: Keypair
+  ) => listingBuilder(governance, proposal, wallet, submitter);
+
+  const executeDelisting = (
+    proposal: PublicKey,
+    wallet: PublicKey,
+    submitter?: Keypair
+  ) => delistingBuilder(governance, proposal, wallet, submitter);
+
   before(async () => {
     mint = await getSharedMint();
     ({ stakingConfig, stakeVault, rewardsVault } = await getSharedStakingConfig(
@@ -269,6 +283,7 @@ describe("ban list (OFS-7100 §12)", () => {
     ));
     ({ governanceConfig, depositVault, depositAmount } =
       await getSharedGovernanceConfig(governance));
+    quorumVoter = await getQuorumVoter(staking, governance);
   });
 
   it("records a listing on-chain, readable with its reason and evidence", async () => {
@@ -276,50 +291,59 @@ describe("ban list (OFS-7100 §12)", () => {
     // gate works — that a third party can inspect *why*.
     const wallet = Keypair.generate().publicKey;
     const evidence = [...crypto.randomBytes(32)];
-    await listWallet(wallet, REASON_STOLEN, evidence);
+    const proposal = await listWallet(wallet, REASON_STOLEN, evidence);
 
     const record = await governance.account.banRecord.fetch(banPda(wallet));
     expect(record.wallet.toBase58()).to.equal(wallet.toBase58());
     expect(record.reason).to.deep.equal(REASON_STOLEN);
     expect([...record.evidenceHash]).to.deep.equal(evidence);
-    expect(record.listedBy.toBase58()).to.equal(admin.publicKey.toBase58());
     expect(record.listedAt.toNumber()).to.be.greaterThan(0);
+    // The record leads back to the vote, not to a signer. Under §15 that
+    // is what an erroneously-listed wallet contests: the decision, the
+    // tally behind it, and the evidence it rested on.
+    expect(record.authorizingProposal.toBase58()).to.equal(
+      proposal.toBase58()
+    );
   });
 
   it("emits WalletListed on listing and WalletDelisted on delisting", async () => {
     // §12.2 requires both, so that an exclusion can be audited and a
     // reversal can be proven to have happened.
     const wallet = Keypair.generate().publicKey;
+    const evidence = [...crypto.randomBytes(32)];
 
-    const listed = await governance.methods
-      .listWallet(wallet, REASON_SANCTIONS, [...crypto.randomBytes(32)])
-      .accountsPartial({
-        admin: admin.publicKey,
-        governanceConfig,
-        banRecord: banPda(wallet),
-        systemProgram: SystemProgram.programId,
-      })
-      .simulate();
+    const listingProposal = await passProposal(
+      governance,
+      staking,
+      listAction(wallet, REASON_SANCTIONS, evidence)
+    );
+    const listed = await executeListing(listingProposal, wallet).simulate();
     const listedEvent = listed.events.find((e: any) => e.name === "walletListed");
     expect(listedEvent, "walletListed event").to.not.be.undefined;
     expect(listedEvent.data.wallet.toBase58()).to.equal(wallet.toBase58());
+    expect(listedEvent.data.authorizingProposal.toBase58()).to.equal(
+      listingProposal.toBase58()
+    );
+    await withBlockhashRetry(() =>
+      executeListing(listingProposal, wallet).rpc({ commitment: "confirmed" })
+    );
 
-    await listWallet(wallet);
-
-    const delisted = await governance.methods
-      .delistWallet(wallet)
-      .accountsPartial({
-        admin: admin.publicKey,
-        governanceConfig,
-        banRecord: banPda(wallet),
-      })
-      .simulate();
+    const delistingProposal = await passProposal(governance, staking, delistAction(wallet));
+    const delisted = await executeDelisting(delistingProposal, wallet).simulate();
     const delistedEvent = delisted.events.find(
       (e: any) => e.name === "walletDelisted"
     );
     expect(delistedEvent, "walletDelisted event").to.not.be.undefined;
     expect(delistedEvent.data.wallet.toBase58()).to.equal(wallet.toBase58());
     expect(delistedEvent.data.listedAt.toNumber()).to.be.greaterThan(0);
+    // Both decisions are on the record, and they are different ones —
+    // the audit trail §12.2 asks for is the pair, not either alone.
+    expect(delistedEvent.data.authorizingProposal.toBase58()).to.equal(
+      delistingProposal.toBase58()
+    );
+    expect(delistedEvent.data.listedByProposal.toBase58()).to.equal(
+      listingProposal.toBase58()
+    );
   });
 
   it("refuses a banned wallet's escrow liquidity deposit", async () => {
@@ -375,10 +399,7 @@ describe("ban list (OFS-7100 §12)", () => {
     await listWallet(proposer.publicKey);
 
     const id = 9001;
-    const proposal = PublicKey.findProgramAddressSync(
-      [Buffer.from("proposal"), new BN(id).toArrayLike(Buffer, "le", 8)],
-      governance.programId
-    )[0];
+    const proposal = proposalPda(governance, id);
 
     await expectAnchorError(
       () =>
@@ -388,7 +409,8 @@ describe("ban list (OFS-7100 §12)", () => {
             CATEGORY_PARAMETER,
             [...crypto.randomBytes(32)],
             [...crypto.randomBytes(32)],
-            new BN(3)
+            new BN(3),
+            ACTION_NONE
           )
           .accountsPartial({
             proposer: proposer.publicKey,
@@ -397,6 +419,7 @@ describe("ban list (OFS-7100 §12)", () => {
             depositVault,
             from,
             proposal,
+            proposalAction: proposalActionPda(governance, proposal),
             tokenProgram: TOKEN_2022_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
             rent: SYSVAR_RENT_PUBKEY,
@@ -484,50 +507,249 @@ describe("ban list (OFS-7100 §12)", () => {
     });
   });
 
-  describe("who may list", () => {
-    it("refuses a non-admin listing", async () => {
-      const impostor = Keypair.generate();
-      await airdrop(impostor.publicKey);
-      const victim = Keypair.generate().publicKey;
+  describe("who may list (OFS-7100 §12.2 — only governance)", () => {
+    // The whole point of this block: there is no key anywhere that can
+    // list or delist a wallet. `GovernanceConfig.admin` is not read by
+    // either instruction, and the accounts they do read are a vote.
 
+    it("lets a stranger with no standing execute a passed proposal", async () => {
+      // Authority comes from the vote, not from the sender. If a named
+      // party had to submit, that party could refuse — and refusing to
+      // execute a passed *delisting* is an unappealable ban by another
+      // name.
+      const wallet = Keypair.generate().publicKey;
+      const stranger = Keypair.generate();
+      await airdrop(stranger.publicKey);
+
+      const proposal = await passProposal(
+        governance,
+        staking,
+        listAction(wallet, REASON_SCAM, [...crypto.randomBytes(32)])
+      );
+      await withBlockhashRetry(() =>
+        executeListing(proposal, wallet, stranger).rpc({
+          commitment: "confirmed",
+        })
+      );
+      expect(await connection.getAccountInfo(banPda(wallet))).to.not.be.null;
+    });
+
+    it("refuses to list without any proposal at all", async () => {
+      // The former admin path, attempted by the former admin. Nothing
+      // in `list_wallet` reads `GovernanceConfig.admin` any more, and
+      // there is no account arrangement that stands in for a vote: the
+      // proposal account is required, and it must be a real, accepted,
+      // executable one.
+      const wallet = Keypair.generate().publicKey;
+      const neverVoted = await createProposal(
+        governance,
+        CATEGORY_STANDARDS,
+        listAction(wallet, REASON_SCAM, [...crypto.randomBytes(32)]),
+        3
+      );
       await expectAnchorError(
         () =>
-          governance.methods
-            .listWallet(victim, REASON_SCAM, [...crypto.randomBytes(32)])
-            .accountsPartial({
-              admin: impostor.publicKey,
-              governanceConfig,
-              banRecord: banPda(victim),
-              systemProgram: SystemProgram.programId,
-            })
-            .signers([impostor])
-            .rpc({ commitment: "confirmed" }),
-        "Unauthorized"
+          executeListing(neverVoted, wallet).rpc({ commitment: "confirmed" }),
+        "ProposalNotAccepted"
       );
     });
 
-    it("refuses a non-admin delisting", async () => {
-      // The reversal path must be no *wider* than the exclusion path —
-      // but it must also be no narrower, which the delisting test above
-      // covers.
-      const impostor = Keypair.generate();
-      await airdrop(impostor.publicKey);
+    it("refuses a proposal the vote rejected", async () => {
       const wallet = Keypair.generate().publicKey;
-      await listWallet(wallet);
+      const proposal = await createProposal(
+        governance,
+        CATEGORY_STANDARDS,
+        listAction(wallet, REASON_SCAM, [...crypto.randomBytes(32)])
+      );
+      await castVote(governance, staking, proposal, quorumVoter, false);
+      await finalize(governance, proposal);
+
+      const account = await governance.account.proposal.fetch(proposal);
+      expect(account.quorumMet, "quorum was met — it lost on the merits").to.equal(true);
+      expect(account.state).to.deep.equal({ rejected: {} });
 
       await expectAnchorError(
-        () =>
-          governance.methods
-            .delistWallet(wallet)
-            .accountsPartial({
-              admin: impostor.publicKey,
-              governanceConfig,
-              banRecord: banPda(wallet),
-            })
-            .signers([impostor])
-            .rpc({ commitment: "confirmed" }),
-        "Unauthorized"
+        () => executeListing(proposal, wallet).rpc({ commitment: "confirmed" }),
+        "ProposalNotAccepted"
       );
+      expect(await connection.getAccountInfo(banPda(wallet))).to.be.null;
+    });
+
+    it("refuses a proposal that missed quorum", async () => {
+      // Distinct from losing on the merits: this one had only for-votes
+      // and still authorizes nothing, because too little of the supply
+      // turned out to decide anything.
+      const wallet = Keypair.generate().publicKey;
+      const smallVoter = await setUpStaker();
+      await withBlockhashRetry(() =>
+        stake(smallVoter.owner, smallVoter.from, unit(1000)).rpc({
+          commitment: "confirmed",
+        })
+      );
+
+      const proposal = await createProposal(
+        governance,
+        CATEGORY_STANDARDS,
+        listAction(wallet, REASON_SCAM, [...crypto.randomBytes(32)])
+      );
+      await castVote(governance, staking, proposal, smallVoter.owner, true);
+      await finalize(governance, proposal);
+
+      const account = await governance.account.proposal.fetch(proposal);
+      expect(account.quorumMet).to.equal(false);
+      expect(account.votesAgainst.toNumber()).to.equal(0);
+
+      await expectAnchorError(
+        () => executeListing(proposal, wallet).rpc({ commitment: "confirmed" }),
+        "ProposalNotAccepted"
+      );
+      expect(await connection.getAccountInfo(banPda(wallet))).to.be.null;
+    });
+
+    it("refuses to execute inside the vote lock, and allows it once elapsed", async () => {
+      // `vote_lock_secs` is the delay between a proposal passing and its
+      // action taking effect — the window in which a wallet about to
+      // lose all protocol access can see the decision coming. The
+      // fixture's lock is one second, far too short to observe, so this
+      // widens it for one proposal and narrows it again.
+      const wallet = Keypair.generate().publicKey;
+      const before = await governance.account.governanceConfig.fetch(
+        governanceConfig
+      );
+      const params = {
+        totalOpenSupply: before.totalOpenSupply,
+        quorumBps: before.quorumBps,
+        thresholdSimpleBps: before.thresholdSimpleBps,
+        thresholdTreasuryBps: before.thresholdTreasuryBps,
+        thresholdUpgradeBps: before.thresholdUpgradeBps,
+        quorumUpgradeBps: before.quorumUpgradeBps,
+        depositAmount: before.depositAmount,
+        voteLockSecs: new BN(45),
+      };
+      const setVoteLock = (voteLockSecs: BN) =>
+        withBlockhashRetry(() =>
+          governance.methods
+            .updateGovernanceConfig({ ...params, voteLockSecs })
+            .accountsPartial({
+              admin: admin.publicKey,
+              governanceConfig,
+              mint,
+              forfeitDestination: before.forfeitDestination,
+            })
+            .rpc({ commitment: "confirmed" })
+        );
+
+      await setVoteLock(new BN(45));
+      const proposal = await createProposal(
+        governance,
+        CATEGORY_STANDARDS,
+        listAction(wallet, REASON_STOLEN, [...crypto.randomBytes(32)])
+      );
+      await castVote(governance, staking, proposal, quorumVoter, true);
+      const account = await governance.account.proposal.fetch(proposal);
+      await sleepUntilChainTime(account.votingEndsAt.toNumber() + 1);
+      await withBlockhashRetry(() =>
+        governance.methods
+          .tallyAndFinalize()
+          .accountsPartial({ proposal })
+          .rpc({ commitment: "confirmed" })
+      );
+      expect(
+        (await governance.account.proposal.fetch(proposal)).state
+      ).to.deep.equal({ accepted: {} });
+
+      // Accepted, quorum met, un-executed — and still refused.
+      await expectAnchorError(
+        () => executeListing(proposal, wallet).rpc({ commitment: "confirmed" }),
+        "ExecutionTimelockActive"
+      );
+
+      await setVoteLock(before.voteLockSecs);
+      await withBlockhashRetry(() =>
+        executeListing(proposal, wallet).rpc({ commitment: "confirmed" })
+      );
+      expect(
+        await connection.getAccountInfo(banPda(wallet)),
+        "the timelock was the only thing refusing it"
+      ).to.not.be.null;
+    });
+
+    it("refuses to redeem a proposal naming wallet A against wallet B", async () => {
+      // The binding that makes a vote mean what it said. Without it a
+      // single passed listing would be a licence to ban anyone.
+      const walletA = Keypair.generate().publicKey;
+      const walletB = Keypair.generate().publicKey;
+      const proposal = await passProposal(
+        governance,
+        staking,
+        listAction(walletA, REASON_SCAM, [...crypto.randomBytes(32)])
+      );
+
+      await expectAnchorError(
+        () => executeListing(proposal, walletB).rpc({ commitment: "confirmed" }),
+        "ProposalActionMismatch"
+      );
+      expect(await connection.getAccountInfo(banPda(walletB))).to.be.null;
+
+      // ...and the same proposal against the wallet it does name works,
+      // so the rejection above was the binding and not a broken path.
+      await withBlockhashRetry(() =>
+        executeListing(proposal, walletA).rpc({ commitment: "confirmed" })
+      );
+      expect(await connection.getAccountInfo(banPda(walletA))).to.not.be.null;
+    });
+
+    it("refuses to list on a proposal that authorizes a delisting, or nothing", async () => {
+      const wallet = Keypair.generate().publicKey;
+
+      const delisting = await passProposal(governance, staking, delistAction(wallet));
+      await expectAnchorError(
+        () => executeListing(delisting, wallet).rpc({ commitment: "confirmed" }),
+        "ProposalActionMismatch"
+      );
+
+      const inert = await passProposal(governance, staking, ACTION_NONE);
+      await expectAnchorError(
+        () => executeListing(inert, wallet).rpc({ commitment: "confirmed" }),
+        "ProposalActionMismatch"
+      );
+      expect(await connection.getAccountInfo(banPda(wallet))).to.be.null;
+    });
+
+    it("refuses a ban action proposed under the wrong category", async () => {
+      // The category fixes the quorum and majority a ban has to clear,
+      // and fixes it identically for listing and delisting. Letting the
+      // proposer pick it would let them pick their own bar.
+      const wallet = Keypair.generate().publicKey;
+      await expectAnchorError(
+        () =>
+          createProposal(
+            governance,
+            CATEGORY_PARAMETER,
+            listAction(wallet, REASON_SCAM, [...crypto.randomBytes(32)])
+          ),
+        "WrongCategoryForBanAction"
+      );
+    });
+
+    it("cannot execute the same proposal twice, even after a delisting", async () => {
+      // The replay that would matter: list, readmit, then re-run the
+      // original listing to undo the readmission. `executed` is set in
+      // the same instruction that creates the record, so the second run
+      // has nothing left to spend.
+      const wallet = Keypair.generate().publicKey;
+      const listing = await listWallet(wallet);
+      await delistWallet(wallet);
+      expect(await connection.getAccountInfo(banPda(wallet))).to.be.null;
+
+      await expectAnchorError(
+        () => executeListing(listing, wallet).rpc({ commitment: "confirmed" }),
+        "AlreadyExecuted"
+      );
+      expect(
+        await connection.getAccountInfo(banPda(wallet)),
+        "the readmission stood"
+      ).to.be.null;
     });
 
     it("refuses a second listing of an already-listed wallet", async () => {
@@ -544,5 +766,4 @@ describe("ban list (OFS-7100 §12)", () => {
       }
     });
   });
-
 });

@@ -6,6 +6,17 @@ license = "Apache-2.0"
 description = "Bridge to the Solana execution layer (OFS-4300): blockhash sourcing and transaction relay for RPC-connected and gossip-only nodes."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
+[features]
+# Deliberately no network-selection feature. Devnet is the only deployment
+# that exists, so `src/programs.rs` pins its ids unconditionally and there
+# is nothing to select. A `network-mainnet` feature whose body was a
+# `compile_error!` seemed safer but was strictly worse: `cargo` offers no
+# way to exclude a feature from `--all-features`, which CI runs, so a
+# feature that can only fail to compile fails the build for everyone. With
+# no feature at all, a mainnet build cannot be requested in the first
+# place. See `src/programs.rs` for how to add one when mainnet exists.
+default = []
+
 [dependencies]
 openfiat-types = { path = "../types", version = "0.1.0" }
 openfiat-gossip = { path = "../gossip", version = "0.1.0" }
@@ -24,6 +35,9 @@ async-trait = "0.1.91"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+# Only so `programs`' test can re-read programs/devnet-addresses.json, the
+# deployment record the pinned ids are transcribed from.
+serde_json = "1.0.151"
 openfiat-crypto = { path = "../crypto", version = "0.1.0" }
 openfiat-network = { path = "../network", version = "0.1.0" }
 futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
