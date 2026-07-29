@@ -37,6 +37,33 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 /// on a shared/rate-limited public RPC endpoint.
 const CHAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How often this node sweeps its own registry replica for stale services
+/// (OFS-1500 §18). Purely local bookkeeping, so the cadence only bounds how
+/// promptly a departed provider disappears — an hour against a multi-day
+/// threshold is ample, and the sweep is a scan of a small column family.
+const REGISTRY_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// `[PROPOSED — NEEDS SIGN-OFF]`: how long a service may go without a health
+/// update before this node drops it.
+///
+/// OFS-1500 §18 pairs a 90-second expiry with §11's 30-second heartbeat, and
+/// `protocol::EXPIRATION_THRESHOLD` carries that spec value. This is
+/// deliberately ~6700x larger, because **nothing heartbeats yet**: until
+/// `sendProviderHealthUpdate` was added alongside this constant there was no
+/// way for a provider to refresh `last_health_update` at all, so every
+/// registration still carries its registration timestamp. Sweeping at §18's
+/// value today would evict the entire registry — measured against the live
+/// devnet cluster, all 9 registered providers, none of which has ever sent a
+/// health update.
+///
+/// Seven days leaves the existing population (oldest ~17h stale when this
+/// shipped) a wide margin to adopt the new heartbeat path, while still
+/// bounding the unbounded growth that motivated wiring the sweep on. Tighten
+/// this toward §18's 90 seconds once providers heartbeat routinely; that is a
+/// parameter change, not a code change.
+const REGISTRY_EXPIRATION_THRESHOLD: std::time::Duration =
+    std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
 struct RpcCommand {
     method: String,
     params: Value,
@@ -314,6 +341,9 @@ where
             }
             let table: MethodTable<S> = crate::methods::build_table();
             let mut chain_poll = tokio::time::interval(CHAIN_POLL_INTERVAL);
+            // Unconditional, unlike `chain_poll`: a GossipOnly node replicates
+            // the registry just the same and must expire stale entries too.
+            let mut registry_sweep = tokio::time::interval(REGISTRY_SWEEP_INTERVAL);
 
             loop {
                 tokio::select! {
@@ -334,6 +364,9 @@ where
                         let client = chain_client.as_deref().unwrap();
                         poll_chain(&state, client).await;
                         poll_vote_verifications(&state, client, staking_program_id.as_deref()).await;
+                    }
+                    _ = registry_sweep.tick() => {
+                        state.services.expire_stale(REGISTRY_EXPIRATION_THRESHOLD);
                     }
                 }
             }
