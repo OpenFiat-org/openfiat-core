@@ -42,8 +42,18 @@ pub fn handle_open_dispute_case(
     commit_window_secs: i64,
     reveal_window_secs: i64,
 ) -> Result<()> {
-    require!(commit_window_secs > 0, ErrorCode::InvalidTimeout);
-    require!(reveal_window_secs > 0, ErrorCode::InvalidTimeout);
+    // The opener is a party to the trade and picks both windows, so
+    // neither may be arbitrary. Too short locks honest arbitrators out of
+    // a case the opener is already prepared for; too long parks the other
+    // side's funds in `Frozen` indefinitely at no cost.
+    require!(
+        (MIN_DISPUTE_WINDOW_SECS..=MAX_DISPUTE_WINDOW_SECS).contains(&commit_window_secs),
+        ErrorCode::DisputeWindowOutOfRange
+    );
+    require!(
+        (MIN_DISPUTE_WINDOW_SECS..=MAX_DISPUTE_WINDOW_SECS).contains(&reveal_window_secs),
+        ErrorCode::DisputeWindowOutOfRange
+    );
 
     let now = Clock::get()?.unix_timestamp;
     let commit_deadline = now
@@ -60,6 +70,9 @@ pub fn handle_open_dispute_case(
     dispute_case.commit_deadline = commit_deadline;
     dispute_case.reveal_deadline = reveal_deadline;
     dispute_case.resolved = false;
+    dispute_case.round = 0;
+    dispute_case.commit_window_secs = commit_window_secs;
+    dispute_case.reveal_window_secs = reveal_window_secs;
     dispute_case.arbitrators = Vec::new();
     dispute_case.commitments = Vec::new();
     dispute_case.revealed_outcomes = Vec::new();

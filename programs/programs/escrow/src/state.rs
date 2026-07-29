@@ -111,6 +111,16 @@ pub struct DisputeCase {
     pub commit_deadline: i64,
     pub reveal_deadline: i64,
     pub resolved: bool,
+    /// Which arbitration round this case is on, from 0. A round that
+    /// reaches no decisive result re-opens the case rather than paying
+    /// either party — see `execute_dispute_outcome`. Bounded by
+    /// [`MAX_DISPUTE_ROUNDS`](crate::constants::MAX_DISPUTE_ROUNDS).
+    pub round: u8,
+    /// The windows this case was opened with, retained so a re-opened
+    /// round gets the same deadlines the opener originally chose rather
+    /// than a fresh, differently-argued pair.
+    pub commit_window_secs: i64,
+    pub reveal_window_secs: i64,
     /// Parallel arrays (index i = one arbitrator's slot), rather than a
     /// `Vec<Struct>` — Anchor's `#[max_len]` space accounting is simplest
     /// per-field; a struct-of-arrays costs the same total space.

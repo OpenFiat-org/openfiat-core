@@ -40,6 +40,10 @@ pub enum ErrorCode {
     DisputeAlreadyResolved,
     #[msg("No arbitrator revealed a vote for this dispute case")]
     NoVotesRevealed,
+    #[msg("An arbitrator must hold at least the Arbitrator role's minimum stake to commit a vote")]
+    ArbitratorStakeBelowMinimum,
+    #[msg("Dispute commit/reveal windows must be within the protocol's permitted range")]
+    DisputeWindowOutOfRange,
     #[msg("Arithmetic overflow")]
     Overflow,
 }

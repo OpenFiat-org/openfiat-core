@@ -837,7 +837,7 @@ describe("escrow", () => {
 
       await withBlockhashRetry(() =>
         program.methods
-          .openDisputeCase(new BN(15), new BN(15)) // short windows for the test
+          .openDisputeCase(new BN(60), new BN(60)) // the protocol minimum window
           .accountsPartial({
             signer: buyer.publicKey,
             payer: admin.publicKey,
@@ -871,13 +871,18 @@ describe("escrow", () => {
         await withBlockhashRetry(() =>
           program.methods
             .commitDisputeVote([...commitmentFor(outcomeByte, salt)])
-            .accountsPartial({ arbitrator: arb.publicKey, disputeCase })
+            .accountsPartial({
+              arbitrator: arb.publicKey,
+              disputeCase,
+              stakingConfig,
+              arbitratorStake: stakeAccountPda(arb.publicKey),
+            })
             .signers([arb])
             .rpc({ commitment: "confirmed" }),
         );
       }
 
-      await new Promise((r) => setTimeout(r, 16000)); // past commit_deadline
+      await new Promise((r) => setTimeout(r, 61000)); // past commit_deadline
 
       for (const [arb, salt, outcome] of [
         [arb1, salt1, OUTCOME_BUYER_WINS],
@@ -897,7 +902,7 @@ describe("escrow", () => {
         );
       }
 
-      await new Promise((r) => setTimeout(r, 16000)); // past reveal_deadline
+      await new Promise((r) => setTimeout(r, 61000)); // past reveal_deadline
 
       const liquidityVault = liquidityVaultPda(merchant.publicKey, mint);
       const liquidityTokenVault = liquidityTokenVaultPda(merchant.publicKey, mint);
@@ -937,7 +942,7 @@ describe("escrow", () => {
       expect(caseAccount.resolved).to.equal(true);
     });
 
-    it("resolves a weighted tie to InvalidDispute and returns funds to the liquidity vault", async () => {
+    it("re-opens the case on a weighted tie instead of paying either party", async () => {
       const reservationId = 9002;
       const amount = unit(500);
       const { merchant, buyer } = await openFundedTradeEscrow(reservationId, amount);
@@ -947,7 +952,7 @@ describe("escrow", () => {
 
       await withBlockhashRetry(() =>
         program.methods
-          .openDisputeCase(new BN(15), new BN(15))
+          .openDisputeCase(new BN(60), new BN(60))
           .accountsPartial({
             signer: merchant.publicKey,
             payer: admin.publicKey,
@@ -972,13 +977,18 @@ describe("escrow", () => {
         await withBlockhashRetry(() =>
           program.methods
             .commitDisputeVote([...commitmentFor(outcomeByte, salt)])
-            .accountsPartial({ arbitrator: arb.publicKey, disputeCase })
+            .accountsPartial({
+              arbitrator: arb.publicKey,
+              disputeCase,
+              stakingConfig,
+              arbitratorStake: stakeAccountPda(arb.publicKey),
+            })
             .signers([arb])
             .rpc({ commitment: "confirmed" }),
         );
       }
 
-      await new Promise((r) => setTimeout(r, 16000));
+      await new Promise((r) => setTimeout(r, 61000));
 
       for (const [arb, salt, outcome] of [
         [arb1, salt1, OUTCOME_BUYER_WINS],
@@ -997,7 +1007,7 @@ describe("escrow", () => {
         );
       }
 
-      await new Promise((r) => setTimeout(r, 16000));
+      await new Promise((r) => setTimeout(r, 61000));
 
       const liquidityVault = liquidityVaultPda(merchant.publicKey, mint);
       const liquidityTokenVault = liquidityTokenVaultPda(merchant.publicKey, mint);
@@ -1030,11 +1040,361 @@ describe("escrow", () => {
           .rpc({ commitment: "confirmed" }),
       );
 
+      // A tie is not a verdict. Nothing moves, the escrow stays frozen,
+      // and the case re-opens for another round — previously this paid
+      // the merchant, which is what made manufacturing a tie worthwhile.
       const escrowAccount = await program.account.tradeEscrowVault.fetch(tradeEscrow);
-      expect(escrowAccount.state).to.deep.equal({ cancelled: {} });
+      expect(escrowAccount.state).to.deep.equal({ frozen: {} });
 
       const vaultAfter = await program.account.liquidityVault.fetch(liquidityVault);
-      expect(vaultAfter.available.toString()).to.equal(vaultBefore.available.add(amount).toString());
+      expect(vaultAfter.available.toString()).to.equal(vaultBefore.available.toString());
+
+      const caseAccount = await program.account.disputeCase.fetch(disputeCase);
+      expect(caseAccount.resolved).to.equal(false);
+      expect(caseAccount.round).to.equal(1);
+      expect(caseAccount.arbitrators.length).to.equal(0);
+      expect(caseAccount.commitments.length).to.equal(0);
+    });
+
+    it("rejects a commit from an arbitrator below the role minimum, blocking the seat-squatting attack", async () => {
+      const reservationId = 9003;
+      const amount = unit(400);
+      const { buyer } = await openFundedTradeEscrow(reservationId, amount);
+
+      const tradeEscrow = tradeEscrowSeed(reservationId);
+      const disputeCase = disputeCasePda(reservationId);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .openDisputeCase(new BN(60), new BN(60))
+          .accountsPartial({
+            signer: buyer.publicKey,
+            payer: admin.publicKey,
+            tradeEscrow,
+            disputeCase,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([buyer])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      // The attack: a wallet with an initialized-but-empty Arbitrator
+      // stake account. `initialize_stake_account` is permissionless and a
+      // zero balance is legal, so seven of these could once occupy every
+      // seat for the price of rent and force the tally to a tie.
+      const squatter = Keypair.generate();
+      await airdrop(squatter.publicKey);
+      const squatterStake = stakeAccountPda(squatter.publicKey);
+      await withBlockhashRetry(() =>
+        staking.methods
+          .initializeStakeAccount(ROLE_ARBITRATOR)
+          .accountsPartial({
+            owner: squatter.publicKey,
+            stakeAccount: squatterStake,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([squatter])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const zeroStake = await staking.account.stakeAccount.fetch(squatterStake);
+      expect(zeroStake.amount.toString()).to.equal("0");
+
+      let rejected = false;
+      try {
+        await program.methods
+          .commitDisputeVote([...commitmentFor(OUTCOME_BYTE.merchantWins, crypto.randomBytes(32))])
+          .accountsPartial({
+            arbitrator: squatter.publicKey,
+            disputeCase,
+            stakingConfig,
+            arbitratorStake: squatterStake,
+          })
+          .signers([squatter])
+          .rpc({ commitment: "confirmed" });
+      } catch (err: any) {
+        rejected = true;
+        expect(err.toString()).to.contain("ArbitratorStakeBelowMinimum");
+      }
+      expect(rejected, "a zero-stake wallet must not be able to occupy a seat").to.equal(true);
+
+      // And the seat really is still free.
+      const caseAccount = await program.account.disputeCase.fetch(disputeCase);
+      expect(caseAccount.arbitrators.length).to.equal(0);
+    });
+
+    it("rejects a partially-staked arbitrator, not just a zero-balance one", async () => {
+      const reservationId = 9004;
+      const amount = unit(400);
+      const { buyer } = await openFundedTradeEscrow(reservationId, amount);
+
+      const tradeEscrow = tradeEscrowSeed(reservationId);
+      const disputeCase = disputeCasePda(reservationId);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .openDisputeCase(new BN(60), new BN(60))
+          .accountsPartial({
+            signer: buyer.publicKey,
+            payer: admin.publicKey,
+            tradeEscrow,
+            disputeCase,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([buyer])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      // The staking program only permits a balance of zero or >= the
+      // minimum, so "some but not enough" cannot be reached by staking.
+      // Requesting an unstake down to zero is the reachable way to stop
+      // qualifying while an account still exists.
+      const arb = await setUpArbitrator(unit(10000));
+      const arbStake = stakeAccountPda(arb.publicKey);
+      await withBlockhashRetry(() =>
+        staking.methods
+          .requestUnstake(unit(10000))
+          .accountsPartial({ owner: arb.publicKey, stakingConfig, stakeAccount: arbStake })
+          .signers([arb])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const drained = await staking.account.stakeAccount.fetch(arbStake);
+      expect(drained.amount.toString()).to.equal("0");
+
+      let rejected = false;
+      try {
+        await program.methods
+          .commitDisputeVote([...commitmentFor(OUTCOME_BYTE.buyerWins, crypto.randomBytes(32))])
+          .accountsPartial({
+            arbitrator: arb.publicKey,
+            disputeCase,
+            stakingConfig,
+            arbitratorStake: arbStake,
+          })
+          .signers([arb])
+          .rpc({ commitment: "confirmed" });
+      } catch (err: any) {
+        rejected = true;
+        expect(err.toString()).to.contain("ArbitratorStakeBelowMinimum");
+      }
+      expect(rejected, "unbonding out of the minimum must forfeit the right to commit").to.equal(
+        true,
+      );
+    });
+
+    it("rejects dispute windows outside the permitted range", async () => {
+      const reservationId = 9005;
+      const amount = unit(300);
+      const { buyer } = await openFundedTradeEscrow(reservationId, amount);
+
+      const tradeEscrow = tradeEscrowSeed(reservationId);
+      const disputeCase = disputeCasePda(reservationId);
+
+      // A one-second commit window closes before any honest arbitrator
+      // could see the case — the opener is a party to the trade.
+      for (const [commitWindow, revealWindow] of [
+        [new BN(1), new BN(60)],
+        [new BN(60), new BN(1)],
+        [new BN(60 * 60 * 24 * 30), new BN(60)],
+      ] as [BN, BN][]) {
+        let rejected = false;
+        try {
+          await program.methods
+            .openDisputeCase(commitWindow, revealWindow)
+            .accountsPartial({
+              signer: buyer.publicKey,
+              payer: admin.publicKey,
+              tradeEscrow,
+              disputeCase,
+              systemProgram: SystemProgram.programId,
+            })
+            .signers([buyer])
+            .rpc({ commitment: "confirmed" });
+        } catch (err: any) {
+          rejected = true;
+          expect(err.toString()).to.contain("DisputeWindowOutOfRange");
+        }
+        expect(
+          rejected,
+          `window pair ${commitWindow.toString()}/${revealWindow.toString()} must be refused`,
+        ).to.equal(true);
+      }
+    });
+
+    it("splits the escrow evenly on a MutualSettlement verdict rather than paying the merchant", async () => {
+      const reservationId = 9006;
+      const amount = unit(500);
+      const { merchant, buyer } = await openFundedTradeEscrow(reservationId, amount);
+
+      const tradeEscrow = tradeEscrowSeed(reservationId);
+      const disputeCase = disputeCasePda(reservationId);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .openDisputeCase(new BN(60), new BN(60))
+          .accountsPartial({
+            signer: buyer.publicKey,
+            payer: admin.publicKey,
+            tradeEscrow,
+            disputeCase,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([buyer])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const arb = await setUpArbitrator(unit(50000));
+      const salt = crypto.randomBytes(32);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .commitDisputeVote([...commitmentFor(OUTCOME_BYTE.mutualSettlement, salt)])
+          .accountsPartial({
+            arbitrator: arb.publicKey,
+            disputeCase,
+            stakingConfig,
+            arbitratorStake: stakeAccountPda(arb.publicKey),
+          })
+          .signers([arb])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      await new Promise((r) => setTimeout(r, 61000));
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .revealDisputeVote({ mutualSettlement: {} }, [...salt])
+          .accountsPartial({
+            arbitrator: arb.publicKey,
+            disputeCase,
+            arbitratorStake: stakeAccountPda(arb.publicKey),
+          })
+          .signers([arb])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      await new Promise((r) => setTimeout(r, 61000));
+
+      const liquidityVault = liquidityVaultPda(merchant.publicKey, mint);
+      const liquidityTokenVault = liquidityTokenVaultPda(merchant.publicKey, mint);
+      const tradeEscrowTokenVault = tradeEscrowTokenVaultPda(reservationId);
+      const buyerAta = await ata(mint, buyer.publicKey);
+      const buyerBefore = await getAccount(connection, buyerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
+      const vaultBefore = await program.account.liquidityVault.fetch(liquidityVault);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .executeDisputeOutcome()
+          .accountsPartial({
+            mint,
+            disputeCase,
+            tradeEscrow,
+            tradeEscrowTokenVault,
+            liquidityVault,
+            liquidityTokenVault,
+            buyerTokenAccount: buyerAta,
+            feeConfig,
+            devTreasury,
+            ecosystemTreasury,
+            infraTreasury,
+            emergencyReserve,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const half = amount.div(new BN(2));
+      const buyerAfter = await getAccount(connection, buyerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
+      expect((buyerAfter.amount - buyerBefore.amount).toString()).to.equal(half.toString());
+
+      const vaultAfter = await program.account.liquidityVault.fetch(liquidityVault);
+      expect(vaultAfter.available.toString()).to.equal(
+        vaultBefore.available.add(amount.sub(half)).toString(),
+      );
+
+      const escrowAccount = await program.account.tradeEscrowVault.fetch(tradeEscrow);
+      expect(escrowAccount.state).to.deep.equal({ released: {} });
+    });
+
+    it("splits evenly once the round limit is exhausted, so stalling wins nobody the escrow", async () => {
+      const reservationId = 9007;
+      const amount = unit(600);
+      const { merchant, buyer } = await openFundedTradeEscrow(reservationId, amount);
+
+      const tradeEscrow = tradeEscrowSeed(reservationId);
+      const disputeCase = disputeCasePda(reservationId);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .openDisputeCase(new BN(60), new BN(60))
+          .accountsPartial({
+            signer: buyer.publicKey,
+            payer: admin.publicKey,
+            tradeEscrow,
+            disputeCase,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([buyer])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const liquidityVault = liquidityVaultPda(merchant.publicKey, mint);
+      const liquidityTokenVault = liquidityTokenVaultPda(merchant.publicKey, mint);
+      const tradeEscrowTokenVault = tradeEscrowTokenVaultPda(reservationId);
+      const buyerAta = await ata(mint, buyer.publicKey);
+      const buyerBefore = await getAccount(connection, buyerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
+      const vaultBefore = await program.account.liquidityVault.fetch(liquidityVault);
+
+      const execute = () =>
+        withBlockhashRetry(() =>
+          program.methods
+            .executeDisputeOutcome()
+            .accountsPartial({
+              mint,
+              disputeCase,
+              tradeEscrow,
+              tradeEscrowTokenVault,
+              liquidityVault,
+              liquidityTokenVault,
+              buyerTokenAccount: buyerAta,
+              feeConfig,
+              devTreasury,
+              ecosystemTreasury,
+              infraTreasury,
+              emergencyReserve,
+              tokenProgram: TOKEN_2022_PROGRAM_ID,
+            })
+            .rpc({ commitment: "confirmed" }),
+        );
+
+      // Nobody ever reveals. Each expiry re-opens the case rather than
+      // paying out, until the bound is hit — at which point the escrow
+      // must not be left frozen forever either.
+      for (let round = 0; round < 2; round++) {
+        await new Promise((r) => setTimeout(r, 121000)); // past both windows
+        await execute();
+        const mid = await program.account.disputeCase.fetch(disputeCase);
+        expect(mid.resolved).to.equal(false);
+        expect(mid.round).to.equal(round + 1);
+        const escrowMid = await program.account.tradeEscrowVault.fetch(tradeEscrow);
+        expect(escrowMid.state).to.deep.equal({ frozen: {} });
+      }
+
+      await new Promise((r) => setTimeout(r, 121000));
+      await execute();
+
+      const half = amount.div(new BN(2));
+      const buyerAfter = await getAccount(connection, buyerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
+      expect((buyerAfter.amount - buyerBefore.amount).toString()).to.equal(half.toString());
+
+      const vaultAfter = await program.account.liquidityVault.fetch(liquidityVault);
+      expect(vaultAfter.available.toString()).to.equal(
+        vaultBefore.available.add(amount.sub(half)).toString(),
+      );
+
+      const caseAccount = await program.account.disputeCase.fetch(disputeCase);
+      expect(caseAccount.resolved).to.equal(true);
     });
   });
 });

@@ -40,3 +40,43 @@ pub const BPS_DENOMINATOR: u64 = 10_000;
 /// via `FeeConfig.timeout_secs`, this is only the `initialize_fee_config`
 /// default.
 pub const DEFAULT_TIMEOUT_SECS: i64 = 30 * 60;
+
+/// Floor on a dispute's commit and reveal windows.
+///
+/// `open_dispute_case` is callable by either party, and the opener picks
+/// both windows. Unbounded, that is an attack: a one-second commit window
+/// closes before any honest arbitrator can see the case, leaving the
+/// tally to whoever was ready to transact in the same block.
+///
+/// This floor is a liveness guard, not the main defence — seat-squatting
+/// is what `commit_dispute_vote`'s stake gate exists for. It rules out
+/// the degenerate same-block window while staying short enough that the
+/// commit/reveal cycle is exercisable in an integration test.
+///
+/// `[PROPOSED — NEEDS SIGN-OFF]`, and deliberately flagged as low: OFS-2400
+/// fixes no numeric window, and a production floor should reflect how long
+/// arbitrator discovery actually takes over gossip — realistically minutes
+/// to hours, not one minute. Raising it is a constant change here; making
+/// it governance-tunable would mean moving it onto `FeeConfig` alongside
+/// `timeout_secs`, which is the natural home if this ever needs to move
+/// without a redeploy.
+pub const MIN_DISPUTE_WINDOW_SECS: i64 = 60;
+
+/// Ceiling on a dispute's commit and reveal windows. The escrow is frozen
+/// for the whole of both, so an unbounded window is the mirror attack —
+/// parking someone else's funds indefinitely at no cost.
+///
+/// `[PROPOSED — NEEDS SIGN-OFF]`
+pub const MAX_DISPUTE_WINDOW_SECS: i64 = 7 * 24 * 60 * 60;
+
+/// How many arbitration rounds a case gets before the terminal split.
+///
+/// A round that produces no decisive result must not pay either party —
+/// otherwise forcing indecision becomes a way to win (see
+/// `execute_dispute_outcome`'s own doc). Instead the case re-opens for a
+/// fresh round. This bounds that retry so a case cannot bounce forever,
+/// which would freeze the escrow just as effectively as paying nobody.
+///
+/// `[PROPOSED — NEEDS SIGN-OFF]` — the retry count and the terminal
+/// policy it leads to are economic parameters, not derived from any spec.
+pub const MAX_DISPUTE_ROUNDS: u8 = 3;
