@@ -62,7 +62,7 @@ pub fn handle_initialize_governance_config(
     require_valid_bps(params.threshold_treasury_bps)?;
     require_valid_bps(params.threshold_upgrade_bps)?;
     require_valid_bps(params.quorum_upgrade_bps)?;
-    require!(params.vote_lock_secs > 0, ErrorCode::InvalidVoteLock);
+    crate::shared_logic::require_valid_vote_lock(params.vote_lock_secs)?;
 
     let governance_config = &mut ctx.accounts.governance_config;
     governance_config.admin = ctx.accounts.admin.key();

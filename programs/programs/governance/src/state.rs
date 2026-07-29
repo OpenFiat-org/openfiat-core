@@ -76,11 +76,78 @@ pub struct Proposal {
     /// proposal itself passes").
     pub quorum_met: bool,
     pub deposit_settled: bool,
-    /// Set by `update_config_parameter`/`authorize_treasury_spend` —
-    /// see those instructions' own doc comments for why this records
-    /// the authorization rather than performing a live cross-program
-    /// mutation.
+    /// Consumed by every execution instruction, atomically with the
+    /// effect it performs. This is the only thing that makes a passed
+    /// proposal a *single-use* authorization: `list_wallet` and
+    /// `delist_wallet` both refuse a proposal that already set it, in
+    /// the same instruction that sets it, so a ban cannot be replayed.
+    ///
+    /// `update_config_parameter`/`authorize_treasury_spend` still only
+    /// set it and return — see their doc comments for why they perform
+    /// nothing yet.
     pub executed: bool,
+    pub bump: u8,
+}
+
+/// What a proposal, if it passes, is authorized to *do* (OFS-4200 §6,
+/// OFS-7100 §12.2).
+///
+/// Governance's problem before this existed was not that the ban list
+/// picked the wrong authority — it was that an accepted proposal could
+/// not cause any state change at all. `update_config_parameter` and
+/// `authorize_treasury_spend` set `Proposal::executed = true` and return.
+/// A vote decided nothing, so every capability that needed a decision
+/// fell back to `GovernanceConfig.admin`.
+///
+/// Recording the action as *typed, structured state* rather than as a
+/// hash is what makes an execution instruction able to check it. A
+/// commitment hash would bind the action just as tightly, but only to a
+/// caller who already knows the preimage; a voter deciding how to vote,
+/// or an indexer auditing what governance has authorized, would have to
+/// obtain that preimage out of band. §12.2 requires the ban list to be
+/// auditable on-chain, and a *proposed* exclusion is exactly as worth
+/// reading as an enacted one.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]
+pub enum GovernanceAction {
+    /// No on-chain effect. Informational and Standards proposals whose
+    /// outcome is carried out off-chain, and the categories whose
+    /// execution instructions are still record-only.
+    None,
+    /// Add `wallet` to the protocol-wide ban list (OFS-7100 §12).
+    ListWallet {
+        wallet: Pubkey,
+        reason: BanReason,
+        evidence_hash: [u8; 32],
+    },
+    /// Remove `wallet` from the ban list, restoring its deposit access
+    /// protocol-wide (OFS-7100 §12.2).
+    DelistWallet { wallet: Pubkey },
+}
+
+/// The action a `Proposal` authorizes, at `[PROPOSAL_ACTION_SEED, proposal]`.
+///
+/// A separate account rather than a field on `Proposal`, for two
+/// reasons. `Proposal`'s layout is already allocated on devnet, and
+/// growing an `#[account]` struct makes every existing account of that
+/// type fail to deserialize — which for `Proposal` would strand
+/// `refund_or_forfeit_deposit` on any proposal created before the
+/// upgrade. And an action is optional-shaped data on a required-shaped
+/// account: keeping it separate leaves `Proposal` describing the vote
+/// and this describing the consequence.
+///
+/// Created by `create_proposal` and never written again — `init` is the
+/// whole immutability argument. It exists from the moment voting opens,
+/// so no action can be attached to a proposal people have already voted
+/// on, and none can be swapped after the vote succeeds.
+#[account]
+#[derive(InitSpace)]
+pub struct ProposalAction {
+    /// The proposal this authorizes. Duplicates the seed for the same
+    /// reason `BanRecord::wallet` does: a PDA address does not reveal
+    /// its seeds, so without this an indexer could enumerate every
+    /// pending action without being able to say which vote decides it.
+    pub proposal: Pubkey,
+    pub action: GovernanceAction,
     pub bump: u8,
 }
 
@@ -144,9 +211,12 @@ pub struct BanRecord {
     /// artefact rather than a changing one.
     pub evidence_hash: [u8; 32],
     pub listed_at: i64,
-    /// The admin that signed the listing — see `list_wallet`'s doc
-    /// comment for the honest description of what that authority
-    /// currently is.
-    pub listed_by: Pubkey,
+    /// The `Proposal` that authorized this listing — not the wallet that
+    /// submitted the transaction, which is nobody in particular. This is
+    /// the field that makes a listing contestable under §15: it leads
+    /// from the ban back to the vote, the tally, and the voting record
+    /// that produced it. The submitter is already recoverable from the
+    /// transaction itself and confers no authority worth recording.
+    pub authorizing_proposal: Pubkey,
     pub bump: u8,
 }

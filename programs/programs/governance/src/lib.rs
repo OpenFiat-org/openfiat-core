@@ -21,6 +21,24 @@ declare_id!("AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE");
 /// `StakeAccount` directly (no CPI dispatch — see that crate's own doc
 /// comment for why), the same pattern `openfiat-escrow`'s Phase 4b
 /// dispute bridge already established.
+///
+/// # What a passed proposal can actually do
+///
+/// A proposal carries a [`GovernanceAction`], fixed at creation and
+/// stored in its own immutable [`ProposalAction`] account. `list_wallet`
+/// and `delist_wallet` execute one: they take no privileged signer at
+/// all, and instead require an `Accepted`, quorum-met, un-executed
+/// proposal past its `vote_lock_secs` timelock whose action names the
+/// exact wallet being listed or delisted. Any caller may submit them.
+/// [`shared_logic::require_executable`] is the single definition of that
+/// test.
+///
+/// `update_config_parameter` and `authorize_treasury_spend` are the
+/// exception and remain record-only: they set `Proposal::executed` and
+/// perform nothing, because the programs they would need to mutate have
+/// no governance-aware authority yet. They carry
+/// `GovernanceAction::None`. When they gain real effects they must adopt
+/// `require_executable` — the whole point of it living in one place.
 #[program]
 pub mod governance {
     use super::*;
@@ -44,6 +62,9 @@ pub mod governance {
         crate::instructions::update_governance_config::handle_update_governance_config(ctx, params)
     }
 
+    /// `action` is what this proposal will be entitled to do if it
+    /// passes, fixed now and immutable thereafter — see
+    /// `CreateProposal`'s doc for why it cannot be attached later.
     pub fn create_proposal(
         ctx: Context<CreateProposal>,
         id: u64,
@@ -51,6 +72,7 @@ pub mod governance {
         title_hash: [u8; 32],
         summary_hash: [u8; 32],
         voting_period_secs: i64,
+        action: GovernanceAction,
     ) -> Result<()> {
         crate::instructions::create_proposal::handle_create_proposal(
             ctx,
@@ -59,6 +81,7 @@ pub mod governance {
             title_hash,
             summary_hash,
             voting_period_secs,
+            action,
         )
     }
 
@@ -88,20 +111,18 @@ pub mod governance {
         )
     }
 
-    /// Adds a wallet to the protocol-wide ban list (OFS-7100 §12). Read
-    /// `ListWallet`'s doc comment before wiring this into any interface:
-    /// the authority is a single admin key, not a governance vote.
-    pub fn list_wallet(
-        ctx: Context<ListWallet>,
-        wallet: Pubkey,
-        reason: BanReason,
-        evidence_hash: [u8; 32],
-    ) -> Result<()> {
-        crate::instructions::list_wallet::handle_list_wallet(ctx, wallet, reason, evidence_hash)
+    /// Adds a wallet to the protocol-wide ban list (OFS-7100 §12) by
+    /// executing a passed proposal that names it. Permissionless: the
+    /// authority is the vote, not the submitter. `reason` and
+    /// `evidence_hash` are read from the proposal, which is why they are
+    /// not arguments — see `ListWallet`'s doc comment.
+    pub fn list_wallet(ctx: Context<ListWallet>, wallet: Pubkey) -> Result<()> {
+        crate::instructions::list_wallet::handle_list_wallet(ctx, wallet)
     }
 
     /// Removes a wallet from the ban list, restoring deposit access
-    /// protocol-wide (OFS-7100 §12.2).
+    /// protocol-wide (OFS-7100 §12.2). Runs through the identical
+    /// mechanism as `list_wallet`, deliberately.
     pub fn delist_wallet(ctx: Context<DelistWallet>, wallet: Pubkey) -> Result<()> {
         crate::instructions::delist_wallet::handle_delist_wallet(ctx, wallet)
     }

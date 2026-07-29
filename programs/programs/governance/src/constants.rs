@@ -20,6 +20,26 @@ pub const PROPOSAL_SEED: &[u8] = b"proposal";
 #[constant]
 pub const VOTE_RECORD_SEED: &[u8] = b"vote";
 
+/// PDA seed for a `ProposalAction`: `[SEED, proposal]`. Keyed by the
+/// proposal's own address, so a proposal has exactly one action and an
+/// action belongs to exactly one proposal — the binding that stops a
+/// vote to ban wallet A from being redeemed against wallet B.
+#[constant]
+pub const PROPOSAL_ACTION_SEED: &[u8] = b"proposal_action";
+
+/// Upper bound on `GovernanceConfig.vote_lock_secs` (30 days).
+///
+/// `vote_lock_secs` is the delay between a proposal being accepted and
+/// its action becoming executable, and `admin` can still write it. Left
+/// unbounded, `admin` could set it to `i64::MAX` and make every accepted
+/// proposal permanently unexecutable — which would restore, by the back
+/// door, exactly the power this program's ban list was re-gated to
+/// remove: a single key able to block a delisting indefinitely. The
+/// bound does not remove the delay power, it caps it at something the
+/// protocol can wait out.
+#[constant]
+pub const MAX_VOTE_LOCK_SECS: i64 = 30 * 24 * 60 * 60;
+
 /// Basis-points denominator (10_000 = 100%), matching every other
 /// program in this workspace.
 #[constant]
