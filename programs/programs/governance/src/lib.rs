@@ -32,6 +32,16 @@ pub mod governance {
         )
     }
 
+    /// Corrects the singleton config after initialization — see the
+    /// instruction's own doc for why `forfeit_destination` moved from a
+    /// param to an account.
+    pub fn update_governance_config(
+        ctx: Context<UpdateGovernanceConfig>,
+        params: UpdateGovernanceConfigParams,
+    ) -> Result<()> {
+        crate::instructions::update_governance_config::handle_update_governance_config(ctx, params)
+    }
+
     pub fn create_proposal(
         ctx: Context<CreateProposal>,
         id: u64,

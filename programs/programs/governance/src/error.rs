@@ -28,4 +28,10 @@ pub enum ErrorCode {
     AlreadyExecuted,
     #[msg("Arithmetic overflow")]
     Overflow,
+    // Appended rather than inserted: Anchor derives error codes from
+    // declaration order, so adding a variant above an existing one
+    // silently renumbers every code after it and invalidates any client
+    // matching on the old number.
+    #[msg("The supplied mint does not match the one recorded on GovernanceConfig")]
+    MintMismatch,
 }
