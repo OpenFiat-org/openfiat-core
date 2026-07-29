@@ -11,6 +11,10 @@ openfiat-types = { path = "../types", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
 openfiat-reservations = { path = "../reservations", version = "0.1.0" }
 openfiat-settlement = { path = "../settlement", version = "0.1.0" }
+# Read-only, for `counterparties`: a dispute never changes the
+# settlement's own state, so "how many of these went to arbitration" is
+# only answerable from the dispute registry.
+openfiat-disputes = { path = "../disputes", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]

@@ -4,6 +4,7 @@
 
 pub mod advertisements;
 pub mod chain;
+pub mod counterparties;
 pub mod disputes;
 pub mod governance;
 pub mod identity;
@@ -30,6 +31,7 @@ pub fn build_table<S: KvStore + 'static>() -> MethodTable<S> {
     reservations::register(&mut table);
     settlement::register(&mut table);
     trade::register(&mut table);
+    counterparties::register(&mut table);
     disputes::register(&mut table);
     identity::register(&mut table);
     reputation::register(&mut table);

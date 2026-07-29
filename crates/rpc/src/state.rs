@@ -18,6 +18,7 @@ use openfiat_advertisements::AdvertisementRegistry;
 use openfiat_chain::events::BlockhashAnnounced;
 use openfiat_chain::{ChainBridge, ChainState, NodeChainMode};
 use openfiat_crypto::Keypair;
+use openfiat_crypto::challenge::ChallengeLedger;
 use openfiat_disputes::DisputeRegistry;
 use openfiat_gossip::{EventStore, GossipService, Subscription};
 use openfiat_governance::GovernanceRegistry;
@@ -37,7 +38,7 @@ use openfiat_sessions::SessionRegistry;
 use openfiat_settlement::SettlementRegistry;
 use openfiat_snapshot::SnapshotIndex;
 use openfiat_storage::KvStore;
-use openfiat_trade::TradeView;
+use openfiat_trade::{CounterpartyView, TradeView};
 use openfiat_types::NodeRole;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -61,6 +62,17 @@ pub struct NodeState<S> {
     pub reservations: Rc<ReservationRegistry<Rc<S>>>,
     pub settlements: Rc<SettlementRegistry<Rc<S>>>,
     pub trades: TradeView<Rc<S>>,
+    /// One wallet's own trading history folded per counterparty — the
+    /// data behind "you have traded 6 times with this wallet". Reachable
+    /// only through `methods::counterparties`, which will not answer for
+    /// a wallet the caller cannot prove they control; see that module
+    /// for why this one aggregate is gated when no other read is.
+    pub counterparties: CounterpartyView<Rc<S>>,
+    /// The outstanding wallet-ownership challenges guarding that
+    /// aggregate. In memory only, deliberately: persisting them would
+    /// leave a node operator a record of who asked about whom, which is
+    /// the exact trail this feature exists to avoid creating.
+    pub counterparty_challenges: Rc<RefCell<ChallengeLedger>>,
     pub disputes: Rc<DisputeRegistry<Rc<S>>>,
     pub identity: Rc<IdentityRegistry<Rc<S>>>,
     pub reputation: ReputationView<Rc<S>>,
@@ -149,6 +161,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             Rc::clone(&settlements),
         ));
         let trades = TradeView::new(Rc::clone(&reservations), Rc::clone(&settlements));
+        let counterparties = CounterpartyView::new(Rc::clone(&settlements), Rc::clone(&disputes));
         let reputation = ReputationView::new(
             Rc::clone(&reservations),
             Rc::clone(&settlements),
@@ -289,6 +302,8 @@ impl<S: KvStore + 'static> NodeState<S> {
             reservations,
             settlements,
             trades,
+            counterparties,
+            counterparty_challenges: Rc::new(RefCell::new(ChallengeLedger::new())),
             disputes,
             identity,
             reputation,
