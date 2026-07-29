@@ -31,13 +31,21 @@
 //!
 //! # Adding a network
 //!
-//! Only devnet is deployed today. Adding mainnet is a two-line change:
-//! define a `MAINNET: ProgramIds` next to [`DEVNET`] and replace the
-//! `network-mainnet` `compile_error!` below with the matching `pub const
-//! IDS: ProgramIds = MAINNET;`. Until then the feature exists solely so a
-//! build that asks for mainnet **fails to compile** rather than quietly
-//! running against devnet ids on a mainnet RPC endpoint. Placeholder ids
-//! would be worse than none: they would look real.
+//! Only devnet is deployed, so [`IDS`] is [`DEVNET`] unconditionally and
+//! there is no network-selection feature. Adding mainnet means deploying
+//! the programs, recording the real ids, defining a `MAINNET: ProgramIds`
+//! beside [`DEVNET`], and introducing the feature that selects between
+//! them at that point.
+//!
+//! Do not add the feature ahead of the ids. An earlier version declared
+//! `network-mainnet` with a `compile_error!` behind it, reasoning that a
+//! mainnet build should fail rather than silently inherit devnet's ids.
+//! The reasoning was right and the mechanism was wrong: `cargo` cannot
+//! exclude a feature from `--all-features`, which CI runs, so a feature
+//! that can only fail to compile fails the build for everyone. Having no
+//! feature is stricter anyway — a mainnet build cannot be requested at
+//! all. Placeholder ids remain the worst option of the three: they would
+//! look real.
 //!
 //! There is deliberately no runtime escape hatch, not even for a local test
 //! validator. Anchor deploys from a fixed program keypair (`declare_id!`),
@@ -103,17 +111,7 @@ const _: Pubkey = Pubkey::from_str_const(DEVNET.mint);
 
 /// The deployment this binary is built against. Selected at compile time,
 /// by cargo feature — never by environment, file, or RPC parameter.
-#[cfg(not(feature = "network-mainnet"))]
 pub const IDS: ProgramIds = DEVNET;
-
-#[cfg(feature = "network-mainnet")]
-compile_error!(
-    "openfiat-chain's `network-mainnet` feature has no ids behind it: the OpenFiat programs \
-     have not been deployed to mainnet-beta. Deploy them, record the ids in \
-     programs/devnet-addresses.json's mainnet section, add a `MAINNET: ProgramIds` beside \
-     `DEVNET` in crates/chain/src/programs.rs, and select it here. Building against \
-     invented ids is how a node ends up trusting a program nobody controls."
-);
 
 #[cfg(test)]
 mod tests {

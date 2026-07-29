@@ -7,12 +7,15 @@ description = "Bridge to the Solana execution layer (OFS-4300): blockhash sourci
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [features]
-# Which deployment's program ids this build is pinned to (see
-# `src/programs.rs`). Devnet is the only deployment that exists, and is the
-# default; `network-mainnet` currently fails the build on purpose, so a
-# mainnet build can never silently inherit devnet's ids.
+# Deliberately no network-selection feature. Devnet is the only deployment
+# that exists, so `src/programs.rs` pins its ids unconditionally and there
+# is nothing to select. A `network-mainnet` feature whose body was a
+# `compile_error!` seemed safer but was strictly worse: `cargo` offers no
+# way to exclude a feature from `--all-features`, which CI runs, so a
+# feature that can only fail to compile fails the build for everyone. With
+# no feature at all, a mainnet build cannot be requested in the first
+# place. See `src/programs.rs` for how to add one when mainnet exists.
 default = []
-network-mainnet = []
 
 [dependencies]
 openfiat-types = { path = "../types", version = "0.1.0" }
