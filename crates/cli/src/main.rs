@@ -143,7 +143,11 @@ async fn main() {
     let network_keypair = Keypair::from_seed(wallet.seed());
 
     let data_dir = std::env::var("CLI_DATA_DIR").unwrap_or_else(|_| "./openfiat-data".to_string());
-    let http_addr = std::env::var("CLI_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    // 7080 rather than the more obvious 8080: that port is crowded on a
+    // typical server (proxies, app servers, other containers all default
+    // to it), and a node silently failing to bind because something else
+    // got there first is a bad first five minutes.
+    let http_addr = std::env::var("CLI_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:7080".to_string());
     let listen_addr: Multiaddr = std::env::var("CLI_LISTEN_ADDR")
         .unwrap_or_else(|_| "/ip4/0.0.0.0/udp/4001/quic-v1".to_string())
         .parse()

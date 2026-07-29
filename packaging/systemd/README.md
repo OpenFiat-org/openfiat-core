@@ -29,11 +29,11 @@ shutting down gracefully rather than being killed outright — see
 
 ## Firewall
 
-Open the HTTP port (`8080` by default, TCP) and the gossip port (`4001`
+Open the HTTP port (`7080` by default, TCP) and the gossip port (`4001`
 by default, UDP) if this node needs to be reachable from outside the
 host, e.g. with `ufw`:
 
 ```bash
-sudo ufw allow 8080/tcp
+sudo ufw allow 7080/tcp
 sudo ufw allow 4001/udp
 ```

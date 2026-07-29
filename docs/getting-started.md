@@ -38,14 +38,14 @@ RPC connectivity (`NodeChainMode::GossipOnly`, OFS-4300 §4):
 
 ```
 openfiat-node 0.1.0 — data dir: ./openfiat-data, gossip identity: <peer-id>, chain mode: GossipOnly
-openfiat-node listening on http://0.0.0.0:8080 (try GET /health, GET /docs)
+openfiat-node listening on http://0.0.0.0:7080 (try GET /health, GET /docs)
 ```
 
 Verify it's actually up:
 
 ```bash
-curl http://localhost:8080/health
-curl -X POST http://localhost:8080/rpc -H 'content-type: application/json' \
+curl http://localhost:7080/health
+curl -X POST http://localhost:7080/rpc -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getVersion","params":{}}'
 ```
 
@@ -55,7 +55,7 @@ Every environment variable this binary reads, with its real default:
 |---|---|---|
 | `CLI_WALLET_PATH` | `~/.config/solana/id.json` | This node's identity — a Solana CLI-format `wallet.json` (`solana-keygen new` output). Reused as both the node's gossip/P2P keypair and its Solana signing key. Missing/unreadable → a fresh throwaway identity is generated for that run (fine for local testing, **not** for anything you want to persist). |
 | `CLI_DATA_DIR` | `./openfiat-data` | RocksDB data directory — every domain registry's persisted state. |
-| `CLI_HTTP_ADDR` | `0.0.0.0:8080` | Bind address for the JSON-RPC (`POST /rpc`), WebSocket (`GET /ws`), and REST (`crates/api`) surface. |
+| `CLI_HTTP_ADDR` | `0.0.0.0:7080` | Bind address for the JSON-RPC (`POST /rpc`), WebSocket (`GET /ws`), and REST (`crates/api`) surface. |
 | `CLI_LISTEN_ADDR` | `/ip4/0.0.0.0/udp/4001/quic-v1` | libp2p gossip listen multiaddr (QUIC). |
 | `CLI_BOOTSTRAP_PEERS` | *(empty)* | Comma-separated multiaddrs to dial on startup, e.g. `/ip4/203.0.113.10/udp/4001/quic-v1`. Empty means this node is its own bootstrap (fine for a lone node or the first node in a new cluster). |
 | `CLI_SOLANA_RPC_URLS` | *(empty)* | Comma-separated Solana RPC endpoint(s). **Unset is the default and stays `GossipOnly`** — set this to opt into `NodeChainMode::RpcConnected` (§4 below). |
@@ -76,7 +76,7 @@ CLI_STAKING_PROGRAM_ID=HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx \
 ```
 
 ```bash
-curl -X POST http://localhost:8080/rpc -H 'content-type: application/json' \
+curl -X POST http://localhost:7080/rpc -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getChainStatus","params":{}}'
 # {"jsonrpc":"2.0","id":1,"result":{"mode":"RpcConnected","blockhash":"...","slot":...,"age_ms":...}}
 ```
@@ -126,8 +126,8 @@ cd openfiat-infra/docker
 docker compose -f docker-compose.dev.yml up
 ```
 
-Node 0 is reachable at `http://localhost:8080`, node 1 at
-`http://localhost:8081`, node 2 at `http://localhost:8082`. Override
+Node 0 is reachable at `http://localhost:7080`, node 1 at
+`http://localhost:7081`, node 2 at `http://localhost:7082`. Override
 `CLI_SOLANA_RPC_URLS` via a local, untracked `.env` file in that
 directory to use a faster private RPC endpoint than Solana's public
 devnet one.
@@ -137,7 +137,7 @@ devnet one.
 - **Linux (systemd)** — [`packaging/systemd/README.md`](../packaging/systemd/README.md):
   a real unit file with auto-restart and graceful `SIGTERM` shutdown, an
   `/etc/openfiat/node.env` convention for secrets, and `ufw` firewall
-  rules for the HTTP (8080/tcp) and gossip (4001/udp) ports.
+  rules for the HTTP (7080/tcp) and gossip (4001/udp) ports.
 - **Windows** — [`packaging/windows/README.md`](../packaging/windows/README.md):
   running the same binary as a real Windows Service via NSSM.
 

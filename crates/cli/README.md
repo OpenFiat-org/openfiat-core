@@ -6,7 +6,7 @@ Solana wallet.json node identity (`CLI_WALLET_PATH`), and the merged
 `rpc`+`api` axum server bound to a real HTTP port (`CLI_HTTP_ADDR`).
 
 ```sh
-CLI_DATA_DIR=./data CLI_HTTP_ADDR=127.0.0.1:8080 cargo run -p openfiat-cli
+CLI_DATA_DIR=./data CLI_HTTP_ADDR=127.0.0.1:7080 cargo run -p openfiat-cli
 ```
 
 serves `POST /rpc`, `GET /ws`, `GET /health`, `GET /metrics` (from

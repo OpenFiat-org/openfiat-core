@@ -21,7 +21,7 @@ Node.js/Java services that don't have native SCM support built in.
    nssm set OpenFiatNode AppDirectory "C:\ProgramData\OpenFiat"
    nssm set OpenFiatNode AppEnvironmentExtra `
      "CLI_DATA_DIR=C:\ProgramData\OpenFiat" `
-     "CLI_HTTP_ADDR=0.0.0.0:8080" `
+     "CLI_HTTP_ADDR=0.0.0.0:7080" `
      "CLI_LISTEN_ADDR=/ip4/0.0.0.0/udp/4001/quic-v1" `
      "CLI_WALLET_PATH=C:\ProgramData\OpenFiat\wallet.json"
    nssm set OpenFiatNode AppStdout "C:\ProgramData\OpenFiat\node.log"
@@ -49,11 +49,11 @@ nssm remove OpenFiatNode confirm
 
 ## Firewall
 
-Open the HTTP port (`8080` by default, TCP) and the gossip port (`4001`
+Open the HTTP port (`7080` by default, TCP) and the gossip port (`4001`
 by default, UDP) for inbound connections if this node needs to be
 reachable from outside the host:
 
 ```powershell
-New-NetFirewallRule -DisplayName "OpenFiat RPC" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
+New-NetFirewallRule -DisplayName "OpenFiat RPC" -Direction Inbound -Protocol TCP -LocalPort 7080 -Action Allow
 New-NetFirewallRule -DisplayName "OpenFiat Gossip" -Direction Inbound -Protocol UDP -LocalPort 4001 -Action Allow
 ```
