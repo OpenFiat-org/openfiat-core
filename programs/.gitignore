@@ -10,3 +10,10 @@ test-ledger
 # Devnet placeholder bucket-owner keypairs (see scripts/genesis.ts) — these
 # are NOT production custody, but secret keys never belong in git regardless.
 scripts/.bucket-keys/
+
+# Program keypairs live in target/deploy/, which `cargo clean` and
+# `anchor clean` delete. Anchor then silently regenerates them on the next
+# build as NEW keys with NEW program ids — the deployed id becomes
+# upgrade-only forever. Copy any newly created program keypair into keys/
+# before it can be cleaned. Secret keys still never belong in git.
+keys/
