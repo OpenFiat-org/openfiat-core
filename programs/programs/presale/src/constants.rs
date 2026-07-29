@@ -35,7 +35,7 @@ pub const BPS_DENOMINATOR: u64 = 10_000;
 pub const WSOL_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 
 /// Jupiter Aggregator v6's real, independently-verified program id
-/// (https://solscan.io/account/JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4).
+/// (<https://solscan.io/account/JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4>).
 /// Not referenced directly by program logic — `SaleConfig.swap_program` is
 /// the enforced value, set at `initialize_sale` — this constant exists so
 /// devnet/mainnet initialization scripts have one canonical source instead

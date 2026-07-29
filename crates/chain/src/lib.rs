@@ -26,7 +26,10 @@ pub use client::{ChainClient, RpcChainClient, SignatureStatus};
 pub use error::ChainError;
 pub use gossip_service::{ChainBridge, ChainGossipService};
 pub use mode::NodeChainMode;
-pub use state::ChainState;
+// `PendingRelay`/`AwaitingConfirmation` are returned by `ChainState`'s own
+// public methods, so they belong in the public API too — without this a
+// caller can consume them by inference but cannot name them in a signature.
+pub use state::{AwaitingConfirmation, ChainState, PendingRelay};
 pub use validate::validate_transaction_bytes;
 
 /// Crate version, re-exported for diagnostics.
