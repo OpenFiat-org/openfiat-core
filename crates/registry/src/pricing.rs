@@ -27,12 +27,20 @@ pub enum BillingUnit {
 
 /// A provider's declared price.
 ///
-/// Declaring a price is not the same as being able to collect it. Per
-/// OFS-4100 §9.5 the billing *trigger* — who pays and at which moment —
-/// is deliberately unsettled and differs by role, so a provider can
-/// publish this today and no protocol path will yet charge anyone against
-/// it. That gap is stated rather than hidden: see
-/// [`crate::earnings::EarningsLedger`].
+/// Optional, and meaningfully so (OFS-1500 §15). **Absent pricing already
+/// means free** — there is deliberately no "free" sentinel value to add,
+/// because two ways of saying the same thing is one way too many.
+///
+/// Oracle and snapshot providers are expected to leave this `None`: per
+/// OFS-4100 §9.5 their service is free by decision, not by omission.
+/// Charging for either would work against the protocol — a priced rate
+/// feed is consulted less and the median it feeds gets easier to move, and
+/// a priced snapshot slows the thing that lets a new node join at all.
+///
+/// Declaring a price is also not the same as being able to collect it: the
+/// notification-gateway trigger is settled in principle but not yet
+/// metered, and risk intelligence is still open. See
+/// [`crate::earnings::EarningsLedger`] for the full per-role picture.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ServicePricing {
     /// Base58 SPL mint address of the token billed in. The mint *is* the

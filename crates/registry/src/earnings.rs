@@ -3,18 +3,34 @@
 //!
 //! # Nothing credits this ledger yet
 //!
-//! This is a working ledger that currently reads empty for every service,
-//! and that is the honest state rather than an oversight. §9.5 settles the
-//! *mechanism* — a declared price, a registered payout wallet, a
-//! signature-authenticated statement — and leaves the billing *trigger*
-//! open, because it differs by role: a delivered notification has an
-//! identifiable beneficiary, while a published exchange rate is read by
-//! anyone and has no natural payer at read time. Until a role's metering
-//! exists there is nothing to credit, and inventing a charging point to
-//! make this look finished would put a number in front of providers that
-//! no payment stands behind.
+//! This is a working ledger that currently reads empty for every service.
+//! §9.5 settles the *mechanism* — a declared price, a registered payout
+//! wallet, a signature-authenticated statement — and the per-role billing
+//! triggers stand as follows:
 //!
-//! [`EarningsLedger::credit`] is the seam each role's metering will call.
+//! - **Notification gateway**: the participant who enabled notifications
+//!   pays, per delivery. The one role with an identifiable beneficiary, so
+//!   collection is clearly definable. Still `[PROPOSED — NEEDS SIGN-OFF]`,
+//!   and not yet metered — this is the seam [`EarningsLedger::credit`]
+//!   exists for.
+//! - **Oracle provider**: reads are **free, by decision**. Not pending,
+//!   not unimplemented.
+//! - **Snapshot provider**: downloads are **free, by decision**. Likewise.
+//! - **Risk intelligence**: open.
+//!
+//! Oracle rates and snapshots are free because charging for them would
+//! work against the protocol. A priced rate feed is consulted less, which
+//! makes the median it contributes to thinner and easier to move; a priced
+//! snapshot slows the thing that lets a new node join at all. Both are
+//! load-bearing public goods. Do not "finish" them by adding a meter.
+//!
+//! The consequence, so a provider reads it here rather than discovering it
+//! after staking: oracle and snapshot providers have **no direct revenue**.
+//! They are not paid a protocol reward and their service is free. Both are
+//! usually run by parties already operating a node, so compensation arrives
+//! through the node reward pool (§9.2) and the marginal cost of also
+//! publishing rates or serving snapshots is small. Running one standalone
+//! earns nothing.
 //!
 //! # Why a challenge rather than a session
 //!
@@ -126,7 +142,11 @@ impl EarningsLedger {
         Self::default()
     }
 
-    /// Credit a service. Nothing calls this yet — see the module docs.
+    /// Credit a service. Nothing calls this yet.
+    ///
+    /// The caller this is waiting for is notification delivery. Oracle and
+    /// snapshot work is free by decision and will never call it — see the
+    /// module docs before adding a meter to either.
     pub fn credit(&mut self, service_id: &ServiceId, entry: EarningEntry) {
         self.entries
             .entry(service_id.as_str().to_string())
