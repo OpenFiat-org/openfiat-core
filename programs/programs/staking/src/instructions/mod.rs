@@ -7,6 +7,7 @@ pub mod migrate_staking_config;
 pub mod request_unstake;
 pub mod slash;
 pub mod stake;
+pub mod update_staking_config;
 pub mod withdraw_unstaked;
 
 pub use claim_rewards::*;
@@ -18,4 +19,5 @@ pub use migrate_staking_config::*;
 pub use request_unstake::*;
 pub use slash::*;
 pub use stake::*;
+pub use update_staking_config::*;
 pub use withdraw_unstaked::*;

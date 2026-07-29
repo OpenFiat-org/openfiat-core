@@ -19,6 +19,20 @@ describe("staking", () => {
 
   const program = anchor.workspace.staking as Program<Staking>;
   const admin = (provider.wallet as anchor.Wallet).payer;
+  // Mirrors shared-fixtures' initialize call. The update tests write these
+  // back unchanged: the point is proving the write path and its rejections,
+  // not mutating a config the rest of the suite depends on — in particular
+  // the 1-second unbonding period the withdraw tests need.
+  const MIN_STAKE_BY_ROLE = [
+    unit(1000),
+    unit(10000),
+    unit(1000),
+    unit(5000),
+    unit(1000),
+    unit(1000),
+    unit(1000),
+  ];
+  const UNBONDING_SECS = new BN(1);
 
   const ROLE_NODE_OPERATOR = { nodeOperator: {} };
   const ROLE_ARBITRATOR = { arbitrator: {} };
@@ -65,9 +79,15 @@ describe("staking", () => {
     );
   }
 
-  async function expectAnchorError(p: Promise<unknown>, code: string) {
+  // Takes a thunk rather than a promise so the send can be retried: a
+  // validator-side "Blockhash not found" is a race in the send path, not
+  // a verdict from the program, and asserting on it would fail a test
+  // whose instruction never actually ran. `withBlockhashRetry` rethrows
+  // everything else on the first attempt, so a genuine program error
+  // still reaches the assertion below unchanged.
+  async function expectAnchorError(send: () => Promise<unknown>, code: string) {
     try {
-      await p;
+      await withBlockhashRetry(send);
       expect.fail(`expected instruction to fail with ${code}, but it succeeded`);
     } catch (err: any) {
       const actual = err?.error?.errorCode?.code ?? String(err);
@@ -200,7 +220,7 @@ describe("staking", () => {
 
     it("rejects withdraw_unstaked before the unbonding period has elapsed", async () => {
       const ownerAta = await ata(mint, owner.publicKey);
-      await expectAnchorError(
+      await expectAnchorError(() =>
         program.methods
           .withdrawUnstaked()
           .accountsPartial({
@@ -279,7 +299,7 @@ describe("staking", () => {
           .rpc({ commitment: "confirmed" }),
       );
 
-      await expectAnchorError(
+      await expectAnchorError(() =>
         program.methods
           .slash(1234)
           .accountsPartial({
@@ -336,7 +356,7 @@ describe("staking", () => {
           .rpc({ commitment: "confirmed" }),
       );
 
-      await expectAnchorError(
+      await expectAnchorError(() =>
         program.methods
           .distributeReward(new BN(1), unit(100))
           .accountsPartial({ rewardsAuthority: owner.publicKey, stakingConfig, stakeAccount })
@@ -414,7 +434,7 @@ describe("staking", () => {
       const donor = Keypair.generate();
       await airdrop(donor.publicKey);
       const donorAta = await ata(mint, donor.publicKey);
-      await expectAnchorError(
+      await expectAnchorError(() =>
         program.methods
           .fundRewardsVault(new BN(0))
           .accountsPartial({
@@ -534,7 +554,7 @@ describe("staking", () => {
 
     it("rejects a stake below the notification-provider minimum of 5,000 OPEN", async () => {
       const ctx = await freshStaker(ROLE_NOTIFICATION_PROVIDER, 3, unit(6000));
-      await expectAnchorError(
+      await expectAnchorError(() =>
         stakeIx(ctx, unit(4999)).rpc({ commitment: "confirmed" }),
         "StakeBelowRoleMinimum",
       );
@@ -552,7 +572,7 @@ describe("staking", () => {
 
     it("rejects a stake below the arbitrator minimum of 10,000 OPEN", async () => {
       const ctx = await freshStaker(ROLE_ARBITRATOR, 1, unit(12000));
-      await expectAnchorError(
+      await expectAnchorError(() =>
         stakeIx(ctx, unit(9999)).rpc({ commitment: "confirmed" }),
         "StakeBelowRoleMinimum",
       );
@@ -576,13 +596,117 @@ describe("staking", () => {
           .signers([ctx.owner]);
 
       // 5000 -> 4999 would still read as staked while no longer qualifying.
-      await expectAnchorError(unstake(unit(1)).rpc({ commitment: "confirmed" }), "StakeBelowRoleMinimum");
+      await expectAnchorError(
+        () => unstake(unit(1)).rpc({ commitment: "confirmed" }),
+        "StakeBelowRoleMinimum",
+      );
 
       // Leaving entirely is always allowed - a minimum must not trap tokens.
       await withBlockhashRetry(() => unstake(unit(5000)).rpc({ commitment: "confirmed" }));
       const account = await program.account.stakeAccount.fetch(ctx.stakeAccount);
       expect(account.amount.toString()).to.equal("0");
       expect(account.unbondingAmount.toString()).to.equal(unit(5000).toString());
+    });
+  });
+
+  describe("update_staking_config", () => {
+    it("rejects a non-token-account as slash_destination — the defect that made slash unexecutable", async () => {
+      // The deployed config stored a bare address with no account behind
+      // it, so `slash` could never run: it requires that key to
+      // deserialize as a token account. Taking the destination as an
+      // account is what makes storing one impossible rather than merely
+      // wrong — this is that exact address shape.
+      const wallet = Keypair.generate().publicKey;
+      await expectAnchorError(() =>
+        program.methods
+          .updateStakingConfig({
+            minStakeByRole: MIN_STAKE_BY_ROLE,
+            unbondingPeriodSecs: UNBONDING_SECS,
+            slashBps: 1000,
+            slashingAuthority: slashingAuthority.publicKey,
+            rewardsAuthority: rewardsAuthority.publicKey,
+          })
+          .accountsPartial({
+            admin: admin.publicKey,
+            stakingConfig,
+            mint,
+            slashDestination: wallet,
+          })
+          .signers([admin])
+          .rpc({ commitment: "confirmed" }),
+        "AccountNotInitialized",
+      );
+    });
+
+    it("rejects a zero authority, which would be the same dead config in disguise", async () => {
+      await expectAnchorError(() =>
+        program.methods
+          .updateStakingConfig({
+            minStakeByRole: MIN_STAKE_BY_ROLE,
+            unbondingPeriodSecs: UNBONDING_SECS,
+            slashBps: 1000,
+            slashingAuthority: slashingAuthority.publicKey,
+            rewardsAuthority: PublicKey.default,
+          })
+          .accountsPartial({
+            admin: admin.publicKey,
+            stakingConfig,
+            mint,
+            slashDestination,
+          })
+          .signers([admin])
+          .rpc({ commitment: "confirmed" }),
+        "ZeroAuthority",
+      );
+    });
+
+    it("rejects a non-admin", async () => {
+      const stranger = Keypair.generate();
+      await airdrop(stranger.publicKey);
+      await expectAnchorError(() =>
+        program.methods
+          .updateStakingConfig({
+            minStakeByRole: MIN_STAKE_BY_ROLE,
+            unbondingPeriodSecs: UNBONDING_SECS,
+            slashBps: 1000,
+            slashingAuthority: slashingAuthority.publicKey,
+            rewardsAuthority: rewardsAuthority.publicKey,
+          })
+          .accountsPartial({
+            admin: stranger.publicKey,
+            stakingConfig,
+            mint,
+            slashDestination,
+          })
+          .signers([stranger])
+          .rpc({ commitment: "confirmed" }),
+        "Unauthorized",
+      );
+    });
+
+    it("writes a real token account through and leaves slash executable", async () => {
+      await withBlockhashRetry(() =>
+        program.methods
+          .updateStakingConfig({
+            minStakeByRole: MIN_STAKE_BY_ROLE,
+            unbondingPeriodSecs: UNBONDING_SECS,
+            slashBps: 1000,
+            slashingAuthority: slashingAuthority.publicKey,
+            rewardsAuthority: rewardsAuthority.publicKey,
+          })
+          .accountsPartial({
+            admin: admin.publicKey,
+            stakingConfig,
+            mint,
+            slashDestination,
+          })
+          .signers([admin])
+          .rpc({ commitment: "confirmed" }),
+      );
+      const config = await program.account.stakingConfig.fetch(stakingConfig);
+      expect(config.slashDestination.toBase58()).to.equal(slashDestination.toBase58());
+      expect(config.rewardsAuthority.toBase58()).to.equal(rewardsAuthority.publicKey.toBase58());
+      expect(config.slashingAuthority.toBase58()).to.equal(slashingAuthority.publicKey.toBase58());
     });
   });
 

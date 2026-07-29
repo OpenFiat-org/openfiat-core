@@ -83,3 +83,20 @@ pub struct RewardsVaultFunded {
     pub vault_balance: u64,
     pub timestamp: i64,
 }
+
+/// The staking config's authorities or parameters were corrected.
+/// Emitted by `update_staking_config`.
+///
+/// Worth an event because the two authority fields decide who can slash
+/// and who can pay: a silent change to either is the kind of thing an
+/// operator needs to be able to notice after the fact.
+#[event]
+pub struct StakingConfigUpdated {
+    pub admin: Pubkey,
+    pub slashing_authority: Pubkey,
+    pub slash_destination: Pubkey,
+    pub rewards_authority: Pubkey,
+    pub slash_bps: u16,
+    pub unbonding_period_secs: i64,
+    pub timestamp: i64,
+}

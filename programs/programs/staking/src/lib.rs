@@ -44,6 +44,16 @@ pub mod staking {
         )
     }
 
+    /// Corrects the singleton config's authorities and parameters.
+    /// Admin-only; see `instructions::update_staking_config` for why the
+    /// slash destination arrives as an account rather than a key.
+    pub fn update_staking_config(
+        ctx: Context<UpdateStakingConfig>,
+        params: UpdateStakingConfigParams,
+    ) -> Result<()> {
+        instructions::update_staking_config::handle_update_staking_config(ctx, params)
+    }
+
     pub fn initialize_stake_account(
         ctx: Context<InitializeStakeAccount>,
         role: Role,

@@ -26,6 +26,10 @@ pub enum ErrorCode {
     StakeBelowRoleMinimum,
     #[msg("This staking config is not in the pre-migration layout")]
     AlreadyMigrated,
+    #[msg("Account is denominated in a different mint than the staking config")]
+    WrongMint,
+    #[msg("An authority may not be the default (zero) pubkey")]
+    ZeroAuthority,
     #[msg("Arithmetic overflow")]
     Overflow,
 }

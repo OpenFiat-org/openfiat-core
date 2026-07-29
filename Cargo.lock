@@ -3572,6 +3572,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "openfiat-slashing"
+version = "0.1.0"
+dependencies = [
+ "openfiat-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "openfiat-snapshot"
 version = "0.1.0"
 dependencies = [
