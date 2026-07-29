@@ -1,5 +1,6 @@
 pub mod constants;
 pub mod error;
+pub mod events;
 pub mod instructions;
 pub mod shared_logic;
 pub mod state;
@@ -8,6 +9,7 @@ use anchor_lang::prelude::*;
 use openfiat_programs_shared::Role;
 
 pub use constants::*;
+pub use events::*;
 pub use instructions::*;
 pub use state::*;
 
@@ -86,6 +88,24 @@ pub mod governance {
         )
     }
 
+    /// Adds a wallet to the protocol-wide ban list (OFS-7100 §12). Read
+    /// `ListWallet`'s doc comment before wiring this into any interface:
+    /// the authority is a single admin key, not a governance vote.
+    pub fn list_wallet(
+        ctx: Context<ListWallet>,
+        wallet: Pubkey,
+        reason: BanReason,
+        evidence_hash: [u8; 32],
+    ) -> Result<()> {
+        crate::instructions::list_wallet::handle_list_wallet(ctx, wallet, reason, evidence_hash)
+    }
+
+    /// Removes a wallet from the ban list, restoring deposit access
+    /// protocol-wide (OFS-7100 §12.2).
+    pub fn delist_wallet(ctx: Context<DelistWallet>, wallet: Pubkey) -> Result<()> {
+        crate::instructions::delist_wallet::handle_delist_wallet(ctx, wallet)
+    }
+
     pub fn authorize_treasury_spend(
         ctx: Context<AuthorizeTreasurySpend>,
         destination: Pubkey,
@@ -96,5 +116,24 @@ pub mod governance {
             destination,
             amount,
         )
+    }
+}
+
+/// The ban gate lives on a constant in `openfiat-programs-shared` because
+/// `staking` cannot depend on this crate without closing a dependency
+/// cycle (see that crate's module doc). That makes the id below a second
+/// copy of `declare_id!`'s, and a divergence would not fail any build —
+/// it would silently point every gate in every program at a program that
+/// never writes ban records, disabling the whole ban list at once. This
+/// test is the only thing standing between that and a green CI run.
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn governance_program_id_matches_declare_id() {
+        assert_eq!(
+            openfiat_programs_shared::GOVERNANCE_PROGRAM_ID,
+            super::ID,
+            "shared::GOVERNANCE_PROGRAM_ID must equal governance's declare_id!"
+        );
     }
 }

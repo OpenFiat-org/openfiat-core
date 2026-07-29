@@ -2,6 +2,7 @@ import * as anchor from "@anchor-lang/core";
 import { Program, BN } from "@anchor-lang/core";
 import { Presale } from "../target/types/presale";
 import { MockJupiter } from "../target/types/mock_jupiter";
+import { Governance } from "../target/types/governance";
 import {
   TOKEN_2022_PROGRAM_ID,
   createMint,
@@ -11,6 +12,7 @@ import {
 } from "@solana/spl-token";
 import { Keypair, PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY } from "@solana/web3.js";
 import { expect } from "chai";
+import { getSharedGovernanceConfig } from "./shared-fixtures";
 
 describe("presale", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
@@ -19,6 +21,7 @@ describe("presale", () => {
 
   const program = anchor.workspace.presale as Program<Presale>;
   const mockJupiter = anchor.workspace.mock_jupiter as Program<MockJupiter>;
+  const governance = anchor.workspace.governance as Program<Governance>;
 
   const admin = (provider.wallet as anchor.Wallet).payer;
 
@@ -262,6 +265,50 @@ describe("presale", () => {
       await airdrop(buyer.publicKey);
       buyerUsdc = await ata(usdcMint, buyer.publicKey);
       await mintTo9or6(usdcMint, buyerUsdc, usdcUnit(1_000));
+    });
+
+    it("refuses a contribution from a banned wallet (OFS-7100 §12)", async () => {
+      // The presale's `usdc_vault` is a vault like any other, so §12's
+      // "MUST NOT be able to deposit into any vault" reaches it. Listed
+      // in `governance`, refused here, with no presale-side registry —
+      // the same single ban record the escrow and staking gates read.
+      const { governanceConfig } = await getSharedGovernanceConfig(governance);
+      const banned = Keypair.generate();
+      await airdrop(banned.publicKey);
+      const bannedUsdc = await ata(usdcMint, banned.publicKey);
+      await mintTo9or6(usdcMint, bannedUsdc, usdcUnit(1_000));
+
+      const banRecord = PublicKey.findProgramAddressSync(
+        [Buffer.from("ban"), banned.publicKey.toBuffer()],
+        governance.programId,
+      )[0];
+      await governance.methods
+        .listWallet(banned.publicKey, { sanctions: {} }, [...Buffer.alloc(32, 7)])
+        .accountsPartial({
+          admin: admin.publicKey,
+          governanceConfig,
+          banRecord,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc({ commitment: "confirmed" });
+
+      await expectAnchorError(
+        program.methods
+          .contributeUsdc(new BN(nonce), usdcUnit(60))
+          .accountsPartial({
+            buyer: banned.publicKey,
+            saleConfig,
+            buyerUsdc: bannedUsdc,
+            usdcVault,
+            usdcMint,
+            contribution: contributionPda(saleConfig, banned.publicKey),
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([banned])
+          .rpc({ commitment: "confirmed" }),
+        "WalletBanned",
+      );
     });
 
     it("rejects a first contribution below the minimum", async () => {

@@ -24,3 +24,14 @@ pub const VOTE_RECORD_SEED: &[u8] = b"vote";
 /// program in this workspace.
 #[constant]
 pub const BPS_DENOMINATOR: u64 = 10_000;
+
+/// PDA seed for a `BanRecord`: `[BAN_SEED, wallet]` (OFS-7100 §12).
+///
+/// An alias of the shared constant, not a second literal: the enforcing
+/// programs derive the same address from
+/// `openfiat_programs_shared::BAN_SEED`, and a typo here that silently
+/// disagreed with them would leave every gate deriving a permanently
+/// empty address. Restated as a `#[constant]` purely so the seed appears
+/// in this program's IDL for SDK consumers.
+#[constant]
+pub const BAN_SEED: &[u8] = openfiat_programs_shared::BAN_SEED;

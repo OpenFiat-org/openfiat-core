@@ -46,6 +46,7 @@ const COLUMN_FAMILIES: &[&str] = &[
     "registry_services",
     "notification_subscriptions",
     "notification_receipts",
+    "notification_dispatches",
     "oracle_records",
     "risk_records",
     "snapshot_metadata",

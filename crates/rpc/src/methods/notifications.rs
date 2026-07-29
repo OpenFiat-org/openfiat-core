@@ -6,7 +6,7 @@ use crate::dispatch::{
 use crate::error::RpcError;
 use crate::state::NodeState;
 use openfiat_notifications::events::{SignedDeliveryReport, SignedSubscriptionUpdate};
-use openfiat_notifications::{DeliveryReceipt, Subscription, protocol};
+use openfiat_notifications::{DeliveryReceipt, DispatchRecord, Subscription, protocol};
 use openfiat_serialization::{json, wire};
 use openfiat_storage::KvStore;
 use openfiat_types::Priority;
@@ -43,6 +43,30 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 Ok(state
                     .notifications
                     .receipt(&openfiat_notifications::NotificationId::new(params.id)))
+            },
+        ),
+    );
+    // A `DeliveryReceipt` is what a gateway claims; a `DispatchRecord` is
+    // what this node itself witnessed handing over. Exposed separately so
+    // an operator can tell "we never sent it" from "we sent it and the
+    // gateway says it bounced" — see `openfiat_notifications::DispatchRecord`.
+    table.register(
+        "getNotificationDispatch",
+        method_fn(
+            |state: &NodeState<S>, params: IdParams| -> Result<Option<DispatchRecord>, RpcError> {
+                Ok(state
+                    .notifications
+                    .dispatch(&openfiat_notifications::NotificationId::new(params.id)))
+            },
+        ),
+    );
+    table.register(
+        "getNotificationDispatchesByWallet",
+        method_fn(
+            |state: &NodeState<S>, params: WalletParams| -> Result<Vec<DispatchRecord>, RpcError> {
+                Ok(state
+                    .notifications
+                    .dispatches_for(&decode_peer_id(&params.wallet)?))
             },
         ),
     );

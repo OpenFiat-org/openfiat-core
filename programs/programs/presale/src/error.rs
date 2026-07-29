@@ -50,4 +50,10 @@ pub enum ErrorCode {
     AlreadyRefunded,
     #[msg("Arithmetic overflow")]
     Overflow,
+    // Appended, never inserted: Anchor numbers error codes by
+    // declaration order, so adding a variant above an existing one
+    // renumbers every code after it and breaks clients matching on the
+    // old number.
+    #[msg("This wallet is on the governance ban list (OFS-7100 §12)")]
+    WalletBanned,
 }

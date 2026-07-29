@@ -13,6 +13,22 @@ pub struct CreateProposal<'info> {
     #[account(mut)]
     pub proposer: Signer<'info>,
 
+    /// CHECK: OFS-7100 §12 deposit gate, enforced by *proof of
+    /// non-existence*. Unchecked and uninitialized on purpose — the
+    /// wallet is banned iff this address is occupied, so in the passing
+    /// case there is nothing to deserialize. The soundness lives in the
+    /// constraint, not the type: `seeds`/`seeds::program` force this to
+    /// be the one canonical ban address for `proposer` under
+    /// `openfiat-governance`, so a banned caller cannot substitute an
+    /// unrelated empty account and appear unbanned. Removing either line
+    /// silently disables the ban for this instruction.
+    #[account(
+        seeds = [openfiat_programs_shared::BAN_SEED, proposer.key().as_ref()],
+        bump,
+        seeds::program = openfiat_programs_shared::GOVERNANCE_PROGRAM_ID,
+    )]
+    pub ban_record: UncheckedAccount<'info>,
+
     pub mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -50,6 +66,11 @@ pub fn handle_create_proposal(
     summary_hash: [u8; 32],
     voting_period_secs: i64,
 ) -> Result<()> {
+    require!(
+        !openfiat_programs_shared::wallet_is_banned(&ctx.accounts.ban_record),
+        ErrorCode::WalletBanned
+    );
+
     require!(voting_period_secs > 0, ErrorCode::InvalidVoteLock);
 
     let deposit_amount = ctx.accounts.governance_config.deposit_amount;

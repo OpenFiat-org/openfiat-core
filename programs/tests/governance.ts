@@ -20,6 +20,7 @@ import { expect } from "chai";
 import {
   getSharedMint,
   getSharedStakingConfig,
+  getSharedGovernanceConfig,
   unit,
   MINT_DECIMALS,
 } from "./shared-fixtures";
@@ -217,41 +218,8 @@ describe("governance", () => {
   before(async () => {
     mint = await getSharedMint();
     ({ stakingConfig, stakeVault } = await getSharedStakingConfig(staking));
-
-    governanceConfig = PublicKey.findProgramAddressSync(
-      [Buffer.from("governance_config")],
-      program.programId
-    )[0];
-    depositVault = PublicKey.findProgramAddressSync(
-      [Buffer.from("deposit_vault")],
-      program.programId
-    )[0];
-    forfeitDestination = await ata(mint, Keypair.generate().publicKey);
-
-    await withBlockhashRetry(() =>
-      program.methods
-        .initializeGovernanceConfig({
-          totalOpenSupply: new BN(TOTAL_OPEN_SUPPLY),
-          quorumBps: QUORUM_BPS,
-          thresholdSimpleBps: THRESHOLD_SIMPLE_BPS,
-          thresholdTreasuryBps: THRESHOLD_TREASURY_BPS,
-          thresholdUpgradeBps: THRESHOLD_UPGRADE_BPS,
-          quorumUpgradeBps: QUORUM_UPGRADE_BPS,
-          depositAmount: DEPOSIT_AMOUNT,
-          forfeitDestination,
-          voteLockSecs: new BN(1),
-        })
-        .accountsPartial({
-          admin: admin.publicKey,
-          mint,
-          governanceConfig,
-          depositVault,
-          tokenProgram: TOKEN_2022_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-          rent: SYSVAR_RENT_PUBKEY,
-        })
-        .rpc({ commitment: "confirmed" })
-    );
+    ({ governanceConfig, depositVault, forfeitDestination } =
+      await getSharedGovernanceConfig(program));
   });
 
   it("creates a proposal, snapshotting its category's quorum/threshold", async () => {

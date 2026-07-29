@@ -9,9 +9,10 @@ use crate::events::{
 };
 use crate::protocol;
 use crate::record::{
-    DeliveryReceipt, DeliveryStatus, NotificationCategory, NotificationId, NotificationTrigger,
-    Subscription,
+    DeliveryReceipt, DeliveryStatus, DispatchRecord, NotificationCategory, NotificationId,
+    NotificationTrigger, Subscription, SubscriptionDestination,
 };
+use crate::routing::{PlannedDelivery, RoutingPlan};
 use crate::store::NotificationRegistry;
 use openfiat_gossip::GossipService;
 use openfiat_registry::Registry;
@@ -48,15 +49,48 @@ impl<S: KvStore + 'static> NotificationService<S> {
         self.registry.receipts_for(wallet)
     }
 
+    /// What this node itself dispatched under `id` — see
+    /// [`crate::record::DispatchRecord`] for why that is tracked apart
+    /// from a gateway's claim about the same notification.
+    pub fn dispatch(&self, id: &NotificationId) -> Option<DispatchRecord> {
+        self.registry.dispatch(id)
+    }
+
+    /// Plan the deliveries `trigger` should produce for `recipient`. See
+    /// [`crate::routing::plan`].
+    pub fn plan(
+        &self,
+        trigger: NotificationTrigger,
+        source_event: &[u8],
+        recipient: &PeerId,
+    ) -> RoutingPlan {
+        self.registry.plan(trigger, source_event, recipient)
+    }
+
+    pub fn record_queued(&self, delivery: &PlannedDelivery) {
+        self.registry.record_queued(delivery);
+    }
+
+    pub fn record_handoff(&self, id: &NotificationId, accepted: bool) {
+        self.registry.record_handoff(id, accepted);
+    }
+
     /// §11: publish this node's own wallet subscription preferences.
+    ///
+    /// `destinations` must already be sealed to each bound gateway's
+    /// `provider_public_key` — this method will not seal for the caller,
+    /// because doing so would mean handling a plaintext address here, and
+    /// the only place that should ever exist is the wallet holding it.
     pub fn update_subscription(
         &mut self,
         enabled_categories: Vec<NotificationCategory>,
+        destinations: Vec<SubscriptionDestination>,
     ) -> Result<(), NotificationError> {
         let update = SubscriptionUpdate {
             wallet: self.gossip.node.local_peer_id(),
             wallet_public_key: self.gossip.public_key(),
             enabled_categories,
+            destinations,
             timestamp: Timestamp::now(),
         };
         let bytes = json::to_bytes(&update).map_err(|_| NotificationError::MalformedEvent)?;

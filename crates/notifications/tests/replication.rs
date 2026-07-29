@@ -1,7 +1,14 @@
-//! The Phase 6c exit criterion for notifications: a registered mock
-//! provider receiving a real triggered event end-to-end — both a
-//! wallet's subscription and a provider's delivery report replicate
-//! across the cluster.
+//! The notification delivery path across a real gossip cluster: a
+//! wallet's destination-bearing subscription replicates, every node then
+//! independently plans the same delivery under the same deterministic
+//! id, and only then does the bound gateway's signed delivery report
+//! replicate and stick.
+//!
+//! The deterministic-id assertion here is the load-bearing one. Each of
+//! these nodes runs its own dispatcher over the same replicated state;
+//! if they disagreed on the id, the gateway would have no way to tell N
+//! copies of one notification from N distinct ones, and the recipient
+//! would get a message per node.
 
 use futures::future::select_all;
 use openfiat_crypto::Keypair;
@@ -12,6 +19,7 @@ use openfiat_network::identity::{peer_id, to_libp2p_keypair};
 use openfiat_network::{Multiaddr, Node};
 use openfiat_notifications::{
     DeliveryStatus, NotificationCategory, NotificationId, NotificationService, NotificationTrigger,
+    SubscriptionDestination,
 };
 use openfiat_registry::{Registration, Registry, SignedRegistration};
 use openfiat_storage::mem::MemoryStore;
@@ -133,8 +141,15 @@ async fn a_subscription_and_a_delivery_report_replicate_across_the_cluster() {
     .await;
 
     let wallet_peer_id = identities[0].0.clone();
+    // Sealed to the gateway's own registered public key, so nothing on
+    // the wire — and nothing in any node's replica — is the address.
+    let destination = SubscriptionDestination {
+        service_id: ServiceId::new("svc-1"),
+        channel: NotificationChannel::Sms,
+        sealed: openfiat_crypto::seal(&provider_keypair.public_key(), b"+254700000000").unwrap(),
+    };
     all[0]
-        .update_subscription(vec![NotificationCategory::Trading])
+        .update_subscription(vec![NotificationCategory::Trading], vec![destination])
         .unwrap();
     drive_until(&mut all, |services| {
         services
@@ -157,7 +172,64 @@ async fn a_subscription_and_a_delivery_report_replicate_across_the_cluster() {
         );
     }
 
-    let notification_id = NotificationId::new("notif-1");
+    // Every node plans independently off its own replica — no shared
+    // state, no coordination — and must agree byte for byte on the id.
+    let source_event = b"settlement-event-id";
+    let planned: Vec<_> = all
+        .iter()
+        .map(|service| {
+            let plan = service.plan(
+                NotificationTrigger::TradeCompleted,
+                source_event,
+                &wallet_peer_id,
+            );
+            assert_eq!(
+                plan.skipped,
+                vec![],
+                "the gateway is registered and healthy"
+            );
+            assert_eq!(plan.deliveries.len(), 1);
+            assert_eq!(plan.deliveries[0].endpoint, "https://sms.example/webhook");
+            plan.deliveries.into_iter().next().unwrap()
+        })
+        .collect();
+    let notification_id = planned[0].payload.notification_id.clone();
+    for delivery in &planned {
+        assert_eq!(
+            delivery.payload.notification_id, notification_id,
+            "two nodes dispatching the same event must mint the same id"
+        );
+    }
+    assert_eq!(
+        notification_id,
+        NotificationId::derive(
+            NotificationTrigger::TradeCompleted,
+            source_event,
+            &wallet_peer_id
+        )
+    );
+    // Only the bound gateway can read the destination this carries.
+    assert_eq!(
+        openfiat_crypto::open(&provider_keypair, &planned[0].payload.sealed_destination).unwrap(),
+        b"+254700000000"
+    );
+
+    // Each node records its own handoff before any report is accepted —
+    // that record is what makes the gateway's report checkable.
+    for (service, delivery) in all.iter().zip(planned.iter()) {
+        service.record_queued(delivery);
+        assert_eq!(
+            service.dispatch(&notification_id).unwrap().status,
+            DeliveryStatus::Queued
+        );
+        service.record_handoff(&notification_id, true);
+        assert_eq!(
+            service.dispatch(&notification_id).unwrap().status,
+            DeliveryStatus::Sent,
+            "a node can honestly witness the handoff and nothing beyond it"
+        );
+    }
+
     all[1]
         .report_delivery(
             notification_id.clone(),
@@ -177,5 +249,10 @@ async fn a_subscription_and_a_delivery_report_replicate_across_the_cluster() {
         let receipt = service.receipt(&notification_id).unwrap();
         assert_eq!(receipt.status, DeliveryStatus::Delivered);
         assert_eq!(service.receipts_for(&wallet_peer_id).len(), 1);
+        assert_eq!(
+            service.dispatch(&notification_id).unwrap().status,
+            DeliveryStatus::Sent,
+            "the gateway's last-mile claim must not overwrite what the node itself observed"
+        );
     }
 }

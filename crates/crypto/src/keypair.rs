@@ -49,6 +49,17 @@ impl Keypair {
     pub fn sign(&self, message: &[u8]) -> Signature {
         Signature::from_bytes(self.0.sign(message).to_bytes())
     }
+
+    /// This key's X25519 secret scalar bytes, for the ECDH inside
+    /// [`crate::seal::open`].
+    ///
+    /// Crate-private on purpose: these bytes ARE the private key in a
+    /// different coordinate system, so exposing them publicly would
+    /// break this module's "the signing key never leaves here" contract
+    /// just as surely as handing out the Ed25519 seed would.
+    pub(crate) fn x25519_secret_bytes(&self) -> [u8; 32] {
+        self.0.to_scalar_bytes()
+    }
 }
 
 #[cfg(test)]

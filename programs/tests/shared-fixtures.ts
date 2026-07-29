@@ -11,12 +11,18 @@ import * as anchor from "@anchor-lang/core";
 import { Program, BN } from "@anchor-lang/core";
 import { Escrow } from "../target/types/escrow";
 import { Staking } from "../target/types/staking";
+import { Governance } from "../target/types/governance";
 import {
   TOKEN_2022_PROGRAM_ID,
   createMint,
   getOrCreateAssociatedTokenAccount,
 } from "@solana/spl-token";
-import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import {
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  SYSVAR_RENT_PUBKEY,
+} from "@solana/web3.js";
 
 export const MINT_DECIMALS = 6;
 export const unit = (n: number) => new BN(n).mul(new BN(10).pow(new BN(MINT_DECIMALS)));
@@ -222,4 +228,73 @@ export function getSharedStakingConfig(staking: Program<Staking>): Promise<Share
     })();
   }
   return stakingConfigPromise;
+}
+
+export interface SharedGovernanceConfig {
+  governanceConfig: PublicKey;
+  depositVault: PublicKey;
+  forfeitDestination: PublicKey;
+  totalOpenSupply: BN;
+  quorumBps: number;
+  thresholdSimpleBps: number;
+  thresholdTreasuryBps: number;
+  thresholdUpgradeBps: number;
+  quorumUpgradeBps: number;
+  depositAmount: BN;
+}
+
+/// `GovernanceConfig` is the third global singleton, and became a shared
+/// fixture for the same reason the other two are: the ban-list spec file
+/// needs the same instance `governance.ts` initializes, and whichever
+/// file's `before` ran second would otherwise fail with "already in
+/// use". The parameter values are the ones `governance.ts` has always
+/// used — moved, not changed.
+let governanceConfigPromise: Promise<SharedGovernanceConfig> | null = null;
+export function getSharedGovernanceConfig(
+  governance: Program<Governance>,
+): Promise<SharedGovernanceConfig> {
+  if (!governanceConfigPromise) {
+    governanceConfigPromise = (async () => {
+      const mint = await getSharedMint();
+      const governanceConfig = PublicKey.findProgramAddressSync(
+        [Buffer.from("governance_config")],
+        governance.programId,
+      )[0];
+      const depositVault = PublicKey.findProgramAddressSync(
+        [Buffer.from("deposit_vault")],
+        governance.programId,
+      )[0];
+      const forfeitDestination = await ata(mint, Keypair.generate().publicKey);
+
+      const cfg = {
+        totalOpenSupply: unit(1_000_000_000), // OFS-4100 §1
+        quorumBps: 1000, // 10%
+        thresholdSimpleBps: 5000, // 50%
+        thresholdTreasuryBps: 6000, // 60%
+        thresholdUpgradeBps: 6600, // 66%
+        quorumUpgradeBps: 2000, // 20%
+        depositAmount: unit(5000),
+      };
+
+      await governance.methods
+        .initializeGovernanceConfig({
+          ...cfg,
+          forfeitDestination,
+          voteLockSecs: new BN(1),
+        })
+        .accountsPartial({
+          admin: admin.publicKey,
+          mint,
+          governanceConfig,
+          depositVault,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+        })
+        .rpc({ commitment: "confirmed" });
+
+      return { governanceConfig, depositVault, forfeitDestination, ...cfg };
+    })();
+  }
+  return governanceConfigPromise;
 }

@@ -34,4 +34,6 @@ pub enum ErrorCode {
     // matching on the old number.
     #[msg("The supplied mint does not match the one recorded on GovernanceConfig")]
     MintMismatch,
+    #[msg("This wallet is on the governance ban list (OFS-7100 §12)")]
+    WalletBanned,
 }

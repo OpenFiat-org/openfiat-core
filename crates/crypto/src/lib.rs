@@ -1,15 +1,20 @@
 //! `openfiat-crypto` — Cryptographic primitives: signing, hashing, key derivation.
 //!
 //! Ed25519 for signing (matches OFNP §6/ONSP §5's "Public key / Private
-//! key" node identity model), SHA-256 for content hashing. Nothing here
-//! ever exposes raw private key bytes outside [`keypair::Keypair`] itself.
+//! key" node identity model), SHA-256 for content hashing, and X25519 +
+//! ChaCha20-Poly1305 sealed boxes ([`seal`]) for the one thing signing
+//! cannot do: addressing a secret to a single peer's published identity
+//! key. Nothing here ever exposes raw private key bytes outside
+//! [`keypair::Keypair`] itself.
 
 pub mod hash;
 pub mod keypair;
+pub mod seal;
 pub mod verify;
 
 pub use hash::sha256;
 pub use keypair::Keypair;
+pub use seal::{SealError, SealedBox, open, seal};
 pub use verify::{VerifyError, verify};
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
