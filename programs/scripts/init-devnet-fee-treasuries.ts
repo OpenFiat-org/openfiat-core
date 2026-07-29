@@ -60,11 +60,14 @@ const OWNERS = {
   emergency: new PublicKey("836SJH2LfCgzV4rseMgGSTTPTTM3mMjkXp2exgkry6SH"),
 };
 
-/** OFS-4100 §5: 15 bps settlement fee, split dev/eco/infra/emergency 40/30/20/10. */
+/** OFS-4100 §6: 85 bps settlement fee (0.85%, borne by the buyer), split
+ *  dev/eco/infra/emergency 40/30/20/10. The listing fee splits the same way
+ *  — it is revenue like any other — and is left at 0 here until the amount
+ *  is signed off. */
 const PARAMS = {
   adListingFee: 0n,
   disputeFilingFee: 0n,
-  settlementFeeBps: 15,
+  settlementFeeBps: 85,
   devTreasuryBps: 4000,
   ecosystemTreasuryBps: 3000,
   infraTreasuryBps: 2000,
