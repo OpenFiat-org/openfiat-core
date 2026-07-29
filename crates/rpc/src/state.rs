@@ -54,6 +54,13 @@ use std::rc::Rc;
 pub struct PendingVoteVerification {
     pub stake_account: String,
     pub signed_vote_bytes: Vec<u8>,
+    /// How many times this claim has already been looked up without a
+    /// usable answer (account not yet visible, or a transient RPC error).
+    /// Bounded by `actor::VOTE_VERIFICATION_MAX_ATTEMPTS` so an account
+    /// that will never exist cannot be retried forever — an unbounded
+    /// retry is how a queue silently grows and a node quietly stops
+    /// finishing governance verification.
+    pub attempts: u32,
 }
 
 pub struct NodeState<S> {
@@ -269,6 +276,7 @@ impl<S: KvStore + 'static> NodeState<S> {
                         .push_back(PendingVoteVerification {
                             stake_account: signed.vote.stake_account.clone(),
                             signed_vote_bytes: event.payload.clone(),
+                            attempts: 0,
                         });
                 }
             } else {
@@ -346,15 +354,28 @@ impl<S: KvStore + 'static> NodeState<S> {
             .push_back(PendingVoteVerification {
                 stake_account,
                 signed_vote_bytes,
+                attempts: 0,
             });
+    }
+
+    /// Puts a drained claim back for another look, carrying its own
+    /// attempt count with it. Separate from `enqueue_vote_verification`
+    /// precisely so a retry cannot reset that count and loop forever —
+    /// the caller (`actor::poll_vote_verifications`) is the one that
+    /// decides when a claim has been retried enough, and says so out loud.
+    pub fn requeue_vote_verification(&self, pending: PendingVoteVerification) {
+        self.pending_vote_verifications
+            .borrow_mut()
+            .push_back(pending);
     }
 
     /// Drains every vote currently queued for verification — called once
     /// per `actor::poll_vote_verifications` tick. Anything that fails
     /// verification this round (not yet observable, or a transient RPC
     /// error) is expected to be re-queued by the caller via
-    /// `enqueue_vote_verification`, same retry shape as `ChainState`'s
-    /// `awaiting_confirmation`.
+    /// `requeue_vote_verification`, same retry shape as `ChainState`'s
+    /// `awaiting_confirmation` — but bounded, unlike that one, because
+    /// nothing else ever removes an entry that will never resolve.
     pub fn drain_vote_verifications(&self) -> Vec<PendingVoteVerification> {
         self.pending_vote_verifications
             .borrow_mut()

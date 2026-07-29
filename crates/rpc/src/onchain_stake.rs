@@ -22,6 +22,13 @@ use crate::error::RpcError;
 
 /// `sha256("account:StakeAccount")[..8]`, as Anchor itself computed it —
 /// taken verbatim from `programs/target/idl/staking.json`.
+///
+/// Protocol identity, exactly like the program ids in
+/// `openfiat_chain::programs`, and equally un-configurable — but kept
+/// here rather than moved there on purpose: a discriminator is only
+/// meaningful beside the field offsets it introduces, and the two must
+/// change together when the account's layout does. Splitting them across
+/// crates would let one be updated without the other.
 const STAKE_ACCOUNT_DISCRIMINATOR: [u8; 8] = [80, 158, 67, 124, 50, 189, 192, 255];
 
 /// The two `StakeAccount` fields a vote-weight check needs. Everything

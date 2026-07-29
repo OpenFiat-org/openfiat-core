@@ -74,6 +74,20 @@ const REGISTRY_EXPIRATION_THRESHOLD: std::time::Duration =
 /// in full each tick, so the interval bounds latency, not throughput.
 const NOTIFICATION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// `[PROPOSED — NEEDS SIGN-OFF]`: how many `CHAIN_POLL_INTERVAL` ticks a
+/// queued governance vote may go without a readable `StakeAccount` before
+/// `poll_vote_verifications` gives up on it and says so.
+///
+/// 30 ticks is five minutes at the interval above. A vote's stake had to
+/// exist on chain *before* the vote could honestly be cast, so five
+/// minutes of "no such account" is a fabricated or closed account, not
+/// replication lag — while still absorbing an RPC endpoint being down for
+/// far longer than any single blockhash lives. The bound matters because
+/// the queue is fed by gossip: without it, one peer emitting votes that
+/// name accounts which will never exist grows this node's queue without
+/// limit and without a word.
+const VOTE_VERIFICATION_MAX_ATTEMPTS: u32 = 30;
+
 struct RpcCommand {
     method: String,
     params: Value,
@@ -125,13 +139,6 @@ pub struct NetworkConfig {
     pub listen_addr: Multiaddr,
     pub bootstrap_peers: Vec<Multiaddr>,
     pub chain_mode: NodeChainMode,
-    /// Base58 program id of the deployed `openfiat-staking` program —
-    /// the authority a governance vote's claimed `StakeAccount` must
-    /// actually be owned by before `poll_vote_verifications` will trust
-    /// its decoded weight. `None` (e.g. no programs deployed yet on this
-    /// cluster) means every pending vote verification is left queued
-    /// indefinitely rather than silently trusted.
-    pub staking_program_id: Option<String>,
 }
 
 impl NetworkConfig {
@@ -146,7 +153,6 @@ impl NetworkConfig {
             listen_addr: "/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap(),
             bootstrap_peers: Vec::new(),
             chain_mode: NodeChainMode::GossipOnly,
-            staking_program_id: None,
         }
     }
 }
@@ -297,45 +303,98 @@ async fn poll_notifications<S: KvStore + 'static>(
 /// identically), reading the voter's claimed `StakeAccount` PDA
 /// directly rather than trusting anything the client asserts.
 ///
-/// `staking_program_id` being `None` (no programs deployed on this
-/// cluster yet) leaves every pending vote queued forever rather than
-/// ever trusting one — the safe default matches `poll_chain`'s own
-/// stance on anything not yet genuinely confirmed.
+/// The owning program is [`openfiat_chain::PROGRAM_IDS`]`.staking`, a
+/// compile-time constant — see that module for why an operator naming it
+/// themselves would defeat this entire function.
+///
+/// Nothing here can end in silence. A claim is either applied, rejected
+/// with a reason, or retried a bounded number of times and then dropped
+/// with a reason; and `discard_unverifiable_votes` covers the one node
+/// that can never run this at all.
 async fn poll_vote_verifications<S: KvStore + 'static>(
     state: &NodeState<S>,
     client: &dyn ChainClient,
-    staking_program_id: Option<&str>,
 ) {
-    for pending in state.drain_vote_verifications() {
-        let Some(staking_program_id) = staking_program_id else {
-            state.enqueue_vote_verification(pending.stake_account, pending.signed_vote_bytes);
-            continue;
-        };
+    let staking_program_id = openfiat_chain::PROGRAM_IDS.staking;
+    for mut pending in state.drain_vote_verifications() {
         match client.get_account(&pending.stake_account).await {
             Ok(Some((owner, data))) => {
-                if owner == staking_program_id
-                    && let Ok(signed) =
-                        wire::from_bytes::<SignedVoteCast>(&pending.signed_vote_bytes)
-                    && let Ok(decoded) = onchain_stake::decode_stake_account(&data)
-                    && decoded.owner == *signed.vote.voter_public_key.as_bytes()
-                {
-                    let _ = state
-                        .governance
-                        .apply_vote_with_verified_weight(signed, decoded.amount);
+                if owner != staking_program_id {
+                    // The account exists but is not the staking program's
+                    // — an attempt to pass off some other program's (or
+                    // an attacker's own staking program's) account as
+                    // protocol stake. Dropped, and said out loud: this is
+                    // the exact attack the check exists for.
+                    eprintln!(
+                        "openfiat-rpc: rejected a governance vote — stake account {} is owned by \
+                         {owner}, not the staking program {staking_program_id}",
+                        pending.stake_account
+                    );
+                    continue;
                 }
-                // Otherwise the claim itself is bogus (wrong owner
-                // program, undecodable layout, or a `StakeAccount` that
-                // doesn't actually belong to this voter) — dropped for
-                // good, same as `poll_chain`'s handling of a
-                // confirmed-failed relay.
+                match (
+                    wire::from_bytes::<SignedVoteCast>(&pending.signed_vote_bytes),
+                    onchain_stake::decode_stake_account(&data),
+                ) {
+                    (Ok(signed), Ok(decoded))
+                        if decoded.owner == *signed.vote.voter_public_key.as_bytes() =>
+                    {
+                        let _ = state
+                            .governance
+                            .apply_vote_with_verified_weight(signed, decoded.amount);
+                    }
+                    _ => {
+                        // Undecodable account layout, or a `StakeAccount`
+                        // that belongs to somebody other than the voter
+                        // who signed. Dropped for good, same as
+                        // `poll_chain`'s handling of a confirmed-failed
+                        // relay.
+                        eprintln!(
+                            "openfiat-rpc: rejected a governance vote — stake account {} does not \
+                             decode as a StakeAccount belonging to the voter who signed",
+                            pending.stake_account
+                        );
+                    }
+                }
             }
             Ok(None) | Err(_) => {
                 // Not yet observable (or a transient RPC error) — retry
                 // on a later tick, same as `poll_chain`'s
-                // `awaiting_confirmation` handling.
-                state.enqueue_vote_verification(pending.stake_account, pending.signed_vote_bytes);
+                // `awaiting_confirmation` handling, but bounded: a stake
+                // account that does not exist would otherwise be looked
+                // up forever, and any peer can gossip a vote naming one.
+                pending.attempts += 1;
+                if pending.attempts >= VOTE_VERIFICATION_MAX_ATTEMPTS {
+                    eprintln!(
+                        "openfiat-rpc: gave up verifying a governance vote — stake account {} was \
+                         still unreadable after {} attempts; the vote is not counted",
+                        pending.stake_account, pending.attempts
+                    );
+                } else {
+                    state.requeue_vote_verification(pending);
+                }
             }
         }
+    }
+}
+
+/// What a `GossipOnly` node does with the votes it can never verify.
+///
+/// Such a node has no RPC endpoint, so it cannot read a `StakeAccount` at
+/// all — yet its gossip handler still queues every `VoteCast` it hears.
+/// Holding them would grow that queue for the process's lifetime while
+/// governance verification never once completed, and never said so: the
+/// same silent stall the removed `staking_program_id: None` path had, just
+/// arrived at by a different route. So they are dropped, loudly, with the
+/// one thing that would change the outcome.
+fn discard_unverifiable_votes<S: KvStore + 'static>(state: &NodeState<S>) {
+    let discarded = state.drain_vote_verifications().len();
+    if discarded > 0 {
+        eprintln!(
+            "openfiat-rpc: discarded {discarded} governance vote(s) — this node is GossipOnly and \
+             cannot read on-chain stake, so it can never verify a vote's weight. Set \
+             CLI_SOLANA_RPC_URLS to take part in governance tallying."
+        );
     }
 }
 
@@ -370,7 +429,6 @@ where
                 }
                 NodeChainMode::GossipOnly => None,
             };
-            let staking_program_id = network.staking_program_id;
             let state = NodeState::new(
                 node,
                 build_store(),
@@ -417,10 +475,19 @@ where
                         let _ = command.respond_to.send(result);
                     }
                     _ = drive_gossip(&state) => {}
-                    _ = chain_poll.tick(), if chain_client.is_some() => {
-                        let client = chain_client.as_deref().unwrap();
-                        poll_chain(&state, client).await;
-                        poll_vote_verifications(&state, client, staking_program_id.as_deref()).await;
+                    // Deliberately unguarded, unlike this arm's earlier
+                    // `if chain_client.is_some()`: a GossipOnly node has
+                    // nothing to poll but still needs to be told, and to
+                    // tell its operator, that the votes it is collecting
+                    // can never be verified here.
+                    _ = chain_poll.tick() => {
+                        match chain_client.as_deref() {
+                            Some(client) => {
+                                poll_chain(&state, client).await;
+                                poll_vote_verifications(&state, client).await;
+                            }
+                            None => discard_unverifiable_votes(&state),
+                        }
                     }
                     _ = registry_sweep.tick() => {
                         state.services.expire_stale(REGISTRY_EXPIRATION_THRESHOLD);
@@ -663,9 +730,27 @@ mod tests {
     /// for every `get_account` call — enough to prove
     /// `poll_vote_verifications` reads and trusts the *decoded* amount,
     /// not whatever a vote's own signed `weight` claims.
+    ///
+    /// `owner_program` is what the account claims to be owned by. There is
+    /// no test-only way to tell `poll_vote_verifications` to accept some
+    /// other program, and deliberately so — the fake has to produce the
+    /// real pinned staking id to be believed, exactly as a real cluster
+    /// would.
     struct StakeAccountChainClient {
+        owner_program: String,
         owner: [u8; 32],
         amount: u64,
+    }
+
+    impl StakeAccountChainClient {
+        /// An account genuinely owned by the pinned staking program.
+        fn genuine(owner: [u8; 32], amount: u64) -> Self {
+            Self {
+                owner_program: openfiat_chain::PROGRAM_IDS.staking.to_string(),
+                owner,
+                amount,
+            }
+        }
     }
 
     #[async_trait::async_trait]
@@ -690,7 +775,7 @@ mod tests {
             _pubkey: &str,
         ) -> Result<Option<(String, Vec<u8>)>, ChainError> {
             Ok(Some((
-                "StakingProgram11111111111111111111111111111".to_string(),
+                self.owner_program.clone(),
                 crate::onchain_stake::fixture_stake_account_bytes(self.owner, self.amount),
             )))
         }
@@ -740,16 +825,8 @@ mod tests {
         let bytes = wire::to_bytes(&signed).unwrap();
         state.enqueue_vote_verification("stake-1".to_string(), bytes);
 
-        let client = StakeAccountChainClient {
-            owner: *voter.public_key().as_bytes(),
-            amount: 42,
-        };
-        poll_vote_verifications(
-            &state,
-            &client,
-            Some("StakingProgram11111111111111111111111111111"),
-        )
-        .await;
+        let client = StakeAccountChainClient::genuine(*voter.public_key().as_bytes(), 42);
+        poll_vote_verifications(&state, &client).await;
 
         let recorded_weight = state
             .governance
@@ -789,16 +866,8 @@ mod tests {
 
         // The claimed `StakeAccount` really belongs to `someone_else`,
         // not the voter who signed the vote.
-        let client = StakeAccountChainClient {
-            owner: *someone_else.public_key().as_bytes(),
-            amount: 500,
-        };
-        poll_vote_verifications(
-            &state,
-            &client,
-            Some("StakingProgram11111111111111111111111111111"),
-        )
-        .await;
+        let client = StakeAccountChainClient::genuine(*someone_else.public_key().as_bytes(), 500);
+        poll_vote_verifications(&state, &client).await;
 
         assert!(
             state
@@ -811,6 +880,118 @@ mod tests {
                 )
                 .is_none(),
             "a stake account that doesn't belong to the voter must never be applied"
+        );
+    }
+
+    /// Queues one signed vote for `proposal_id`, claiming `stake-1` as its
+    /// stake account and an absurd self-reported weight — the shape every
+    /// verification test starts from.
+    fn queue_vote(
+        state: &NodeState<MemoryStore>,
+        voter: &Keypair,
+        proposal_id: &openfiat_governance::ProposalId,
+    ) {
+        use openfiat_governance::VoteChoice;
+        use openfiat_governance::events::{SignedVoteCast, VoteCast};
+
+        let vote = VoteCast {
+            proposal_id: proposal_id.clone(),
+            voter: openfiat_network::identity::peer_id_from_public_key(&voter.public_key())
+                .unwrap(),
+            voter_public_key: voter.public_key(),
+            choice: VoteChoice::Approve,
+            weight: 10_000_000,
+            stake_account: "stake-1".to_string(),
+            timestamp: openfiat_types::Timestamp::now(),
+        };
+        let signed = SignedVoteCast::sign(vote, voter);
+        state.enqueue_vote_verification("stake-1".to_string(), wire::to_bytes(&signed).unwrap());
+    }
+
+    /// The regression test for the reason this id is a constant: a node
+    /// operator who deploys their own staking program and mints themselves
+    /// a `StakeAccount` with any balance they like must not be able to
+    /// make their node count it. Before, the owning program came from
+    /// `CLI_STAKING_PROGRAM_ID` and this account would have been believed.
+    #[tokio::test]
+    async fn a_stake_account_owned_by_some_other_staking_program_is_never_counted() {
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let proposal_id = open_proposal(&state);
+        let voter = Keypair::generate();
+        queue_vote(&state, &voter, &proposal_id);
+
+        // Perfectly well-formed, genuinely the voter's own account, with a
+        // large balance — and owned by a program that is not ours.
+        let client = StakeAccountChainClient {
+            owner_program: "TESTPRoGRAM1111111111111111111111111111111".to_string(),
+            owner: *voter.public_key().as_bytes(),
+            amount: 1_000_000_000,
+        };
+        poll_vote_verifications(&state, &client).await;
+
+        assert!(
+            state
+                .governance
+                .get(&proposal_id)
+                .unwrap()
+                .vote_by(
+                    &openfiat_network::identity::peer_id_from_public_key(&voter.public_key())
+                        .unwrap()
+                )
+                .is_none(),
+            "only the pinned staking program's accounts may carry vote weight"
+        );
+        assert!(
+            state.drain_vote_verifications().is_empty(),
+            "a rejected claim is dropped, not retried"
+        );
+    }
+
+    /// `FakeChainClient::get_account` answers `Ok(None)` forever, standing
+    /// in for a stake account that does not exist — a claim any peer can
+    /// gossip. It must be retried, but not indefinitely.
+    #[tokio::test]
+    async fn an_unreadable_stake_account_is_retried_a_bounded_number_of_times_then_dropped() {
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let proposal_id = open_proposal(&state);
+        queue_vote(&state, &Keypair::generate(), &proposal_id);
+        let client = FakeChainClient {
+            blockhash: "unused",
+            slot: 0,
+        };
+
+        for _ in 0..VOTE_VERIFICATION_MAX_ATTEMPTS - 1 {
+            poll_vote_verifications(&state, &client).await;
+        }
+        let still_queued = state.drain_vote_verifications();
+        assert_eq!(still_queued.len(), 1, "must keep retrying below the bound");
+        assert_eq!(
+            still_queued[0].attempts,
+            VOTE_VERIFICATION_MAX_ATTEMPTS - 1,
+            "a retry must carry its attempt count forward, not reset it"
+        );
+        state.requeue_vote_verification(still_queued.into_iter().next().unwrap());
+
+        poll_vote_verifications(&state, &client).await;
+        assert!(
+            state.drain_vote_verifications().is_empty(),
+            "at the bound the claim is given up on, not queued forever"
+        );
+    }
+
+    /// A `GossipOnly` node collects votes it can never verify. It must not
+    /// accumulate them silently for the lifetime of the process.
+    #[tokio::test]
+    async fn a_gossip_only_node_discards_the_votes_it_can_never_verify() {
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let proposal_id = open_proposal(&state);
+        queue_vote(&state, &Keypair::generate(), &proposal_id);
+
+        discard_unverifiable_votes(&state);
+
+        assert!(
+            state.drain_vote_verifications().is_empty(),
+            "an unverifiable vote must be dropped, not held forever"
         );
     }
 

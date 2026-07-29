@@ -22,6 +22,17 @@
 //! an event on the wire, not the submitter's identity — that is, and
 //! remains, verified by each domain's own `apply_*` before origination
 //! is ever attempted.
+//!
+//! Every `CLI_*` variable this module reads is **operational** — where
+//! this node listens, where it keeps its data, which peers and RPC
+//! endpoints it talks to. None of them can change what this node
+//! believes. Protocol identity (program ids, the OPEN mint, PDA seeds,
+//! account discriminators) is pinned at compile time in
+//! `openfiat_chain::programs` and is deliberately unreachable from the
+//! environment; protocol parameters (fees, stake minimums, quorum) live
+//! on chain under governance control. The rule those three cases follow:
+//! if two honest nodes running the same release could disagree because of
+//! a value, that value is not configuration.
 
 use openfiat_chain::NodeChainMode;
 use openfiat_crypto::Keypair;
@@ -155,16 +166,10 @@ async fn main() {
         .expect("CLI_LISTEN_ADDR must be a valid multiaddr");
     let bootstrap_peers = bootstrap_peers();
     let chain_mode = chain_mode();
-    // `CLI_STAKING_PROGRAM_ID`: base58 program id of the deployed
-    // `openfiat-staking` program, e.g. from `programs/devnet-
-    // addresses.json`. Unset means this node can't verify any
-    // governance vote's claimed stake weight, so it leaves every one
-    // queued rather than trusting it — see `NetworkConfig::
-    // staking_program_id`'s own doc.
-    let staking_program_id = std::env::var("CLI_STAKING_PROGRAM_ID").ok();
 
     println!(
-        "openfiat-node {} — data dir: {data_dir}, gossip identity: {:?}, chain mode: {}",
+        "openfiat-node {} — data dir: {data_dir}, gossip identity: {:?}, chain mode: {}, \
+         programs: {} (staking {})",
         env!("CARGO_PKG_VERSION"),
         wallet.peer_id(),
         if chain_mode.is_rpc_connected() {
@@ -172,6 +177,11 @@ async fn main() {
         } else {
             "GossipOnly"
         },
+        // Printed, not read: which deployment a binary is pinned to is
+        // fixed at compile time (`openfiat_chain::programs`), so this is
+        // an operator's way to *see* it, never to change it.
+        openfiat_chain::PROGRAM_IDS.network,
+        openfiat_chain::PROGRAM_IDS.staking,
     );
 
     let rpc_handle = openfiat_rpc::spawn_actor(
@@ -185,7 +195,6 @@ async fn main() {
             listen_addr,
             bootstrap_peers,
             chain_mode,
-            staking_program_id,
         },
     );
     let metrics = Arc::new(openfiat_metrics::MetricsRegistry::new());

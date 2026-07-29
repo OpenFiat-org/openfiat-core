@@ -6,6 +6,14 @@ license = "Apache-2.0"
 description = "Bridge to the Solana execution layer (OFS-4300): blockhash sourcing and transaction relay for RPC-connected and gossip-only nodes."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
+[features]
+# Which deployment's program ids this build is pinned to (see
+# `src/programs.rs`). Devnet is the only deployment that exists, and is the
+# default; `network-mainnet` currently fails the build on purpose, so a
+# mainnet build can never silently inherit devnet's ids.
+default = []
+network-mainnet = []
+
 [dependencies]
 openfiat-types = { path = "../types", version = "0.1.0" }
 openfiat-gossip = { path = "../gossip", version = "0.1.0" }
@@ -24,6 +32,9 @@ async-trait = "0.1.91"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+# Only so `programs`' test can re-read programs/devnet-addresses.json, the
+# deployment record the pinned ids are transcribed from.
+serde_json = "1.0.151"
 openfiat-crypto = { path = "../crypto", version = "0.1.0" }
 openfiat-network = { path = "../network", version = "0.1.0" }
 futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }

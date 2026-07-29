@@ -17,6 +17,7 @@ mod error;
 pub mod events;
 mod gossip_service;
 mod mode;
+pub mod programs;
 pub mod protocol;
 mod state;
 mod validate;
@@ -26,6 +27,9 @@ pub use client::{ChainClient, RpcChainClient, SignatureStatus};
 pub use error::ChainError;
 pub use gossip_service::{ChainBridge, ChainGossipService};
 pub use mode::NodeChainMode;
+// The deployed programs this build is pinned to — protocol identity, fixed
+// at compile time and deliberately not configurable; see `programs`.
+pub use programs::{IDS as PROGRAM_IDS, ProgramIds};
 // `PendingRelay`/`AwaitingConfirmation` are returned by `ChainState`'s own
 // public methods, so they belong in the public API too — without this a
 // caller can consume them by inference but cannot name them in a signature.
