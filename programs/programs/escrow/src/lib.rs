@@ -32,6 +32,13 @@ pub mod escrow {
         crate::instructions::initialize_fee_config::handle_initialize_fee_config(ctx, params)
     }
 
+    pub fn update_fee_config(
+        ctx: Context<UpdateFeeConfig>,
+        params: UpdateFeeConfigParams,
+    ) -> Result<()> {
+        crate::instructions::update_fee_config::handle_update_fee_config(ctx, params)
+    }
+
     pub fn create_liquidity_vault(ctx: Context<CreateLiquidityVault>) -> Result<()> {
         crate::instructions::create_liquidity_vault::handle_create_liquidity_vault(ctx)
     }

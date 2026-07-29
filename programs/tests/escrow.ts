@@ -8,6 +8,7 @@ import {
   mintTo,
   getOrCreateAssociatedTokenAccount,
   getAccount,
+  createMint,
   createTransferCheckedInstruction,
 } from "@solana/spl-token";
 import {
@@ -125,6 +126,172 @@ describe("escrow", () => {
     mint = await getSharedMint();
     ({ feeConfig, devTreasury, ecosystemTreasury, infraTreasury, emergencyReserve } =
       await getSharedFeeConfig(program));
+  });
+
+  describe("update_fee_config", () => {
+    // The deployed devnet FeeConfig was initialized with the treasury
+    // *owner* wallets instead of their token accounts, which made every
+    // release_escrow un-executable (Anchor cannot deserialize a wallet as
+    // a TokenAccount). These cover the instruction that corrects it, and
+    // the constraints that stop the same mistake being stored again.
+    const ORIGINAL = {
+      adListingFee: new BN(0),
+      disputeFilingFee: new BN(0),
+      settlementFeeBps: 15,
+      devTreasuryBps: 4000,
+      ecosystemTreasuryBps: 3000,
+      infraTreasuryBps: 2000,
+      emergencyReserveBps: 1000,
+      timeoutSecs: new BN(1800),
+    };
+
+    // Restore the shared singleton so later specs see the fixture's own
+    // treasuries, whatever this block did to it.
+    afterEach(async () => {
+      await withBlockhashRetry(() =>
+        program.methods
+          .updateFeeConfig(ORIGINAL)
+          .accountsPartial({
+            admin: admin.publicKey,
+            feeConfig,
+            mint,
+            devTreasury,
+            ecosystemTreasury,
+            infraTreasury,
+            emergencyReserve,
+          })
+          .rpc({ commitment: "confirmed" }),
+      );
+    });
+
+    it("lets the admin repoint the treasuries at different token accounts", async () => {
+      const newDev = await ata(mint, Keypair.generate().publicKey);
+      const newEco = await ata(mint, Keypair.generate().publicKey);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .updateFeeConfig({ ...ORIGINAL, settlementFeeBps: 25 })
+          .accountsPartial({
+            admin: admin.publicKey,
+            feeConfig,
+            mint,
+            devTreasury: newDev,
+            ecosystemTreasury: newEco,
+            infraTreasury,
+            emergencyReserve,
+          })
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const cfg = await program.account.feeConfig.fetch(feeConfig);
+      expect(cfg.devTreasury.toBase58()).to.equal(newDev.toBase58());
+      expect(cfg.ecosystemTreasury.toBase58()).to.equal(newEco.toBase58());
+      expect(cfg.settlementFeeBps).to.equal(25);
+      // Not updatable here, by design.
+      expect(cfg.admin.toBase58()).to.equal(admin.publicKey.toBase58());
+    });
+
+    it("rejects a non-admin signer", async () => {
+      const intruder = Keypair.generate();
+      await airdrop(intruder.publicKey, 1);
+
+      await expectAnchorError(
+        withBlockhashRetry(() =>
+          program.methods
+            .updateFeeConfig(ORIGINAL)
+            .accountsPartial({
+              admin: intruder.publicKey,
+              feeConfig,
+              mint,
+              devTreasury,
+              ecosystemTreasury,
+              infraTreasury,
+              emergencyReserve,
+            })
+            .signers([intruder])
+            .rpc({ commitment: "confirmed" }),
+        ),
+        "Unauthorized",
+      );
+    });
+
+    it("rejects splits that do not sum to 10_000", async () => {
+      await expectAnchorError(
+        withBlockhashRetry(() =>
+          program.methods
+            .updateFeeConfig({ ...ORIGINAL, devTreasuryBps: 4001 })
+            .accountsPartial({
+              admin: admin.publicKey,
+              feeConfig,
+              mint,
+              devTreasury,
+              ecosystemTreasury,
+              infraTreasury,
+              emergencyReserve,
+            })
+            .rpc({ commitment: "confirmed" }),
+        ),
+        "InvalidFeeSplit",
+      );
+    });
+
+    it("refuses a wallet address where a treasury token account is required", async () => {
+      // The exact defect that broke the live deployment: a plain owner
+      // pubkey cannot deserialize as a TokenAccount, so the runtime
+      // rejects it instead of storing an unusable config.
+      const walletNotTokenAccount = Keypair.generate().publicKey;
+      let failed = false;
+      try {
+        await program.methods
+          .updateFeeConfig(ORIGINAL)
+          .accountsPartial({
+            admin: admin.publicKey,
+            feeConfig,
+            mint,
+            devTreasury: walletNotTokenAccount,
+            ecosystemTreasury,
+            infraTreasury,
+            emergencyReserve,
+          })
+          .rpc({ commitment: "confirmed" });
+      } catch {
+        failed = true;
+      }
+      expect(failed, "storing a wallet as a treasury must fail").to.equal(true);
+    });
+
+    it("refuses a token account for a different mint", async () => {
+      const otherMint = await createMint(
+        connection,
+        admin,
+        admin.publicKey,
+        null,
+        MINT_DECIMALS,
+        undefined,
+        { commitment: "confirmed" },
+        TOKEN_2022_PROGRAM_ID,
+      );
+      const wrongMintTreasury = await ata(otherMint, Keypair.generate().publicKey);
+
+      let failed = false;
+      try {
+        await program.methods
+          .updateFeeConfig(ORIGINAL)
+          .accountsPartial({
+            admin: admin.publicKey,
+            feeConfig,
+            mint,
+            devTreasury: wrongMintTreasury,
+            ecosystemTreasury,
+            infraTreasury,
+            emergencyReserve,
+          })
+          .rpc({ commitment: "confirmed" });
+      } catch {
+        failed = true;
+      }
+      expect(failed, "a wrong-mint treasury must fail").to.equal(true);
+    });
   });
 
   describe("full liquidity -> reserve -> escrow -> release cycle", () => {
