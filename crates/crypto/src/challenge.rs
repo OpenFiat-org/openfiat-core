@@ -26,11 +26,20 @@
 //! replacing each other, so [`ChallengeLedger::issue`] prunes expired
 //! entries and enforces [`ChallengeLedger::MAX_OUTSTANDING`].
 //!
-//! `openfiat_registry::earnings::EarningsLedger` implements the same
-//! handshake independently and keys by subject. It predates this module
-//! and its wire shape is already consumed by released SDKs; it is not a
-//! second copy to keep in sync so much as one that should be migrated
-//! here (and gain the property above) as a deliberate, separate change.
+//! `openfiat_registry::earnings::EarningsLedger` used to implement this
+//! handshake independently, keyed by subject, and has been migrated onto
+//! this module. It keeps its own `EarningsChallenge` wire type — released
+//! SDKs name the field `service_id` rather than `subject` — but the
+//! storage is this ledger and its signing bytes are produced by
+//! [`Challenge::signing_bytes`] under the `openfiat-earnings` domain, so
+//! the two cannot drift into disagreeing about what a provider signs.
+//!
+//! That migration was the fix for a live vulnerability, not a tidy-up: while
+//! it keyed by subject, any caller could request challenges for somebody
+//! else's `service_id` in a loop and keep invalidating the one that provider
+//! was part-way through signing, denying it `getProviderEarnings`
+//! indefinitely without credentials, stake, or any relationship to the
+//! service.
 
 use openfiat_types::{ErrorCode, Timestamp};
 use rand::rngs::{StdRng, SysRng};
