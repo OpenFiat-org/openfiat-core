@@ -15,11 +15,17 @@ escrow = "HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP"
 staking = "HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx"
 governance = "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE"
 
-# Filled in once `anchor deploy --provider.cluster devnet` has actually run
-# (Phase 3 exit criteria) — same program ID as localnet since it's derived
-# from target/deploy/presale-keypair.json, not the cluster.
+# Filled in once `anchor deploy --provider.cluster devnet` (or, as here,
+# `solana program deploy`) has actually run — same program IDs as localnet
+# since they're derived from each program's own target/deploy/*-keypair.json,
+# not the cluster. escrow/staking/governance deployed to devnet as part of
+# Phase 8 (pulled forward from Phase 9's original schedule — see
+# devnet-addresses.json's own "devnet_programs" note).
 [programs.devnet]
 presale = "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7"
+escrow = "HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP"
+staking = "HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx"
+governance = "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE"
 
 [provider]
 # Kept as "localnet" (not "devnet") so `anchor test` continues to spin up an

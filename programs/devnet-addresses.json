@@ -35,6 +35,24 @@
     "bucket_strategic-reserve_owner": "7TKkfy8hor1W155t4mR1bxq9ezaDWfgND9EE49DrG9kY",
     "bucket_strategic-reserve": "96cM2rcwr5WAujSV6AUvoSqcPcnSYfMi4sHMeQo1BGgW"
   },
+  "devnet_programs": {
+    "escrow": "HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP",
+    "staking": "HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx",
+    "governance": "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE",
+    "upgradeAuthority": "EA8TyQ58C3eavg3ThRFTMu1KLyV9e1v2oTQubSBQ9s5z",
+    "deployedAt": "2026-07-28",
+    "mint": "29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj",
+    "initialized": true,
+    "initializedAt": "2026-07-29",
+    "feeConfigTreasuries": {
+      "note": "Plain Pubkey fields stored on FeeConfig (OFS-4100 §5's dev/ecosystem/infra/emergency 40/30/20/10 split, 15 bps settlement fee) — these 4 addresses do not yet have real Token-2022 accounts for the OPEN mint, so release_escrow/execute_dispute_outcome cannot actually complete until each one's ATA is created. Needed before Phase 9's escrow-lifecycle conformance proof, not before Phase 8's Stake/Cast-vote UI work.",
+      "devTreasuryOwner": "HLEB5akyStXEZfsTtgpnzexC4gyvDS5QNiYm1vDSHX4p",
+      "ecosystemTreasuryOwner": "VueuQemTWZcZXMhfN1jRH1vs1zeWXYvzhDPC8uxJARF",
+      "infraTreasuryOwner": "Aj2ciiPQJcun6fMcr1WCmcbKrMkyRsKrbFeDf2KKqySZ",
+      "emergencyReserveOwner": "836SJH2LfCgzV4rseMgGSTTPTTM3mMjkXp2exgkry6SH"
+    },
+    "note": "Deployed via `solana program deploy --url devnet` and initialized via a one-off script using the new Rust SDK's onchain::{escrow,staking,governance} builders (Phase 8's own deploy+init step, pulled forward from Phase 9's original schedule — Phase 8's app wiring needs a real devnet deployment to cut over against). FeeConfig/StakingConfig/GovernanceConfig singletons are all live: staking_config.mint = governance_config.mint = the real devnet OPEN mint above (decimals 9); staking's min_stake/min_stake_arbitrator/unbonding/slash_bps and governance's quorum/threshold/deposit/vote_lock all use OFS-4100's own recommended [PROPOSED — NEEDS SIGN-OFF] figures, not invented values."
+  },
   "devnet_sale": {
     "programId": "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7",
     "saleNonce": 1,
