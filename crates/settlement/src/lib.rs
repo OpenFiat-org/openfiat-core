@@ -18,7 +18,7 @@ pub mod service;
 pub mod store;
 
 pub use error::SettlementError;
-pub use record::{PaymentDiscrepancy, Settlement, SettlementId, SettlementState};
+pub use record::{Settlement, SettlementId, SettlementState};
 pub use service::SettlementService;
 pub use store::SettlementRegistry;
 

@@ -17,11 +17,10 @@ use openfiat_reputation::{MerchantTier, ReputationView};
 use openfiat_reservations::events::{ReservationRequest, SignedReservationRequest};
 use openfiat_reservations::{ReservationId, ReservationRegistry};
 use openfiat_settlement::events::{
-    PaymentSubmitted, SettlementApproved, SettlementInitiate, SettlementRejected,
-    SignedPaymentSubmitted, SignedSettlementApproved, SignedSettlementInitiate,
-    SignedSettlementRejected,
+    PaymentSubmitted, SettlementApproved, SettlementInitiate, SignedPaymentSubmitted,
+    SignedSettlementApproved, SignedSettlementInitiate,
 };
-use openfiat_settlement::{PaymentDiscrepancy, SettlementId, SettlementRegistry};
+use openfiat_settlement::{SettlementId, SettlementRegistry};
 use openfiat_storage::mem::MemoryStore;
 use openfiat_types::{Amount, Timestamp};
 use std::rc::Rc;
@@ -247,122 +246,4 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
     let buyer4_profile = reputation.profile(&buyer4_id);
     assert_eq!(buyer4_profile.reservations_missed, 1);
     assert_eq!(buyer4_profile.trades_started, 0);
-}
-
-/// OFS-3000 §13 (availability) and §14 (payment accuracy), computed from
-/// the timestamps and typed rejection reason settlement's signed events
-/// already carry — no new event type, nothing self-asserted.
-#[test]
-fn availability_and_payment_accuracy_come_from_signed_settlement_events() {
-    let advertisements = Rc::new(AdvertisementRegistry::new(MemoryStore::new()));
-    let reservations = Rc::new(ReservationRegistry::new(
-        MemoryStore::new(),
-        Rc::clone(&advertisements),
-    ));
-    let settlements = Rc::new(SettlementRegistry::new(MemoryStore::new()));
-    let disputes = Rc::new(DisputeRegistry::new(
-        MemoryStore::new(),
-        Rc::clone(&settlements),
-    ));
-    let reputation = ReputationView::new(
-        Rc::clone(&reservations),
-        Rc::clone(&settlements),
-        Rc::clone(&disputes),
-    );
-
-    let merchant = Keypair::generate();
-    let merchant_id = peer_id_from_public_key(&merchant.public_key()).unwrap();
-
-    // Opens a settlement and declares payment at `paid_at`. Returns the id.
-    let declare_payment = |buyer: &Keypair, id: &str, paid_at: u64| {
-        let buyer_id = peer_id_from_public_key(&buyer.public_key()).unwrap();
-        let settlement_id = SettlementId::new(id);
-        settlements
-            .apply_initiate(SignedSettlementInitiate::sign(
-                SettlementInitiate {
-                    id: settlement_id.clone(),
-                    reservation_id: ReservationId::new(id),
-                    buyer: buyer_id.clone(),
-                    buyer_public_key: buyer.public_key(),
-                    seller: merchant_id.clone(),
-                    seller_public_key: merchant.public_key(),
-                    amount: Amount::new(1_000_000, 6),
-                    timestamp: Timestamp::from_millis(paid_at.saturating_sub(1)),
-                },
-                buyer,
-            ))
-            .unwrap();
-        settlements
-            .apply_payment_submitted(SignedPaymentSubmitted::sign(
-                PaymentSubmitted {
-                    settlement_id: settlement_id.clone(),
-                    buyer: buyer_id,
-                    payment_reference: Some("TXN".to_string()),
-                    timestamp: Timestamp::from_millis(paid_at),
-                },
-                buyer,
-            ))
-            .unwrap();
-        settlement_id
-    };
-
-    // One answered in 2s, one in 6s, one left outstanding: response rate
-    // 2/3, mean latency 4s.
-    let prompt_buyer = Keypair::generate();
-    let slow_buyer = Keypair::generate();
-    let ignored_buyer = Keypair::generate();
-
-    let prompt = declare_payment(&prompt_buyer, "s-prompt", 10_000);
-    settlements
-        .apply_approved(SignedSettlementApproved::sign(
-            SettlementApproved {
-                settlement_id: prompt,
-                seller: merchant_id.clone(),
-                timestamp: Timestamp::from_millis(12_000),
-            },
-            &merchant,
-        ))
-        .unwrap();
-
-    let slow = declare_payment(&slow_buyer, "s-slow", 20_000);
-    settlements
-        .apply_rejected(SignedSettlementRejected::sign(
-            SettlementRejected {
-                settlement_id: slow,
-                seller: merchant_id.clone(),
-                reason: "sent 90 KES short".to_string(),
-                discrepancy: PaymentDiscrepancy::IncorrectAmount,
-                timestamp: Timestamp::from_millis(26_000),
-            },
-            &merchant,
-        ))
-        .unwrap();
-
-    let _outstanding = declare_payment(&ignored_buyer, "s-ignored", 30_000);
-
-    let merchant_profile = reputation.profile(&merchant_id);
-    assert_eq!(merchant_profile.payment_responses_due, 3);
-    assert_eq!(merchant_profile.payment_responses_made, 2);
-    assert_eq!(merchant_profile.response_rate(), Some(2.0 / 3.0));
-    assert_eq!(merchant_profile.average_response_latency_ms(), Some(4_000.0));
-    // The merchant is the payee here, so §14 never attaches to it.
-    assert_eq!(merchant_profile.payments_submitted, 0);
-    assert_eq!(merchant_profile.payment_discrepancies, 0);
-
-    // §14 lands on the payer whose details were wrong, not the one whose
-    // payment was accepted.
-    let slow_id = peer_id_from_public_key(&slow_buyer.public_key()).unwrap();
-    let slow_profile = reputation.profile(&slow_id);
-    assert_eq!(slow_profile.payments_submitted, 1);
-    assert_eq!(slow_profile.payment_discrepancies, 1);
-    assert_eq!(slow_profile.payment_discrepancy_rate(), Some(1.0));
-    // ...and availability never attaches to a buyer.
-    assert_eq!(slow_profile.payment_responses_due, 0);
-    assert_eq!(slow_profile.response_rate(), None);
-
-    let prompt_id = peer_id_from_public_key(&prompt_buyer.public_key()).unwrap();
-    let prompt_profile = reputation.profile(&prompt_id);
-    assert_eq!(prompt_profile.payments_submitted, 1);
-    assert_eq!(prompt_profile.payment_discrepancies, 0);
-    assert_eq!(prompt_profile.payment_discrepancy_rate(), Some(0.0));
 }

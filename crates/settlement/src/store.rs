@@ -73,9 +73,6 @@ impl<S: KvStore> SettlementRegistry<S> {
             state: SettlementState::AwaitingPayment,
             payment_reference: None,
             escrow_release_signature: None,
-            payment_submitted_at: None,
-            merchant_responded_at: None,
-            payment_discrepancy: None,
             created_at: initiate.timestamp,
             updated_at: initiate.timestamp,
         });
@@ -104,7 +101,6 @@ impl<S: KvStore> SettlementRegistry<S> {
 
         settlement.state = SettlementState::PaymentSubmitted;
         settlement.payment_reference = signed.action.payment_reference;
-        settlement.payment_submitted_at = Some(signed.action.timestamp);
         settlement.updated_at = signed.action.timestamp;
         self.put(&settlement);
         Ok(())
@@ -131,9 +127,6 @@ impl<S: KvStore> SettlementRegistry<S> {
 
         settlement.state = SettlementState::AwaitingPayment;
         settlement.payment_reference = None;
-        // The declaration is withdrawn, so there is no outstanding one
-        // for the merchant to be judged on responding to.
-        settlement.payment_submitted_at = None;
         settlement.updated_at = signed.action.timestamp;
         self.put(&settlement);
         Ok(())
@@ -161,7 +154,6 @@ impl<S: KvStore> SettlementRegistry<S> {
         }
 
         settlement.state = SettlementState::Approved;
-        settlement.merchant_responded_at = Some(signed.action.timestamp);
         settlement.updated_at = signed.action.timestamp;
         self.put(&settlement);
         Ok(())
@@ -206,8 +198,6 @@ impl<S: KvStore> SettlementRegistry<S> {
         }
 
         settlement.state = SettlementState::Rejected;
-        settlement.merchant_responded_at = Some(signed.action.timestamp);
-        settlement.payment_discrepancy = Some(signed.action.discrepancy);
         settlement.updated_at = signed.action.timestamp;
         self.put(&settlement);
         Ok(())
@@ -290,7 +280,6 @@ mod tests {
         PaymentReversed, PaymentSubmitted, SettlementApproved, SettlementCancelled,
         SettlementInitiate, SettlementRejected,
     };
-    use crate::record::PaymentDiscrepancy;
     use openfiat_crypto::Keypair;
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_reservations::ReservationId;
@@ -468,7 +457,6 @@ mod tests {
                     settlement_id: id.clone(),
                     seller: seller_id,
                     reason: "no matching deposit".to_string(),
-                    discrepancy: PaymentDiscrepancy::IncorrectAmount,
                     timestamp: Timestamp::now(),
                 },
                 &seller,
