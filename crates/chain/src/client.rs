@@ -81,7 +81,23 @@ impl RpcChainClient {
             "RpcChainClient requires at least one RPC endpoint"
         );
         Self {
-            clients: rpc_urls.into_iter().map(RpcClient::new).collect(),
+            // `RpcClient::new` defaults to `Finalized` commitment for
+            // every call that doesn't explicitly override it — including
+            // `send_transaction`'s own preflight simulation. That silently
+            // rejects (and `poll_chain` then silently drops — its own
+            // documented best-effort behavior) a transaction whose
+            // constraints depend on a just-*confirmed* prior transaction's
+            // effect that hasn't finalized yet, a real, observed failure
+            // mode on a fresh single-node validator where finalization can
+            // meaningfully lag confirmation. `confirmed` here matches every
+            // other read this struct already uses it for explicitly
+            // (`get_account_with_commitment`, `is_blockhash_valid` below) —
+            // this was the one call site inheriting the client's own
+            // un-overridden default instead.
+            clients: rpc_urls
+                .into_iter()
+                .map(|url| RpcClient::new_with_commitment(url, CommitmentConfig::confirmed()))
+                .collect(),
         }
     }
 
