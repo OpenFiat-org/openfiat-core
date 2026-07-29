@@ -23,6 +23,7 @@ import {
   getSharedGovernanceConfig,
   unit,
   MINT_DECIMALS,
+  SHARED_VOTE_LOCK_SECS,
 } from "./shared-fixtures";
 
 describe("governance", () => {
@@ -37,6 +38,8 @@ describe("governance", () => {
   const ROLE_NODE_OPERATOR = { nodeOperator: {} };
   const CATEGORY_PARAMETER = { parameter: {} };
   const CATEGORY_TREASURY = { treasury: {} };
+  const CATEGORY_STANDARDS = { standards: {} };
+  const ACTION_NONE = { none: {} };
 
   let mint: PublicKey;
   let governanceConfig: PublicKey;
@@ -128,6 +131,12 @@ describe("governance", () => {
       program.programId
     )[0];
   }
+  function proposalActionPda(proposal: PublicKey) {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from("proposal_action"), proposal.toBuffer()],
+      program.programId
+    )[0];
+  }
   function voteRecordPda(proposal: PublicKey, voter: PublicKey) {
     return PublicKey.findProgramAddressSync(
       [Buffer.from("vote"), proposal.toBuffer(), voter.toBuffer()],
@@ -178,10 +187,16 @@ describe("governance", () => {
     return owner;
   }
 
+  /// Every proposal carries a `GovernanceAction`, fixed at creation.
+  /// These ones carry `None`: `update_config_parameter` and
+  /// `authorize_treasury_spend` are still record-only, so there is no
+  /// action for them to perform. The ban-list actions, which are the
+  /// ones that do something, are exercised in `ban-list.ts`.
   async function createFundedProposal(
     id: number,
     category: any,
-    votingPeriodSecs: number
+    votingPeriodSecs: number,
+    action: any = ACTION_NONE
   ): Promise<{ proposer: Keypair; proposal: PublicKey }> {
     const proposer = Keypair.generate();
     await airdrop(proposer.publicKey);
@@ -196,7 +211,8 @@ describe("governance", () => {
           category,
           [...crypto.randomBytes(32)],
           [...crypto.randomBytes(32)],
-          new BN(votingPeriodSecs)
+          new BN(votingPeriodSecs),
+          action
         )
         .accountsPartial({
           proposer: proposer.publicKey,
@@ -205,6 +221,7 @@ describe("governance", () => {
           depositVault,
           from: proposerAta,
           proposal,
+          proposalAction: proposalActionPda(proposal),
           tokenProgram: TOKEN_2022_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
@@ -235,6 +252,41 @@ describe("governance", () => {
     expect(account.quorumSnapshot.toString()).to.equal(
       expectedQuorum.toString()
     );
+  });
+
+  it("fixes what a proposal may do at creation, in its own immutable account", async () => {
+    // A proposal that could have its action attached or changed after
+    // voting opened would let a proposer collect votes on one thing and
+    // spend them on another. The action account is `init`, created in
+    // the same instruction as the proposal, so the first voter and the
+    // executor see the same one.
+    const wallet = Keypair.generate().publicKey;
+    const evidence = [...crypto.randomBytes(32)];
+    const { proposal } = await createFundedProposal(
+      11,
+      CATEGORY_STANDARDS,
+      3,
+      { listWallet: { wallet, reason: { sanctions: {} }, evidenceHash: evidence } }
+    );
+
+    const action = await program.account.proposalAction.fetch(
+      proposalActionPda(proposal)
+    );
+    expect(action.proposal.toBase58()).to.equal(proposal.toBase58());
+    expect(action.action.listWallet.wallet.toBase58()).to.equal(
+      wallet.toBase58()
+    );
+    expect([...action.action.listWallet.evidenceHash]).to.deep.equal(evidence);
+
+    // There is no instruction that writes it again — creating it a
+    // second time is the only way to try, and the address is taken.
+    let failed = false;
+    try {
+      await createFundedProposal(11, CATEGORY_STANDARDS, 3, ACTION_NONE);
+    } catch {
+      failed = true;
+    }
+    expect(failed, "a proposal's action must not be replaceable").to.equal(true);
   });
 
   it("weighs votes by real stake, tallies deterministically, and settles the deposit", async () => {
@@ -466,6 +518,37 @@ describe("governance", () => {
       };
     }
 
+    // `governanceConfig` is a shared singleton, and the successful cases
+    // below write `baseParams()`'s week-long `voteLockSecs` into it for
+    // real. Every later suite that has to carry a proposal past its
+    // timelock — `presale.ts`'s ban gate, via `banWallet` — then waits a
+    // week of chain time and hangs until mocha's timeout.
+    //
+    // Invisible until `list_wallet` started reading `vote_lock_secs` at
+    // all: while it was admin-gated it never consulted the field, so
+    // leaking a long lock cost nothing. `ban-list.ts` already restores
+    // its own change to this field for the same reason.
+    after(async () => {
+      const current = await program.account.governanceConfig.fetch(
+        governanceConfig
+      );
+      if (current.voteLockSecs.eq(SHARED_VOTE_LOCK_SECS)) return;
+      await withBlockhashRetry(() =>
+        program.methods
+          .updateGovernanceConfig({
+            ...baseParams(),
+            voteLockSecs: SHARED_VOTE_LOCK_SECS,
+          })
+          .accountsPartial({
+            admin: admin.publicKey,
+            governanceConfig,
+            mint,
+            forfeitDestination: current.forfeitDestination,
+          })
+          .rpc({ commitment: "confirmed" })
+      );
+    });
+
     it("repoints forfeit_destination, and leaves every other field untouched", async () => {
       const before = await program.account.governanceConfig.fetch(
         governanceConfig
@@ -598,6 +681,31 @@ describe("governance", () => {
             .signers([impostor])
             .rpc({ commitment: "confirmed" }),
         "Unauthorized"
+      );
+    });
+
+    it("rejects a vote lock longer than MAX_VOTE_LOCK_SECS", async () => {
+      // `vote_lock_secs` is the delay before an accepted proposal may
+      // act, and admin still writes it. Unbounded, one key could park it
+      // past any horizon and leave every accepted proposal — including
+      // one delisting a wallet — permanently unexecutable, which is the
+      // same single-key veto over deposit access the ban list was
+      // re-gated to remove, wearing a different hat.
+      await expectAnchorError(
+        () =>
+          program.methods
+            .updateGovernanceConfig({
+              ...baseParams(),
+              voteLockSecs: new BN(30 * 24 * 60 * 60 + 1),
+            })
+            .accountsPartial({
+              admin: admin.publicKey,
+              governanceConfig,
+              mint,
+              forfeitDestination,
+            })
+            .rpc({ commitment: "confirmed" }),
+        "VoteLockTooLong"
       );
     });
 
