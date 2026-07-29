@@ -163,6 +163,7 @@ mod tests {
             region: Some("Kenya".to_string()),
             capabilities: vec![],
             pricing: None,
+            payout_wallet: None,
             timestamp: Timestamp::now(),
         };
         services

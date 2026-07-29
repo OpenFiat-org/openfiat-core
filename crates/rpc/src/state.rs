@@ -26,6 +26,7 @@ use openfiat_network::Node;
 use openfiat_notifications::NotificationRegistry;
 use openfiat_oracles::OracleIndex;
 use openfiat_registry::Registry as ServiceRegistry;
+use openfiat_registry::earnings::EarningsLedger;
 use openfiat_reputation::ReputationView;
 use openfiat_reservations::ReservationRegistry;
 use openfiat_rewards::{LivenessLedger, RewardParams};
@@ -64,6 +65,12 @@ pub struct NodeState<S> {
     pub reputation: ReputationView<Rc<S>>,
     pub governance: Rc<GovernanceRegistry<Rc<S>>>,
     pub services: Rc<ServiceRegistry<Rc<S>>>,
+    /// What each registered service has earned, and the outstanding
+    /// single-use challenges guarding reads of it (OFS-4100 §9.5).
+    /// Nothing credits it yet — the billing trigger differs by role and
+    /// is deliberately unsettled — so every statement currently reads
+    /// empty. See `openfiat_registry::earnings`.
+    pub provider_earnings: Rc<RefCell<EarningsLedger>>,
     pub notifications: Rc<NotificationRegistry<Rc<S>>>,
     pub oracles: Rc<OracleIndex<Rc<S>>>,
     pub risk: Rc<RiskIndex<Rc<S>>>,
@@ -118,6 +125,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             GossipService::new(node, event_store, keypair, self_roles, Subscription::All);
 
         let services = Rc::new(ServiceRegistry::new(Rc::clone(&store)));
+        let provider_earnings = Rc::new(RefCell::new(EarningsLedger::new()));
         let advertisements = Rc::new(AdvertisementRegistry::new(Rc::clone(&store)));
         let reservations = Rc::new(ReservationRegistry::new(
             Rc::clone(&store),
@@ -254,6 +262,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             reputation,
             governance,
             services,
+            provider_earnings,
             notifications,
             oracles,
             risk,

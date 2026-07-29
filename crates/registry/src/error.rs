@@ -24,6 +24,15 @@ pub enum RegistryError {
     /// originate it (e.g. this node isn't authorized to emit the event
     /// type at all, per OGP §7).
     GossipRejected,
+    /// A registration declared a price but no payout wallet. Billing
+    /// without somewhere to be paid is a half-configured service, and
+    /// the gap would only surface once money was owed.
+    PricingWithoutPayoutWallet,
+    /// No outstanding earnings challenge matches this Service ID and
+    /// nonce — never issued, already spent, or superseded.
+    UnknownChallenge,
+    /// The challenge was real but is past its TTL.
+    ChallengeExpired,
 }
 
 impl RegistryError {
@@ -35,6 +44,9 @@ impl RegistryError {
             Self::MalformedRegistration => ErrorCode::DeserializationError,
             Self::ServiceNotFound => ErrorCode::ResourceNotFound,
             Self::GossipRejected => ErrorCode::InvalidRequest,
+            Self::PricingWithoutPayoutWallet => ErrorCode::InvalidRequest,
+            Self::UnknownChallenge => ErrorCode::ResourceNotFound,
+            Self::ChallengeExpired => ErrorCode::InvalidRequest,
         }
     }
 }

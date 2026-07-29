@@ -60,7 +60,8 @@ impl<S: KvStore + 'static> RegistryService<S> {
         supported_ofs: Vec<u16>,
         region: Option<String>,
         capabilities: Vec<String>,
-        pricing: Option<String>,
+        pricing: Option<crate::pricing::ServicePricing>,
+        payout_wallet: Option<String>,
     ) -> Result<ServiceId, RegistryError> {
         let registration = Registration {
             service_id: ServiceId::new(service_id),
@@ -72,6 +73,7 @@ impl<S: KvStore + 'static> RegistryService<S> {
             region,
             capabilities,
             pricing,
+            payout_wallet,
             timestamp: Timestamp::now(),
         };
         let signed = self.sign_registration(registration);

@@ -149,6 +149,7 @@ mod tests {
             region: None,
             capabilities: vec!["USD/KES".to_string()],
             pricing: None,
+            payout_wallet: None,
             timestamp: Timestamp::now(),
         };
         services
@@ -249,6 +250,7 @@ mod tests {
                 region: None,
                 capabilities: vec![],
                 pricing: None,
+                payout_wallet: None,
                 timestamp: Timestamp::now(),
             };
             services

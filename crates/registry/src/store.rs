@@ -182,6 +182,7 @@ mod tests {
             region: None,
             capabilities: vec![],
             pricing: None,
+            payout_wallet: None,
             timestamp: Timestamp::now(),
         }
     }

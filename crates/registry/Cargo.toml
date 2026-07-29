@@ -13,6 +13,7 @@ openfiat-crypto = { path = "../crypto", version = "0.1.0" }
 openfiat-gossip = { path = "../gossip", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
+rand = { version = "0.10.2", features = ["std", "std_rng"] }
 serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]

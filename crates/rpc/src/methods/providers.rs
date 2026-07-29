@@ -4,12 +4,24 @@
 use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, method_fn};
 use crate::error::RpcError;
 use crate::state::NodeState;
+use openfiat_crypto::verify;
+use openfiat_registry::earnings::{EarningsChallenge, ProviderEarnings};
 use openfiat_registry::{
     ServiceRecord, SignedHealthUpdate, SignedRegistration, SignedWithdrawal, protocol,
 };
 use openfiat_serialization::{json, wire};
 use openfiat_storage::KvStore;
-use openfiat_types::{Priority, ServiceId};
+use openfiat_types::{Priority, ServiceId, Signature, Timestamp};
+
+/// A provider answering an earnings challenge: which service, which nonce
+/// they were issued, and their signature over the challenge's own bytes.
+#[derive(serde::Deserialize)]
+pub struct EarningsParams {
+    pub id: String,
+    pub nonce: String,
+    /// Base64, matching every other signed payload on this surface.
+    pub signature: String,
+}
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
     table.register(
@@ -80,6 +92,75 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             },
         ),
     );
+    // OFS-4100 §9.5: a provider reads their own earnings by proving control
+    // of the Service ID, not by logging in. Step one hands out a random,
+    // single-use, expiring nonce bound to that one service.
+    //
+    // Issuing is deliberately unauthenticated: a nonce is worthless without
+    // the registered key to sign it, and demanding a signature to obtain the
+    // thing you sign would be circular. It does confirm the service exists,
+    // so a caller can tell "no such service" from "not yours".
+    table.register(
+        "getProviderEarningsChallenge",
+        method_fn(
+            |state: &NodeState<S>, params: IdParams| -> Result<EarningsChallenge, RpcError> {
+                let service_id = ServiceId::new(params.id);
+                if state.services.get(&service_id).is_none() {
+                    return Err(RpcError::Application(
+                        openfiat_registry::RegistryError::ServiceNotFound.code(),
+                    ));
+                }
+                Ok(state
+                    .provider_earnings
+                    .borrow_mut()
+                    .issue_challenge(&service_id, Timestamp::now()))
+            },
+        ),
+    );
+    // Step two: the signature over the challenge is checked against the
+    // public key the registry already holds for that service — the same
+    // rule health updates and withdrawals follow, so a third party cannot
+    // read someone else's statement any more than they could deregister it.
+    table.register(
+        "getProviderEarnings",
+        method_fn(
+            |state: &NodeState<S>, params: EarningsParams| -> Result<ProviderEarnings, RpcError> {
+                let service_id = ServiceId::new(params.id);
+                let record = state
+                    .services
+                    .get(&service_id)
+                    .ok_or(RpcError::Application(
+                        openfiat_registry::RegistryError::ServiceNotFound.code(),
+                    ))?;
+
+                // Consumed before the signature is checked, so presenting a
+                // captured signature burns the nonce rather than replaying it.
+                let challenge = state
+                    .provider_earnings
+                    .borrow_mut()
+                    .consume_challenge(&service_id, &params.nonce, Timestamp::now())
+                    .map_err(|e| RpcError::Application(e.code()))?;
+
+                let raw: [u8; 64] = decode_bytes(&params.signature)?
+                    .try_into()
+                    .map_err(|_| RpcError::InvalidParams("signature must be 64 bytes".into()))?;
+                let signature = Signature::from_bytes(raw);
+                verify(
+                    &record.provider_public_key,
+                    &challenge.signing_bytes(),
+                    &signature,
+                )
+                .map_err(|_| {
+                    RpcError::Application(openfiat_registry::RegistryError::InvalidSignature.code())
+                })?;
+
+                Ok(state
+                    .provider_earnings
+                    .borrow()
+                    .statement(&service_id, record.payout_wallet))
+            },
+        ),
+    );
     // §17: voluntary withdrawal. The registry verifies the signature against
     // the key already on file, so a third party cannot deregister someone
     // else's service.
@@ -146,6 +227,7 @@ mod tests {
             region: None,
             capabilities: vec![],
             pricing: None,
+            payout_wallet: None,
             timestamp: at,
         }
     }
@@ -299,6 +381,206 @@ mod tests {
         assert!(
             state.services.get(&id).is_some(),
             "the service must survive a forged withdrawal"
+        );
+    }
+
+    /// Drives the real two-step flow a provider performs: ask for a
+    /// challenge, sign its bytes, present the signature.
+    fn read_earnings(
+        table: &MethodTable<MemoryStore>,
+        state: &NodeState<MemoryStore>,
+        id: &ServiceId,
+        signer: &Keypair,
+    ) -> Result<serde_json::Value, crate::error::RpcError> {
+        let challenge: EarningsChallenge = serde_json::from_value(
+            table
+                .dispatch(state, "getProviderEarningsChallenge", id_params(id))
+                .expect("a challenge must be issued for a registered service"),
+        )
+        .unwrap();
+        let signature = signer.sign(&challenge.signing_bytes());
+        table.dispatch(
+            state,
+            "getProviderEarnings",
+            serde_json::json!({
+                "id": id.as_str(),
+                "nonce": challenge.nonce,
+                "signature": encode_bytes(&signature.as_bytes().expect("a freshly signed signature is always 64 bytes")),
+            }),
+        )
+    }
+
+    fn id_params(id: &ServiceId) -> serde_json::Value {
+        serde_json::json!({ "id": id.as_str() })
+    }
+
+    #[test]
+    fn a_provider_reads_its_own_statement_by_signing_the_challenge() {
+        let (table, state) = table_and_state();
+        let owner = Keypair::generate();
+        let id = register_service(
+            &table,
+            &state,
+            &owner,
+            "svc-1",
+            Timestamp::from_millis(1_000),
+        );
+
+        let earnings: ProviderEarnings = serde_json::from_value(
+            read_earnings(&table, &state, &id, &owner)
+                .expect("the registered key must be able to read its own earnings"),
+        )
+        .unwrap();
+
+        assert_eq!(earnings.service_id, id);
+        assert!(
+            earnings.entries.is_empty(),
+            "no metering credits anything yet, so the statement is honestly empty"
+        );
+    }
+
+    #[test]
+    fn a_statement_cannot_be_read_by_a_key_that_does_not_own_the_service() {
+        let (table, state) = table_and_state();
+        let owner = Keypair::generate();
+        let id = register_service(
+            &table,
+            &state,
+            &owner,
+            "svc-1",
+            Timestamp::from_millis(1_000),
+        );
+
+        let attacker = Keypair::generate();
+        assert!(
+            read_earnings(&table, &state, &id, &attacker).is_err(),
+            "the signature must be checked against the key already on file"
+        );
+    }
+
+    #[test]
+    fn a_captured_signature_cannot_be_replayed() {
+        let (table, state) = table_and_state();
+        let owner = Keypair::generate();
+        let id = register_service(
+            &table,
+            &state,
+            &owner,
+            "svc-1",
+            Timestamp::from_millis(1_000),
+        );
+
+        // Capture a genuine, successful exchange off the wire.
+        let challenge: EarningsChallenge = serde_json::from_value(
+            table
+                .dispatch(&state, "getProviderEarningsChallenge", id_params(&id))
+                .unwrap(),
+        )
+        .unwrap();
+        let signature = owner.sign(&challenge.signing_bytes());
+        let replayed = serde_json::json!({
+            "id": id.as_str(),
+            "nonce": challenge.nonce,
+            "signature": encode_bytes(&signature.as_bytes().expect("a freshly signed signature is always 64 bytes")),
+        });
+
+        assert!(
+            table
+                .dispatch(&state, "getProviderEarnings", replayed.clone())
+                .is_ok(),
+            "the first presentation is legitimate"
+        );
+        assert!(
+            table
+                .dispatch(&state, "getProviderEarnings", replayed)
+                .is_err(),
+            "the identical request must fail once the nonce is spent"
+        );
+    }
+
+    #[test]
+    fn a_challenge_is_not_issued_for_a_service_that_does_not_exist() {
+        let (table, state) = table_and_state();
+        assert!(
+            table
+                .dispatch(
+                    &state,
+                    "getProviderEarningsChallenge",
+                    id_params(&ServiceId::new("nope")),
+                )
+                .is_err()
+        );
+    }
+
+    /// A price only means something if it survives the whole path a real
+    /// provider's registration takes: signed by them, gossiped as bytes,
+    /// decoded into the record a client reads back.
+    #[test]
+    fn a_declared_price_round_trips_through_registration_to_the_stored_record() {
+        use openfiat_registry::pricing::{BillingUnit, ServicePricing};
+        let (table, state) = table_and_state();
+        let owner = Keypair::generate();
+
+        let mut reg = registration_at(&owner, "svc-priced", Timestamp::from_millis(1_000));
+        reg.pricing = Some(ServicePricing {
+            token_mint: "29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj".to_string(),
+            amount: openfiat_types::Amount::new(50_000, 6),
+            unit: BillingUnit::Request,
+        });
+        reg.payout_wallet = Some("EA8TyQ58C3eavg3ThRFTMu1KLyV9e1v2oTQubSBQ9s5z".to_string());
+        table
+            .dispatch(
+                &state,
+                "sendProviderRegister",
+                params(&SignedRegistration::sign(reg, &owner)),
+            )
+            .expect("a priced registration must be accepted");
+
+        let stored = state.services.get(&ServiceId::new("svc-priced")).unwrap();
+        let price = stored
+            .pricing
+            .expect("the price must survive the round trip");
+        assert_eq!(price.amount.base_units(), 50_000);
+        assert_eq!(price.unit, BillingUnit::Request);
+        assert_eq!(
+            stored.payout_wallet.as_deref(),
+            Some("EA8TyQ58C3eavg3ThRFTMu1KLyV9e1v2oTQubSBQ9s5z")
+        );
+
+        // And the statement reports where those funds would be payable.
+        let earnings: ProviderEarnings = serde_json::from_value(
+            read_earnings(&table, &state, &ServiceId::new("svc-priced"), &owner).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            earnings.payout_wallet.as_deref(),
+            Some("EA8TyQ58C3eavg3ThRFTMu1KLyV9e1v2oTQubSBQ9s5z")
+        );
+    }
+
+    #[test]
+    fn a_price_without_a_payout_wallet_is_refused_at_the_rpc_boundary() {
+        use openfiat_registry::pricing::{BillingUnit, ServicePricing};
+        let (table, state) = table_and_state();
+        let owner = Keypair::generate();
+
+        let mut reg = registration_at(&owner, "svc-half", Timestamp::from_millis(1_000));
+        reg.pricing = Some(ServicePricing {
+            token_mint: "MINT".to_string(),
+            amount: openfiat_types::Amount::new(1, 6),
+            unit: BillingUnit::Month,
+        });
+        reg.payout_wallet = None;
+
+        assert!(
+            table
+                .dispatch(
+                    &state,
+                    "sendProviderRegister",
+                    params(&SignedRegistration::sign(reg, &owner)),
+                )
+                .is_err(),
+            "billing with nowhere to be paid must not reach the registry"
         );
     }
 

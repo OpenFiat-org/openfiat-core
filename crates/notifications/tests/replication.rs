@@ -37,6 +37,7 @@ fn seeded_registry(provider: &Keypair, service_id: &str) -> Rc<Registry<MemorySt
         region: None,
         capabilities: vec![],
         pricing: None,
+        payout_wallet: None,
         timestamp: Timestamp::now(),
     };
     registry

@@ -35,6 +35,7 @@ fn seeded_registries(providers: &[Keypair]) -> Rc<Registry<MemoryStore>> {
             region: None,
             capabilities: vec![],
             pricing: None,
+            payout_wallet: None,
             timestamp: Timestamp::now(),
         };
         registry

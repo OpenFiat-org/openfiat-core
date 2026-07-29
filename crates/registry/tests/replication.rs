@@ -105,6 +105,7 @@ async fn registration_and_health_changes_replicate_and_stale_services_expire_eve
             Some("Kenya".to_string()),
             vec!["hourly".to_string()],
             None,
+            None,
         )
         .unwrap();
 

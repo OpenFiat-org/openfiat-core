@@ -6,8 +6,10 @@
 //! Gossip Protocol") rather than a bespoke transport, and every node
 //! derives its local registry purely by consuming them.
 
+pub mod earnings;
 pub mod error;
 pub mod health;
+pub mod pricing;
 pub mod protocol;
 pub mod record;
 pub mod registration;
@@ -15,8 +17,10 @@ pub mod service;
 pub mod store;
 pub mod withdrawal;
 
+pub use earnings::{EarningEntry, EarningsChallenge, EarningsLedger, ProviderEarnings};
 pub use error::RegistryError;
 pub use health::{HealthState, HealthUpdate, SignedHealthUpdate};
+pub use pricing::{BillingUnit, ServicePricing};
 pub use record::ServiceRecord;
 pub use registration::{Registration, SignedRegistration};
 pub use service::RegistryService;

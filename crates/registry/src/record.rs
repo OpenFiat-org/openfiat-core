@@ -2,6 +2,7 @@
 //! `Registry` actually stores, derived from the registration/health/
 //! withdrawal events applied to it.
 
+use crate::pricing::ServicePricing;
 use openfiat_types::{PeerId, PublicKey, ServiceId, ServiceType, Timestamp};
 
 /// Service health, per OFS-1500 §11.
@@ -23,7 +24,10 @@ pub struct ServiceRecord {
     pub supported_ofs: Vec<u16>,
     pub region: Option<String>,
     pub capabilities: Vec<String>,
-    pub pricing: Option<String>,
+    pub pricing: Option<ServicePricing>,
+    /// Base58 Solana address earnings are payable to, as declared on the
+    /// registration. Required whenever `pricing` is set.
+    pub payout_wallet: Option<String>,
     pub health: HealthState,
     pub registered_at: Timestamp,
     pub last_health_update: Timestamp,
