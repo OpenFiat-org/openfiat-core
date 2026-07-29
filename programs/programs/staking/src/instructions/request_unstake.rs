@@ -34,7 +34,18 @@ pub fn handle_request_unstake(ctx: Context<RequestUnstake>, amount: u64) -> Resu
         stake_account.amount >= amount,
         ErrorCode::InsufficientStakedAmount
     );
-    stake_account.amount -= amount;
+
+    // Enforcing the minimum only on the way in would leave the same hole
+    // on the way out: stake the minimum, unstake one lamport, and keep an
+    // account that still reads as staked while no longer qualifying.
+    // Either clear the minimum or leave entirely — never the middle.
+    let remaining = stake_account.amount - amount;
+    require!(
+        staking_config.is_legal_balance(stake_account.role, remaining),
+        ErrorCode::StakeBelowRoleMinimum
+    );
+
+    stake_account.amount = remaining;
     stake_account.unbonding_amount = stake_account
         .unbonding_amount
         .checked_add(amount)

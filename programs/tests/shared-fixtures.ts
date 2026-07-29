@@ -139,8 +139,18 @@ export function getSharedStakingConfig(staking: Program<Staking>): Promise<Share
 
       await staking.methods
         .initializeStakingConfig({
-          minStake: unit(1000),
-          minStakeArbitrator: unit(50000),
+          // Indexed by Role: Merchant, Arbitrator, NodeOperator,
+          // NotificationProvider, OracleProvider, RiskIntelligence,
+          // SnapshotProvider (OFS-4100 §4 figures).
+          minStakeByRole: [
+            unit(1000),
+            unit(10000),
+            unit(1000),
+            unit(5000),
+            unit(1000),
+            unit(1000),
+            unit(1000),
+          ],
           unbondingPeriodSecs: new BN(1),
           slashBps: 1000,
           slashingAuthority: slashingAuthority.publicKey,

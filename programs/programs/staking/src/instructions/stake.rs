@@ -36,6 +36,21 @@ pub struct Stake<'info> {
 }
 
 pub fn handle_stake(ctx: Context<Stake>, amount: u64) -> Result<()> {
+    // Checked before the transfer, so a stake that would land below the
+    // role's minimum fails without having moved any tokens.
+    let new_amount = ctx
+        .accounts
+        .stake_account
+        .amount
+        .checked_add(amount)
+        .ok_or(ErrorCode::Overflow)?;
+    require!(
+        ctx.accounts
+            .staking_config
+            .is_legal_balance(ctx.accounts.stake_account.role, new_amount),
+        ErrorCode::StakeBelowRoleMinimum
+    );
+
     transfer_checked(
         CpiContext::new(
             ctx.accounts.token_program.key(),
@@ -50,10 +65,6 @@ pub fn handle_stake(ctx: Context<Stake>, amount: u64) -> Result<()> {
         ctx.accounts.mint.decimals,
     )?;
 
-    let stake_account = &mut ctx.accounts.stake_account;
-    stake_account.amount = stake_account
-        .amount
-        .checked_add(amount)
-        .ok_or(ErrorCode::Overflow)?;
+    ctx.accounts.stake_account.amount = new_amount;
     Ok(())
 }

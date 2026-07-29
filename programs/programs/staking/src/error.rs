@@ -20,6 +20,10 @@ pub enum ErrorCode {
     NoUnbondingBalance,
     #[msg("This stake account has no pending rewards to claim")]
     NoPendingRewards,
+    #[msg("Resulting balance would be below this role's minimum stake without being a full exit")]
+    StakeBelowRoleMinimum,
+    #[msg("This staking config is not in the pre-migration layout")]
+    AlreadyMigrated,
     #[msg("Arithmetic overflow")]
     Overflow,
 }

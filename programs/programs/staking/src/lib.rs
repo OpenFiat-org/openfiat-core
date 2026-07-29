@@ -30,6 +30,18 @@ pub mod staking {
         )
     }
 
+    /// One-shot layout migration for the existing devnet deployment — see
+    /// `migrate_staking_config`'s own doc comment.
+    pub fn migrate_staking_config(
+        ctx: Context<MigrateStakingConfig>,
+        min_stake_by_role: [u64; Role::COUNT],
+    ) -> Result<()> {
+        crate::instructions::migrate_staking_config::handle_migrate_staking_config(
+            ctx,
+            min_stake_by_role,
+        )
+    }
+
     pub fn initialize_stake_account(
         ctx: Context<InitializeStakeAccount>,
         role: Role,

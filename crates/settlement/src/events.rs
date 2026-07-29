@@ -6,7 +6,7 @@
 //! everywhere else in this workspace.
 
 use crate::error::SettlementError;
-use crate::record::SettlementId;
+use crate::record::{PaymentDiscrepancy, SettlementId};
 use openfiat_crypto::Keypair;
 use openfiat_network::identity::peer_id_from_public_key;
 use openfiat_reservations::ReservationId;
@@ -54,11 +54,11 @@ impl SignedSettlementInitiate {
 }
 
 macro_rules! settlement_action {
-    ($unsigned:ident, $signed:ident { $( $field:ident: $ty:ty ),* $(,)? }) => {
+    ($unsigned:ident, $signed:ident { $( $(#[$meta:meta])* $field:ident: $ty:ty ),* $(,)? }) => {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $unsigned {
             pub settlement_id: SettlementId,
-            $( pub $field: $ty, )*
+            $( $(#[$meta])* pub $field: $ty, )*
             pub timestamp: Timestamp,
         }
 
@@ -87,7 +87,11 @@ settlement_action!(
     SettlementRejected,
     SignedSettlementRejected {
         seller: PeerId,
-        reason: String
+        /// Free text for a human reading the trade; `discrepancy` is what
+        /// reputation counts. See `PaymentDiscrepancy`'s own doc for why
+        /// both exist.
+        reason: String,
+        discrepancy: PaymentDiscrepancy
     }
 );
 settlement_action!(

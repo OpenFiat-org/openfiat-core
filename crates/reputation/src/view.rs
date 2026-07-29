@@ -59,6 +59,35 @@ impl<S: KvStore> ReputationView<S> {
             }
             profile.trades_started += 1;
             profile.observe_activity_at(settlement.created_at);
+
+            // §13/§14 are attributed to opposite sides of the same trade:
+            // the merchant is judged on answering a payment declaration,
+            // the payer on getting the payment's details right.
+            if &settlement.seller == wallet
+                && let Some(submitted) = settlement.payment_submitted_at
+            {
+                match settlement.merchant_responded_at {
+                    Some(responded) => profile.record_payment_response(
+                        responded
+                            .as_millis()
+                            .saturating_sub(submitted.as_millis()),
+                    ),
+                    None => profile.record_payment_response_outstanding(),
+                }
+            }
+            if &settlement.buyer == wallet {
+                // A withdrawn declaration (§10) clears `payment_submitted_at`,
+                // so it neither counts as a payment made nor can be faulted.
+                if settlement.payment_submitted_at.is_some() {
+                    profile.payments_submitted += 1;
+                }
+                if settlement
+                    .payment_discrepancy
+                    .is_some_and(|kind| kind.is_payment_accuracy_fault())
+                {
+                    profile.payment_discrepancies += 1;
+                }
+            }
             match settlement.state {
                 // Not currently reachable — see `openfiat_settlement`'s own
                 // note on why `Approved` and `Completed` are still kept as

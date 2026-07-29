@@ -9,8 +9,17 @@ use openfiat_programs_shared::Role;
 pub struct StakingConfig {
     pub admin: Pubkey,
     pub mint: Pubkey,
-    pub min_stake: u64,
-    pub min_stake_arbitrator: u64,
+    /// Minimum stake per role, indexed by [`Role::index`].
+    ///
+    /// This replaced a flat `min_stake` plus a special-cased
+    /// `min_stake_arbitrator`. OFS-4100 §7 lists per-role minimums as out
+    /// of scope for v1 on the grounds that further differentiation would
+    /// be "a future governance parameter change, not new code" — but with
+    /// two hardcoded fields that was not true, since there was no per-role
+    /// value for governance to change. An array indexed by role is what
+    /// actually makes that sentence hold: a new minimum for any role is a
+    /// parameter write, and no layout or code change.
+    pub min_stake_by_role: [u64; Role::COUNT],
     pub unbonding_period_secs: i64,
     pub slash_bps: u16,
     pub slashing_authority: Pubkey,
@@ -26,6 +35,26 @@ pub struct StakingConfig {
     pub bump: u8,
     pub stake_vault_bump: u8,
     pub rewards_vault_bump: u8,
+}
+
+impl StakingConfig {
+    /// The minimum this role must hold to count as staked at all.
+    pub fn min_stake_for(&self, role: Role) -> u64 {
+        self.min_stake_by_role[role.index()]
+    }
+
+    /// A stake balance is legal only if it clears the role's minimum or is
+    /// zero — "some but not enough" is rejected everywhere it could arise.
+    ///
+    /// Keeping exit fully open matters: a minimum must never be able to
+    /// trap someone's tokens. What it rules out is the silent middle,
+    /// where an account still looks staked but no longer qualifies. That
+    /// gives every reader of [`StakeAccount::effective_stake`] — governance
+    /// vote weight, the escrow dispute tally — the invariant that a
+    /// non-zero stake is always a qualifying one.
+    pub fn is_legal_balance(&self, role: Role, amount: u64) -> bool {
+        amount == 0 || amount >= self.min_stake_for(role)
+    }
 }
 
 /// One wallet's stake under one role (OFS-4200 §5) — a wallet may hold

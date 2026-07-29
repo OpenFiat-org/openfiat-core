@@ -47,6 +47,44 @@ pub enum SettlementState {
     Disputed,
 }
 
+/// Why a merchant rejected a submitted payment, as one of OFS-3000 §14's
+/// named settlement-discrepancy kinds.
+///
+/// `SettlementRejected` already carries a free-text `reason` for a human
+/// to read. This enum exists alongside it because OFS-3000 §14 makes
+/// payment accuracy a *reputation dimension*, and a dimension has to be
+/// counted, not read — parsing prose to decide whether a rejection was a
+/// wrong-amount or a wrong-reference would be guesswork, and guesswork
+/// that silently mis-attributes a reputation penalty is worse than no
+/// signal at all.
+///
+/// `Other` is deliberately not a catch-all for laziness: a rejection that
+/// is not about the payment's details (say, the merchant simply changed
+/// their mind) must not count against the buyer's payment accuracy, and
+/// [`PaymentDiscrepancy::is_payment_accuracy_fault`] is what draws that
+/// line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PaymentDiscrepancy {
+    /// §14: "Incorrect payment amount".
+    IncorrectAmount,
+    /// §14: "Wrong payment reference".
+    WrongReference,
+    /// §14: "Duplicate payments".
+    DuplicatePayment,
+    /// §14: "Incorrect account usage".
+    IncorrectAccount,
+    /// A rejection unrelated to the payment's details.
+    Other,
+}
+
+impl PaymentDiscrepancy {
+    /// Whether this rejection reflects a payment-detail mistake by the
+    /// payer, and so counts toward §14. `Other` does not.
+    pub fn is_payment_accuracy_fault(self) -> bool {
+        !matches!(self, PaymentDiscrepancy::Other)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Settlement {
     pub id: SettlementId,
@@ -62,6 +100,22 @@ pub struct Settlement {
     /// its confirmation has been independently observed (OFS-4300) —
     /// `None` until `SettlementRegistry::apply_escrow_released`.
     pub escrow_release_signature: Option<String>,
+    /// When the buyer declared payment sent, taken from that signed
+    /// event's own timestamp. Cleared again if they withdraw the claim
+    /// (§10), so it always describes the *outstanding* declaration.
+    ///
+    /// Paired with `merchant_responded_at`, this is what makes OFS-3000
+    /// §13's response rate and response latency computable without any
+    /// new event: both endpoints are already signed and replicated.
+    #[serde(default)]
+    pub payment_submitted_at: Option<Timestamp>,
+    /// When the merchant approved or rejected that declaration, from
+    /// their own signed event's timestamp.
+    #[serde(default)]
+    pub merchant_responded_at: Option<Timestamp>,
+    /// Set only on rejection — §14's typed discrepancy kind.
+    #[serde(default)]
+    pub payment_discrepancy: Option<PaymentDiscrepancy>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }

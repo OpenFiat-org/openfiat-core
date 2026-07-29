@@ -379,4 +379,96 @@ describe("staking", () => {
       expect(ownerTokens.amount.toString()).to.equal(unit(100).toString());
     });
   });
+
+  // The minimums used to be stored and never read — a stake of one lamport
+  // under any role was accepted. These prove they are enforced now, on the
+  // way in and on the way out, for more than one role.
+  describe("per-role minimum stake", () => {
+    const ROLE_NOTIFICATION_PROVIDER = { notificationProvider: {} };
+
+    async function freshStaker(roleArg: unknown, roleIndex: number, funding: BN) {
+      const owner = Keypair.generate();
+      await airdrop(owner.publicKey);
+      const stakeAccount = stakeAccountPda(owner.publicKey, roleIndex);
+      await withBlockhashRetry(() =>
+        program.methods
+          .initializeStakeAccount(roleArg as never)
+          .accountsPartial({ owner: owner.publicKey, stakeAccount, systemProgram: SystemProgram.programId })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+      const ownerAta = await ata(mint, owner.publicKey);
+      await mintTokens(ownerAta, funding);
+      return { owner, stakeAccount, ownerAta };
+    }
+
+    function stakeIx(ctx: { owner: Keypair; stakeAccount: PublicKey; ownerAta: PublicKey }, amount: BN) {
+      return program.methods
+        .stake(amount)
+        .accountsPartial({
+          owner: ctx.owner.publicKey,
+          stakingConfig,
+          stakeAccount: ctx.stakeAccount,
+          stakeVault,
+          from: ctx.ownerAta,
+          mint,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+        })
+        .signers([ctx.owner]);
+    }
+
+    it("rejects a stake below the notification-provider minimum of 5,000 OPEN", async () => {
+      const ctx = await freshStaker(ROLE_NOTIFICATION_PROVIDER, 3, unit(6000));
+      await expectAnchorError(
+        stakeIx(ctx, unit(4999)).rpc({ commitment: "confirmed" }),
+        "StakeBelowRoleMinimum",
+      );
+      // and nothing moved
+      const account = await program.account.stakeAccount.fetch(ctx.stakeAccount);
+      expect(account.amount.toString()).to.equal("0");
+    });
+
+    it("accepts a stake exactly at the notification-provider minimum", async () => {
+      const ctx = await freshStaker(ROLE_NOTIFICATION_PROVIDER, 3, unit(6000));
+      await withBlockhashRetry(() => stakeIx(ctx, unit(5000)).rpc({ commitment: "confirmed" }));
+      const account = await program.account.stakeAccount.fetch(ctx.stakeAccount);
+      expect(account.amount.toString()).to.equal(unit(5000).toString());
+    });
+
+    it("rejects a stake below the arbitrator minimum of 10,000 OPEN", async () => {
+      const ctx = await freshStaker(ROLE_ARBITRATOR, 1, unit(12000));
+      await expectAnchorError(
+        stakeIx(ctx, unit(9999)).rpc({ commitment: "confirmed" }),
+        "StakeBelowRoleMinimum",
+      );
+    });
+
+    it("lets a node operator clear its lower 1,000 minimum that would fail as an arbitrator", async () => {
+      const ctx = await freshStaker(ROLE_NODE_OPERATOR, 2, unit(2000));
+      await withBlockhashRetry(() => stakeIx(ctx, unit(1000)).rpc({ commitment: "confirmed" }));
+      const account = await program.account.stakeAccount.fetch(ctx.stakeAccount);
+      expect(account.amount.toString()).to.equal(unit(1000).toString());
+    });
+
+    it("refuses an unstake that would leave a balance below the minimum, but allows a full exit", async () => {
+      const ctx = await freshStaker(ROLE_NOTIFICATION_PROVIDER, 3, unit(6000));
+      await withBlockhashRetry(() => stakeIx(ctx, unit(5000)).rpc({ commitment: "confirmed" }));
+
+      const unstake = (amount: BN) =>
+        program.methods
+          .requestUnstake(amount)
+          .accountsPartial({ owner: ctx.owner.publicKey, stakingConfig, stakeAccount: ctx.stakeAccount })
+          .signers([ctx.owner]);
+
+      // 5000 -> 4999 would still read as staked while no longer qualifying.
+      await expectAnchorError(unstake(unit(1)).rpc({ commitment: "confirmed" }), "StakeBelowRoleMinimum");
+
+      // Leaving entirely is always allowed - a minimum must not trap tokens.
+      await withBlockhashRetry(() => unstake(unit(5000)).rpc({ commitment: "confirmed" }));
+      const account = await program.account.stakeAccount.fetch(ctx.stakeAccount);
+      expect(account.amount.toString()).to.equal("0");
+      expect(account.unbondingAmount.toString()).to.equal(unit(5000).toString());
+    });
+  });
+
 });
