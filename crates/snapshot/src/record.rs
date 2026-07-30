@@ -4,8 +4,11 @@
 //! logic" — what's actually inside a snapshot's state bytes is every
 //! other crate's concern (advertisements, reputation, governance, ...),
 //! not this one's. `SnapshotMetadata` describes a snapshot; the state it
-//! describes is an opaque byte blob as far as this crate is concerned.
+//! describes stays opaque to this crate, which handles it only as column
+//! families, keys, and values (see [`crate::state`]) and never as
+//! meaning.
 
+use crate::location::SnapshotLocation;
 use openfiat_types::{PeerId, PublicKey, Timestamp};
 
 /// §15: "the compression method MUST be recorded within snapshot
@@ -51,9 +54,23 @@ pub struct SnapshotMetadata {
     /// §10: a cryptographic digest of the *uncompressed* state bytes,
     /// verified after decompression on import.
     pub state_root: [u8; 32],
-    /// §8: the *compressed* size, checked against the actual download.
+    /// §8: the *compressed* size, checked against the actual download —
+    /// and, before that, used as a hard cap on how many bytes a mirror is
+    /// allowed to send at all (see [`crate::fetch::download`]).
     pub size_bytes: u64,
     pub compression: CompressionMethod,
+    /// Where these bytes can be downloaded. Not in OFS-1300 §8's field
+    /// list, and this workspace's addition: §8 requires a producer to
+    /// state a snapshot's size and digest but never where it is, so a
+    /// joining node could verify a hash it had no way to obtain and every
+    /// announced snapshot was undownloadable by construction.
+    ///
+    /// Ordered by the producer's preference; a consumer tries them in
+    /// order and any one of them that verifies is as good as any other.
+    /// Never empty in a snapshot this implementation produced — see
+    /// [`crate::config::SnapshotConfig::produces`] for why a node with no
+    /// public URL declines to announce rather than announcing without one.
+    pub locations: Vec<SnapshotLocation>,
     pub producer: PeerId,
     pub producer_public_key: PublicKey,
 }

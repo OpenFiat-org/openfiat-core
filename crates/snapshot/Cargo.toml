@@ -15,8 +15,19 @@ openfiat-gossip = { path = "../gossip", version = "0.1.0" }
 openfiat-registry = { path = "../registry", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
+# The serving and fetching halves of §14. `axum` is the HTTP server this
+# node already runs (see `serve`'s module doc on why this merges into it
+# rather than binding a port of its own), and `reqwest` matches
+# `openfiat-notifications`' existing rustls-only client so the workspace
+# carries one TLS stack.
+axum = "0.8.9"
+tokio = { version = "1.53.1", features = ["fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
 
 [dev-dependencies]
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net"] }
 futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
 libp2p = { version = "0.56.0", features = ["request-response"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
