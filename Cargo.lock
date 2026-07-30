@@ -3406,6 +3406,7 @@ dependencies = [
  "async-trait",
  "futures",
  "libp2p",
+ "libp2p-identity",
  "libp2p-stream",
  "libp2p-swarm",
  "openfiat-crypto",
@@ -3418,6 +3419,7 @@ dependencies = [
  "reqwest",
  "serde",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3667,6 +3669,8 @@ dependencies = [
  "bincode",
  "futures-util",
  "http-body-util",
+ "libp2p-identity",
+ "libp2p-stream",
  "openfiat-advertisements",
  "openfiat-chain",
  "openfiat-content",

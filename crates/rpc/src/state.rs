@@ -133,11 +133,23 @@ pub struct NodeState<S> {
     /// file, and why reading a settlement's attachments requires being
     /// told who its parties are.
     pub attachments: Rc<AttachmentRegistry<Rc<S>>>,
-    /// Content this node keeps a local copy of so it can answer a
-    /// retrievability challenge synchronously. Empty unless the operator
-    /// opted in with `--ipfs-api-url`; see `openfiat_content::held` for
-    /// why the copy exists and why it is bounded at 256 KiB an item.
+    /// Content this node keeps a local copy of, so it can answer a
+    /// retrievability challenge synchronously and serve the block to any
+    /// IPFS peer that asks. See `openfiat_content::held` for why the copy
+    /// exists and why it is bounded at 256 KiB an item.
     pub held_content: Rc<HeldContent<Rc<S>>>,
+    /// CIDs this node has asked its peers for and not yet received.
+    ///
+    /// The gate on what an inbound bitswap message may cause this node to
+    /// store. Blocks are verified against their CID before being kept, so
+    /// an unsolicited one cannot be *wrong* — but nothing stops a peer
+    /// pushing correct blocks for content this node never wanted until
+    /// the disk is full. Only what is on this list is kept.
+    ///
+    /// In memory, not persisted: it is derived from the attachment
+    /// records on every pinning tick, so a restart rebuilds it from the
+    /// records rather than trusting a stale copy.
+    pub content_wants: RefCell<std::collections::HashSet<String>>,
     /// The identity-conflict count already reported, so a cloned wallet
     /// is announced when the count changes rather than on every tick.
     pub reported_identity_conflicts: std::cell::Cell<u64>,
@@ -379,6 +391,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             identity,
             attachments,
             held_content,
+            content_wants: RefCell::new(std::collections::HashSet::new()),
             reported_identity_conflicts: std::cell::Cell::new(0),
             reputation,
             governance,

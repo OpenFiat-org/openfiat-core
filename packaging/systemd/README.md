@@ -32,7 +32,9 @@ server and nowhere that is version controlled.
 
 ## Pinning content (optional, and it pays)
 
-Add `--ipfs-api-url http://127.0.0.1:5001` once an IPFS daemon is running.
+Content serving is on by default and needs no flag or daemon. Pass
+`--no-content-serving` to turn it off, at the cost of the retrievability
+share of rewards.
 The node then pins the content that protocol records reference and can
 answer another node's retrievability challenge, which earns the full
 reward share; without it the node stores nothing and earns a reduced share

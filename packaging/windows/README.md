@@ -31,8 +31,8 @@ Node.js/Java services that don't have native SCM support built in.
    ```
 
    Add `--entrypoint` and `--solana-rpc-url` to `AppParameters` the same
-   way if needed, and `--ipfs-api-url` to pin content and earn the full
-   reward share. `openfiat-node --help` lists every flag; there is no
+   way if needed. Content serving is on by default and needs no flag or
+   daemon. `openfiat-node --help` lists every flag; there is no
    environment-variable fallback and no config file, so `AppParameters` is
    the whole configuration surface.
 

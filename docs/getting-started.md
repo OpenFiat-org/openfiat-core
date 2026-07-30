@@ -115,42 +115,65 @@ so it belongs in the unit file that starts the node (`systemctl cat
 openfiat-node` shows exactly what a running node was given) and in
 nothing that is version controlled.
 
-## 5. Pin content, and earn more for it
+## 5. Serve content, which is already on
 
-A node can hold the files protocol records reference — dispute evidence,
-merchant avatars — and prove it. Opt in by pointing the node at an IPFS
-daemon:
+A node holds the files protocol records reference — dispute evidence,
+merchant avatars — and serves them to the IPFS network over its own
+libp2p identity. **This is on by default and needs no configuration.**
+
+It used to require running a separate Kubo daemon and passing
+`--ipfs-api-url`. It does not any more, and the change was not only
+tidiness. A default that costs the network its durability guarantee is
+the wrong default: pinning that required installing Go and supervising a
+second process is pinning almost nobody would have switched on, and a
+guarantee nobody opts into is not a guarantee. Serving in process also
+removes a second peer identity, a second runtime, and an unauthenticated
+`/api/v0` control port that let anyone who reached it read and unpin
+everything the daemon held.
+
+What your node does, unprompted:
+
+- Holds the content referenced by attachment records it has accepted,
+  inside its retention window, so evidence stays retrievable after the
+  uploader stops paying for it — which matters, because a dispute can
+  open weeks after a trade.
+- Answers bitswap for it, so any IPFS peer — another node, a gateway, a
+  browser running Helia — can fetch it from you.
+- **Earns the full reward share.** Peers challenge each other by asking
+  for content by CID and hashing what comes back; a content address is
+  the hash of its content, so the right bytes cannot be produced without
+  having them. A node that answers keeps its full multiplier, and one
+  that cannot is scaled to 0.7 (`[PROPOSED — NEEDS SIGN-OFF]`). See
+  [OFS-4100 §9.2] and `crates/rewards`.
+
+Where the first copy comes from: bitswap moves blocks between peers that
+already have them, and does not create the first one. Content enters the
+network through whatever pinning service the interface uploaded it to, so
+the first node to want a CID fetches it from a public IPFS gateway,
+checks the bytes against the CID, and serves it to its peers from then
+on. The gateway is untrusted transport — bytes that are not what the CID
+names are refused — but it does learn which content your node asks for.
+Point `--content-gateway` at your own if that matters to you.
+
+To turn it off:
 
 ```bash
-# A local Kubo daemon, the usual case.
-ipfs daemon &
-
 ./target/release/openfiat-node \
     --ledger ~/openfiat \
     --identity ~/openfiat/wallet.json \
-    --solana-rpc-url https://api.devnet.solana.com \
-    --ipfs-api-url http://127.0.0.1:5001
+    --no-content-serving
 ```
 
-What this changes:
+That node stores nothing, cannot answer a retrievability challenge, and
+earns the reduced share — the honest outcome, since it is doing less for
+the network. It still challenges its peers either way: measuring who
+serves content costs nothing and is a service in itself.
 
-- The node pins the content referenced by attachment records it has
-  accepted, so evidence stays retrievable after the uploader stops paying
-  for it — which matters, because a dispute can open weeks after a trade.
-- It keeps a local copy of the part small enough to verify (256 KiB, the
-  IPFS chunk boundary) so it can answer another node's retrievability
-  challenge from memory.
-- **It earns the full reward share.** Peers challenge each other by asking
-  for content by CID and hashing what comes back; a content address is the
-  hash of its content, so the right bytes cannot be produced without
-  having them. A node that answers keeps its full multiplier, and one that
-  cannot is scaled to 0.7 (`[PROPOSED — NEEDS SIGN-OFF]`). See
-  [OFS-4100 §9.2] and `crates/rewards`.
-
-Without `--ipfs-api-url` a node stores no content and earns the reduced
-share, which is the honest outcome — it is doing less for the network. It
-still challenges its peers either way: measuring who serves content costs
-nothing and is a service in itself.
+If you already run a Kubo cluster, `--ipfs-api-url http://127.0.0.1:5001`
+still works, and now means something narrower than it used to: protocol
+content is pinned into your daemon *as well*, putting a copy somewhere
+your node's own retention window does not govern. It is no longer how a
+node serves content.
 
 Check what your node is holding:
 
@@ -416,7 +439,7 @@ discovering which flags to leave out.
 | To disable | Do this | What you lose |
 |---|---|---|
 | Solana connectivity | omit `--solana-rpc-url` | Node runs `GossipOnly`: on-chain answers come second-hand from peers and can lag. It still serves the marketplace and relays transactions to an RPC-connected peer. Earns the reduced connectivity share. |
-| Content pinning | omit `--ipfs-api-url` | Node stores no attachment content and cannot answer a retrievability challenge, so it earns the reduced share (0.7x). It still challenges its peers. |
+| Content serving | `--no-content-serving` | Node stores no attachment content and cannot answer a retrievability challenge, so it earns the reduced share (0.7x). It still challenges its peers. |
 | Keeping old content | `--retention 30` (the default) | Nothing, unless you were relying on this node to serve older-than-30-day content. Use `--retention archival` if you intend to run an archive. |
 | Producing snapshots | omit `--snapshot-public-url` | Node produces no snapshots for others to bootstrap from. It still *consumes* them, which needs no configuration. |
 | Log volume | `--log warn` | Routine INFO lines, including the addresses the node is reachable at. Errors and warnings still appear. |

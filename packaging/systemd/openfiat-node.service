@@ -24,11 +24,12 @@ ExecStart=/usr/local/bin/openfiat-node \
     --gossip-bind-address /ip4/0.0.0.0/udp/4001/quic-v1 \
     --solana-rpc-url https://api.devnet.solana.com
 
-# Pinning is opt-in and changes what this node earns. Add
-#     --ipfs-api-url http://127.0.0.1:5001
-# above once an IPFS daemon is running, and the node will pin the content
-# protocol records reference and be able to answer a peer's retrievability
-# challenge — which is what earns the full reward share (OFS-4100 §9.2).
+# Content serving is on by default and needs no flag: the node holds the
+# content protocol records reference and answers bitswap for it over its
+# own libp2p identity, which is what earns the full reward share
+# (OFS-4100 §9.2). There is no second daemon to run and no second port to
+# firewall. Add --no-content-serving above only if this machine genuinely
+# cannot spare the disk, and expect the reduced share.
 
 # Restart on any exit, including a clean one. A node that stops is not
 # serving the network, and there is no exit this binary makes that should

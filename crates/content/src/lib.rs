@@ -17,14 +17,29 @@
 //! - **It does not encrypt.** Attachments are public, verifiably so; see
 //!   [`record`] for why that is the right answer for evidence rather than
 //!   a gap to close later.
-//! - **It does not fetch.** A node that stored the referenced bytes would
-//!   be storing whatever anyone chose to point it at. Retrieval is the
-//!   viewer's, against a gateway, checked with [`Cid::matches`].
+//! - **It does not fetch on sight.** A node that stored the bytes behind
+//!   every CID it saw would be storing whatever anyone chose to point it
+//!   at. What it does fetch and hold is the content referenced by
+//!   *accepted* attachment records inside its own retention window — a set
+//!   bounded by real trading volume, since an attachment needs a
+//!   settlement and a settlement needs real escrow. Everything retrieved
+//!   is checked with [`Cid::matches`] before it is kept, whether it came
+//!   from a peer or a gateway.
+//!
+//! # Serving, which is a node's job and not a browser's
+//!
+//! [`bitswap`] lets a node answer the IPFS network for the content it
+//! holds, over the node's own libp2p identity. That replaced an earlier
+//! arrangement where each node ran a separate Kubo daemon — a second
+//! identity, a second runtime, and an unauthenticated control port — and
+//! it is what lets content serving be on by default rather than something
+//! an operator had to install Go to opt into.
 
 pub mod bitswap;
 pub mod challenge;
 pub mod error;
 pub mod events;
+pub mod gateway;
 pub mod held;
 pub mod kubo;
 pub mod pinning;
@@ -40,6 +55,7 @@ mod fixtures;
 pub use challenge::{ChallengeOutcome, challengeable, judge};
 pub use error::ContentError;
 pub use events::SignedAttachmentPublish;
+pub use gateway::{DEFAULT_GATEWAY, GatewayFetcher};
 pub use held::{HeldContent, MAX_HELD_BYTES};
 pub use kubo::KuboClient;
 pub use openfiat_crypto::Cid;

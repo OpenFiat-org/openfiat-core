@@ -220,7 +220,9 @@ INFO openfiat_node: peers can reach this node at this address …
 | `--snapshot-dir <DIR>` | `<ledger>/snapshots` | Where produced snapshots are written and served from |
 | `--snapshot-public-url <URL>` | none | Repeatable. **Omitting it disables snapshot production** |
 | `--snapshot-interval-secs <SECS>` | 3600 | Ignored without `--snapshot-public-url` |
-| `--ipfs-api-url <URL>` | none | IPFS daemon to pin attachment content through; earns the retrievability share of rewards |
+| `--no-content-serving` | off | Stop holding and serving IPFS content. Costs the retrievability share of rewards |
+| `--content-gateway <URL>` | Filebase | Where to fetch a block no peer has yet. Untrusted transport — bytes are checked against the CID |
+| `--ipfs-api-url <URL>` | none | An existing Kubo cluster to pin content into *as well*. No longer how a node serves content |
 | `--public-rpc-url <URL>` | none | This node's public HTTPS URL. Set it to advertise the node as reachable so browsers can use it |
 | `--retention <DAYS\|archival>` | `30` | How long pinned content is kept. 30 days is the floor every node owes the network; shorter is refused |
 | `--log <FILTER>` | `info` | Per-module directives accepted, e.g. `info,openfiat_rpc::actor=debug` |
@@ -239,14 +241,21 @@ Two behaviours worth knowing before you deploy:
   keeps everything and is a deliberate choice. Not every node should carry
   the whole history. Challenges are only ever drawn from inside the 30-day
   floor, so evicting correctly never costs a node its reward share.
-- **Pinning is opt-in and affects what you earn.** With `--ipfs-api-url`
-  the node pins the content protocol records reference, keeps a local copy
-  of the part small enough to be verified, and can answer a peer's
-  retrievability challenge — which is what earns the full reward share.
-  Without it the node stores nothing and earns a reduced share (0.7x,
-  `[PROPOSED — NEEDS SIGN-OFF]`), because it is doing less for the
-  network. Either way it still challenges its peers: measuring who serves
-  content costs nothing and is a service in itself.
+- **Content serving is on by default, and turning it off costs reward.**
+  The node holds the content protocol records reference and answers
+  bitswap for it over its own libp2p identity — no separate daemon, no
+  extra process, no extra port. Answering a peer's retrievability
+  challenge is what earns the full reward share; `--no-content-serving`
+  stores nothing and earns a reduced share (0.7x, `[PROPOSED — NEEDS
+  SIGN-OFF]`), because it is doing less for the network. Either way it
+  still challenges its peers: measuring who serves content costs nothing
+  and is a service in itself.
+
+  This inverts an earlier opt-in, deliberately. A durability guarantee
+  that required an operator to install a Go daemon is one almost nobody
+  would have switched on, and a guarantee nobody opts into is not a
+  guarantee. The operator who genuinely cannot spare the disk is the one
+  who knows it.
 
 ### Running under systemd
 

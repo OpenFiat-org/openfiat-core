@@ -21,6 +21,8 @@
 
 pub mod message;
 pub mod serve;
+pub mod service;
 
 pub use message::{Message, Presence, Want, WantType};
 pub use serve::{BlockSource, PROTOCOL, respond};
+pub use service::{spawn_inbound, spawn_send, wantlist};

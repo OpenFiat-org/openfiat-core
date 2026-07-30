@@ -163,16 +163,47 @@ pub struct Args {
     #[arg(long, value_name = "SECS")]
     pub snapshot_interval_secs: Option<u64>,
 
-    /// IPFS daemon this node pins protocol content through, e.g.
+    /// Stop holding and serving protocol content.
+    ///
+    /// Content serving is ON by default. The node holds the attachments
+    /// its retention window covers and answers any IPFS peer that asks
+    /// for one, over its own libp2p identity — no separate daemon, no
+    /// extra process, no extra port.
+    ///
+    /// Turning it off costs reward. Holding and serving content is what
+    /// earns the content-retrievability share (OFS-4100 §9.2); a node
+    /// that stores nothing cannot answer a retrievability challenge and
+    /// earns the reduced multiplier, which is the honest outcome, since
+    /// it is doing less for the network. Pass this only if the disk
+    /// genuinely is not there.
+    ///
+    /// It still challenges its peers either way: measuring who serves
+    /// content is a service a node performs whether or not it stores any
+    /// itself.
+    #[arg(long)]
+    pub no_content_serving: bool,
+
+    /// Where to fetch a block no peer has yet. Defaults to a public IPFS
+    /// gateway.
+    ///
+    /// Bitswap moves blocks between peers that already have them; it does
+    /// not create the first copy. Attachments enter the network through a
+    /// pinning service, so the first node to want one fetches it from the
+    /// wider IPFS network here, checks it against the CID, and serves it
+    /// to its peers from then on. The gateway is untrusted transport —
+    /// bytes that are not what the CID names are refused — but it does
+    /// learn which content this node asks for, which is why an operator
+    /// can point it at their own.
+    #[arg(long, value_name = "URL", default_value = openfiat_content::DEFAULT_GATEWAY)]
+    pub content_gateway: String,
+
+    /// An IPFS daemon to *also* pin protocol content into, e.g.
     /// `http://127.0.0.1:5001`.
     ///
-    /// Opt-in, and it is what earns the content-retrievability share of
-    /// the reward (OFS-4100 §9.2). Without it the node stores no
-    /// attachment content, cannot answer a retrievability challenge, and
-    /// earns the reduced multiplier — which is the honest outcome, since
-    /// it is doing less for the network. It still challenges its peers
-    /// either way: measuring who serves content is a service a node
-    /// performs whether or not it stores any itself.
+    /// No longer how a node serves content — it serves in process now —
+    /// but an operator who already runs a Kubo cluster can have protocol
+    /// content pinned into it as well, putting a copy somewhere this
+    /// node's own retention window does not govern.
     #[arg(long, value_name = "URL")]
     pub ipfs_api_url: Option<String>,
 
@@ -430,7 +461,7 @@ async fn main() {
         staking_program = openfiat_chain::PROGRAM_IDS.staking,
         entrypoints = args.entrypoints.len(),
         retention = %args.retention.describe(),
-        pinning = if args.ipfs_api_url.is_some() { "on" } else { "off" },
+        content_serving = if args.no_content_serving { "off" } else { "on" },
         public_url = args.public_rpc_url.as_deref().unwrap_or("(not advertised)"),
         "starting"
     );
@@ -458,6 +489,8 @@ async fn main() {
             bootstrap_peers,
             chain_mode,
             snapshot,
+            serve_content: !args.no_content_serving,
+            content_gateway: args.content_gateway.clone(),
             ipfs_api_url: args.ipfs_api_url.clone(),
             public_rpc_url: args.public_rpc_url.clone(),
             retention: args.retention,

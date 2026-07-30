@@ -147,12 +147,36 @@ pub struct NetworkConfig {
     /// public URL it announces them under (OFS-1300). Defaults to
     /// producing nothing — see [`SnapshotConfig::produces`].
     pub snapshot: SnapshotConfig,
-    /// An IPFS daemon this node pins protocol content through, from
-    /// `--ipfs-api-url`. `None` means the operator did not opt in: the
-    /// node stores no content, answers no challenge, and earns the
-    /// reduced `pinning_absent_bps` share. Opting in is what earns the
-    /// premium, and it is a real cost to the operator, so it is never
-    /// assumed.
+    /// Whether this node holds and serves protocol content.
+    ///
+    /// **On by default**, and the inversion is deliberate. This used to
+    /// require `--ipfs-api-url` and a separate Kubo daemon, which meant
+    /// almost nobody would do it — and a durability guarantee nobody opts
+    /// into is not a guarantee. Now that a node serves content itself
+    /// (see `openfiat_content::bitswap`), the cost is disk rather than a
+    /// second process, and the operator who genuinely cannot spare it is
+    /// the one who knows.
+    ///
+    /// `false`, from `--no-content-serving`, means the node stores
+    /// nothing, answers no challenge, and earns the reduced
+    /// `pinning_absent_bps` share rather than `pinning_serving_bps`.
+    pub serve_content: bool,
+    /// Where this node fetches a block no peer has yet.
+    ///
+    /// Bitswap moves blocks between peers that have them; it does not
+    /// create the first copy. Content enters the network through a
+    /// pinning service, so the first OpenFiat node to want a CID has to
+    /// get it from the wider IPFS network — see
+    /// `openfiat_content::gateway` for why an untrusted gateway is a
+    /// sound way to do that and what it does not fix.
+    pub content_gateway: String,
+    /// An existing IPFS daemon to pin through as well, from
+    /// `--ipfs-api-url`.
+    ///
+    /// No longer how a node serves content — it serves in process now —
+    /// but an operator who already runs a Kubo cluster can still have
+    /// protocol content pinned into it, which puts the content somewhere
+    /// this node's own retention window does not govern.
     pub ipfs_api_url: Option<String>,
     /// How long this node keeps the content it pins. Defaults to a
     /// bounded rolling window — running a node should not be an
@@ -180,6 +204,8 @@ impl NetworkConfig {
             listen_addr: "/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap(),
             bootstrap_peers: Vec::new(),
             chain_mode: NodeChainMode::GossipOnly,
+            serve_content: true,
+            content_gateway: openfiat_content::DEFAULT_GATEWAY.to_string(),
             ipfs_api_url: None,
             retention: openfiat_content::Retention::default(),
             public_rpc_url: None,
@@ -505,18 +531,43 @@ fn poll_gossip_pruning<S: KvStore + 'static>(state: &NodeState<S>) {
     }
 }
 
-/// One tick of pinning: hold the content this node has learned about.
+/// How many blocks one tick will fetch from a gateway.
 ///
-/// Only the challengeable subset is kept locally — see
-/// `openfiat_content::held` for why that bound falls out of what a
-/// challenge can decide rather than being a separate policy. Everything
-/// else is still pinned through the daemon, where it stays available to
-/// IPFS without this node holding a copy.
+/// A node that has just joined, or one whose retention window just
+/// widened, can be missing a great deal at once. Fetching it all in one
+/// tick would open that many simultaneous requests to someone else's
+/// gateway and hold that much in memory; spreading it over ticks costs
+/// only time, and the content is not urgent — a challenge that arrives
+/// before the fetch is answered by whoever already has it.
+const MAX_GATEWAY_FETCHES_PER_TICK: usize = 8;
+
+/// One tick of content serving: hold what this node is committed to,
+/// release what it no longer is, and go and get what is missing.
 ///
-/// A node with no `--ipfs-api-url` never reaches here at all.
-async fn poll_pinning<S: KvStore + 'static>(
+/// # What a node is committed to
+///
+/// The verifiable content referenced by *accepted* attachment records
+/// inside this node's retention window. Not everything it has ever seen:
+/// an attachment needs a settlement and a settlement needs real escrow,
+/// so this set is bounded by the network's actual trading volume rather
+/// than by anyone's willingness to publish CIDs at it.
+///
+/// Only the challengeable subset is held — see `openfiat_content::held`
+/// for why that bound falls out of what a challenge can decide rather
+/// than being a separate policy.
+///
+/// # Peers first, gateway second
+///
+/// A CID missing on this tick is asked of every connected peer. A CID
+/// still missing on the *next* tick — having given the peers a round to
+/// answer — is fetched from a public gateway, which is how content that
+/// no OpenFiat node holds yet enters the network at all. The one-tick
+/// delay is what keeps the gateway a fallback rather than the first
+/// thing every node reaches for.
+async fn poll_content<S: KvStore + 'static>(
     state: &NodeState<S>,
-    client: &dyn openfiat_content::PinningClient,
+    control: &libp2p_stream::Control,
+    gateway: &openfiat_content::GatewayFetcher,
     retention: openfiat_content::Retention,
 ) {
     let now = openfiat_types::Timestamp::now();
@@ -533,7 +584,7 @@ async fn poll_pinning<S: KvStore + 'static>(
 
     // Release what fell out of the window first, so a node that shrank
     // its retention frees disk on the next tick rather than only after it
-    // has finished pinning everything new.
+    // has finished fetching everything new.
     let dropped = state.held_content.evict_outside(&wanted);
     if dropped > 0 {
         tracing::info!(
@@ -543,28 +594,57 @@ async fn poll_pinning<S: KvStore + 'static>(
         );
     }
 
-    let mut kept = 0usize;
+    let missing: Vec<openfiat_crypto::Cid> = wanted
+        .into_iter()
+        .filter(|cid| !state.held_content.holds(cid))
+        .collect();
 
-    for cid in wanted {
-        if state.held_content.holds(&cid) {
-            continue;
+    // Anything asked for last tick and still absent has had its round
+    // with the peers. Computed before the want list is replaced, because
+    // that is the whole distinction between the two paths.
+    let unanswered: Vec<openfiat_crypto::Cid> = {
+        let previous = state.content_wants.borrow();
+        missing
+            .iter()
+            .filter(|cid| previous.contains(cid.as_str()))
+            .cloned()
+            .collect()
+    };
+    state
+        .content_wants
+        .replace(missing.iter().map(|cid| cid.as_str().to_string()).collect());
+
+    if !missing.is_empty() {
+        let request = openfiat_content::bitswap::wantlist(&missing);
+        // Every connected peer, not a chosen few. A wantlist is small,
+        // the peers are already connected, and a node that asked only
+        // its favourite would fail to find content the others have.
+        let peers: Vec<_> = state
+            .gossip
+            .borrow()
+            .node
+            .swarm
+            .connected_peers()
+            .copied()
+            .collect();
+        for peer in peers {
+            openfiat_content::bitswap::spawn_send(control.clone(), peer, request.clone());
         }
-        // Pin first: the point of opting in is that the content survives
-        // the original uploader unpinning it, and that depends on the
-        // daemon, not on the copy kept here.
-        if let Err(err) = client.pin(&cid).await {
-            tracing::warn!(%err, cid = %cid, "could not pin content");
-            continue;
-        }
-        match client.fetch(&cid).await {
+    }
+
+    let mut kept = 0usize;
+    for cid in unanswered.iter().take(MAX_GATEWAY_FETCHES_PER_TICK) {
+        match gateway.block(cid).await {
             Ok(bytes) => {
-                if state.held_content.keep(&cid, &bytes) {
+                if state.held_content.keep(cid, &bytes) {
+                    state.content_wants.borrow_mut().remove(cid.as_str());
                     kept += 1;
                 }
             }
-            // Pinned but not yet retrievable is ordinary right after a
-            // pin, so this is not a warning: the next tick tries again.
-            Err(err) => tracing::debug!(%err, cid = %cid, "pinned but not yet readable"),
+            // Ordinary rather than alarming: the content may genuinely
+            // be gone, or the gateway may be having a moment. Either way
+            // the next tick tries again, and a peer may answer first.
+            Err(err) => tracing::debug!(%err, cid = %cid, "no copy from the gateway yet"),
         }
     }
 
@@ -572,8 +652,63 @@ async fn poll_pinning<S: KvStore + 'static>(
         tracing::info!(
             kept,
             held = state.held_content.count(),
-            "pinned new content"
+            "fetched content from a gateway"
         );
+    }
+}
+
+/// A bitswap message from `peer`, handled on the actor thread.
+///
+/// Two jobs, in this order. Blocks this node asked for are kept, which is
+/// how content reaches a node from its peers rather than from a gateway.
+/// Then whatever the peer wanted is answered from what this node holds.
+///
+/// Doing the keeping first is not arbitrary: a peer that sends a block
+/// and asks for it in the same message gets the answer it deserves.
+fn on_bitswap<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    peer: libp2p_identity::PeerId,
+    message: openfiat_content::bitswap::Message,
+    control: &libp2p_stream::Control,
+) {
+    for (cid, bytes) in &message.blocks {
+        // Only what this node asked for. `keep` already refuses bytes
+        // that are not what the CID names, so an unsolicited block
+        // cannot be *wrong* — but a peer pushing correct blocks for
+        // content this node never wanted is a disk-filling primitive,
+        // and this is the line that closes it.
+        if !state.content_wants.borrow().contains(cid.as_str()) {
+            continue;
+        }
+        if state.held_content.keep(cid, bytes) {
+            state.content_wants.borrow_mut().remove(cid.as_str());
+            tracing::info!(%cid, %peer, "a peer supplied content this node was missing");
+        }
+    }
+
+    let reply = openfiat_content::bitswap::respond(&*state.held_content, &message);
+    openfiat_content::bitswap::spawn_send(control.clone(), peer, reply);
+}
+
+/// One tick of pinning into an operator's own IPFS daemon.
+///
+/// Not how a node serves content — it serves in process now — but an
+/// operator who already runs a Kubo cluster can have protocol content
+/// pinned into it as well, which puts a copy somewhere this node's own
+/// retention window does not govern.
+async fn poll_daemon_pinning<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    client: &dyn openfiat_content::PinningClient,
+    retention: openfiat_content::Retention,
+) {
+    let now = openfiat_types::Timestamp::now();
+    for attachment in state.attachments.all() {
+        if !retention.keeps(attachment.created_at, now) {
+            continue;
+        }
+        if let Err(err) = client.pin(&attachment.cid).await {
+            tracing::warn!(%err, cid = %attachment.cid, "could not pin into the operator's daemon");
+        }
     }
 }
 
@@ -1032,6 +1167,24 @@ where
                 .as_deref()
                 .map(openfiat_content::KuboClient::new);
             let retention = network.retention;
+
+            // Content serving, on unless the operator turned it off. The
+            // control is taken before the swarm goes into the loop below
+            // and is independent of it, so reading a peer's stream never
+            // needs the borrow every RPC handler is holding.
+            let content_gateway = openfiat_content::GatewayFetcher::new(&network.content_gateway);
+            let (content_tx, mut content_rx) = mpsc::unbounded_channel();
+            let content_control = network.serve_content.then(|| {
+                let mut control = state.gossip.borrow().node.content_control();
+                openfiat_content::bitswap::spawn_inbound(&mut control, content_tx)
+                    .expect("nothing else can already be serving bitswap on this node");
+                control
+            });
+            tracing::info!(
+                serving = network.serve_content,
+                retention = %retention.describe(),
+                "content serving"
+            );
             if let Some(url) = network.public_rpc_url.as_deref() {
                 advertise_public_api(&state, &advertise_keypair, url);
             }
@@ -1090,14 +1243,23 @@ where
                         poll_gossip_pruning(&state);
                         poll_expired_records(&state);
                     }
+                    // Only polled when this node serves content: a
+                    // `None` control means no accept loop was started, so
+                    // nothing will ever arrive on this channel.
+                    Some((peer, message)) = content_rx.recv(), if content_control.is_some() => {
+                        on_bitswap(&state, peer, message, content_control.as_ref().expect("guarded"));
+                    }
                     _ = pinning.tick() => {
-                        // Challenging runs whether or not this node pins:
-                        // measuring peers is a service to the network, and
-                        // a node that stores nothing can still check who
-                        // does.
-                        if let Some(client) = pinning_client.as_ref() {
-                            poll_pinning(&state, client, retention).await;
+                        if let Some(control) = content_control.as_ref() {
+                            poll_content(&state, control, &content_gateway, retention).await;
                         }
+                        if let Some(client) = pinning_client.as_ref() {
+                            poll_daemon_pinning(&state, client, retention).await;
+                        }
+                        // Challenging runs whether or not this node holds
+                        // anything: measuring peers is a service to the
+                        // network, and a node that stores nothing can
+                        // still check who does.
                         poll_content_challenges(&state).await;
                     }
                 }
@@ -1147,6 +1309,95 @@ mod tests {
         ) -> Result<Option<(String, Vec<u8>)>, ChainError> {
             Ok(None)
         }
+    }
+
+    /// The probe file this project genuinely uploaded to IPFS, with the
+    /// CID the provider returned for it.
+    const PROBE_CID: &str = "bafkreibdmq27skp3wnycoyoqcei47etyaulerpsegivlkfvyhjkw7ufjva";
+    const PROBE_CONTENT: &[u8] = b"openfiat ipfs probe 1785426891\n";
+
+    fn block_message(cid: &str, content: &[u8]) -> openfiat_content::bitswap::Message {
+        openfiat_content::bitswap::Message {
+            blocks: vec![(openfiat_crypto::Cid::parse(cid).unwrap(), content.to_vec())],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_block_this_node_never_asked_for_is_refused_rather_than_stored() {
+        // The disk-filling case. `keep` already refuses bytes that are
+        // not what the CID names, so a pushed block cannot be *wrong* —
+        // but a peer pushing correct blocks this node never wanted, for
+        // as long as it likes, is how a node runs out of disk without
+        // anything looking like an attack.
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let control = state.gossip.borrow().node.content_control();
+        let cid = openfiat_crypto::Cid::parse(PROBE_CID).unwrap();
+
+        on_bitswap(
+            &state,
+            libp2p_identity::PeerId::random(),
+            block_message(PROBE_CID, PROBE_CONTENT),
+            &control,
+        );
+
+        assert!(
+            !state.held_content.holds(&cid),
+            "a node must not store content it never asked for, however valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_block_this_node_asked_for_is_kept_and_stops_being_wanted() {
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let control = state.gossip.borrow().node.content_control();
+        let cid = openfiat_crypto::Cid::parse(PROBE_CID).unwrap();
+        state
+            .content_wants
+            .borrow_mut()
+            .insert(PROBE_CID.to_string());
+
+        on_bitswap(
+            &state,
+            libp2p_identity::PeerId::random(),
+            block_message(PROBE_CID, PROBE_CONTENT),
+            &control,
+        );
+
+        assert!(state.held_content.holds(&cid));
+        assert!(
+            !state.content_wants.borrow().contains(PROBE_CID),
+            "content that arrived must stop being asked for, or every peer \
+             is asked for it again on every tick for ever"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_peer_answering_a_want_with_the_wrong_bytes_supplies_nothing() {
+        // The bytes are re-addressed on decode, so they would arrive
+        // under their own CID rather than the wanted one — but this
+        // asserts the outcome at the layer that stores, since that is
+        // where a mistake would become a challenge this node fails.
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let control = state.gossip.borrow().node.content_control();
+        let cid = openfiat_crypto::Cid::parse(PROBE_CID).unwrap();
+        state
+            .content_wants
+            .borrow_mut()
+            .insert(PROBE_CID.to_string());
+
+        on_bitswap(
+            &state,
+            libp2p_identity::PeerId::random(),
+            block_message(PROBE_CID, b"substituted by a dishonest peer"),
+            &control,
+        );
+
+        assert!(!state.held_content.holds(&cid));
+        assert!(
+            state.content_wants.borrow().contains(PROBE_CID),
+            "a failed answer must leave the want standing so another peer is asked"
+        );
     }
 
     #[tokio::test]
