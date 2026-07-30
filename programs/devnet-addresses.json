@@ -256,13 +256,19 @@
     },
     "node1": {
       "identity": "7KNwpoZmAaR74v3fnBuEEKyjDGRzZwGUe8ukQ5ADHYEP",
-      "role": null,
-      "stakedOpen": 0
+      "role": "NodeOperator",
+      "stakeAccount": "7LPEiqiPX1L7ksudNTEwbpTCLVHk4K8atHbCRbHS2RVs",
+      "stakedOpen": 1000,
+      "stakeSignature": "5YMuwRNgtp1Yqav16ZiZJ8d4hkcTCdPc9LXXbN1miMbtr5NPy6C2XkNnuNX1TbS3K4c52MbyUW7k1n4ytVng6haT"
     },
     "node2": {
       "identity": "BwK2wxBFcMCz8vfEkkJgxVcmZLwms7YTQHLtQXK8dY3K",
-      "role": null,
-      "stakedOpen": 0
-    }
+      "role": "NodeOperator",
+      "stakeAccount": "5Sq51Dz2P47HuCT9J4E9MNuP9XKDgYdsexb4xe4ZUHUy",
+      "stakedOpen": 1000,
+      "stakeSignature": "4XLEa5fRcSM1oDFnVdzh3N5iymrpAuXZNLmoebZv9FpXCyBE7eRYnc49ciRu9T574n3snTo3ZfYnECEZHNrEtJTL"
+    },
+    "totalStakedOpen": 102000,
+    "stakeNote": "node1/node2 sit at exactly the 1,000 OPEN NodeOperator minimum, with zero slack: if StakingConfig.min_stake_by_role[NodeOperator] is ever raised (see the pending 500-floor rework, which lowers rather than raises it, but the point stands) both fall below the floor at once. node0's 100,000 gives the cluster a clear stake-weight leader for exercising SWQoS ranking. All three came from the faucet stash, which cannot be replenished by minting -- OPEN's mint authority is permanently unset."
   }
 }
