@@ -59,6 +59,13 @@ const USDC = (whole: bigint) => whole * 10n ** USDC_DECIMALS;
  * `finalize_sale` then always resolves to `Finalized`, never `SoftCapMissed`,
  * which is exactly the stated intent.
  *
+ * `minContribution` is the spec's 50, and note it is a **floor on a wallet's
+ * first contribution only** (`contribute_usdc` checks it under
+ * `is_first_contribution`) — not on every top-up. A wallet that has already
+ * bought can add any amount. It is the one bound here that can turn a
+ * previously-valid contribution into a rejected one, so a devnet faucet
+ * dispensing test USDC has to be able to reach 50 in a single grant.
+ *
  * `hardCap` is the full Community Presale bucket (200,000,000 OPEN at
  * 1 OPEN = 1 USDC). It must not exceed the bucket: entitlements are minted
  * 1:1 against contributions and `claim` pays out of a vault holding exactly
@@ -68,6 +75,7 @@ const USDC = (whole: bigint) => whole * 10n ** USDC_DECIMALS;
 const TARGET = {
   hardCap: USDC(200_000_000n),
   softCap: 0n,
+  minContribution: USDC(50n),
   maxContribution: USDC(10_000_000n),
 };
 
@@ -177,12 +185,12 @@ async function main() {
     endTime: new Date(Number(before.endTime) * 1000).toISOString(),
   });
 
-  // `min_contribution` and `end_time` and `max_slippage_bps` are carried
-  // through unchanged — see this file's header on why they must be resent.
+  // `end_time` and `max_slippage_bps` are carried through unchanged — see
+  // this file's header on why they must be resent rather than omitted.
   const args = Buffer.concat([
     u64(TARGET.hardCap),
     u64(TARGET.softCap),
-    u64(before.minContribution),
+    u64(TARGET.minContribution),
     u64(TARGET.maxContribution),
     u16(before.maxSlippageBps),
     i64(before.endTime),
@@ -204,7 +212,7 @@ async function main() {
   console.log("after (target):", {
     hardCap: asUsdc(TARGET.hardCap),
     softCap: asUsdc(TARGET.softCap),
-    minContribution: asUsdc(before.minContribution) + " (unchanged)",
+    minContribution: asUsdc(TARGET.minContribution),
     maxContribution: asUsdc(TARGET.maxContribution),
     maxSlippageBps: before.maxSlippageBps + " (unchanged)",
     endTime:
@@ -253,11 +261,14 @@ async function main() {
   if (after.softCap !== TARGET.softCap) mismatches.push("softCap");
   if (after.maxContribution !== TARGET.maxContribution)
     mismatches.push("maxContribution");
+  if (after.minContribution !== TARGET.minContribution)
+    mismatches.push("minContribution");
+  // The two fields this script does not set. They are asserted against the
+  // pre-call values, not against a constant, so an accidental edit to the
+  // args above surfaces here instead of silently rescheduling the sale.
   if (after.endTime !== before.endTime) mismatches.push("endTime MOVED");
   if (after.maxSlippageBps !== before.maxSlippageBps)
     mismatches.push("maxSlippageBps MOVED");
-  if (after.minContribution !== before.minContribution)
-    mismatches.push("minContribution MOVED");
   if (mismatches.length > 0) {
     throw new Error(`on-chain state does not match intent: ${mismatches.join(", ")}`);
   }
