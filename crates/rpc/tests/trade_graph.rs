@@ -11,9 +11,13 @@
 //! `PublicSettlement::from` would have passed on the day the hole was
 //! open; only asking the node what it actually answers can fail then.
 
+use openfiat_advertisements::events::{AdvertisementCreate, SignedAdvertisementCreate};
+use openfiat_advertisements::{AdvertisementId, Direction, PricingModel};
 use openfiat_crypto::Keypair;
+use openfiat_crypto::MintAddress;
 use openfiat_network::identity::peer_id_from_public_key;
 use openfiat_reservations::ReservationId;
+use openfiat_reservations::events::{ReservationRequest, SignedReservationRequest};
 use openfiat_rpc::dispatch::{MethodTable, encode_bytes, encode_peer_id};
 use openfiat_rpc::methods::build_table;
 use openfiat_rpc::state::NodeState;
@@ -21,6 +25,7 @@ use openfiat_settlement::SettlementId;
 use openfiat_settlement::events::{SettlementInitiate, SignedSettlementInitiate};
 use openfiat_storage::mem::MemoryStore;
 use openfiat_types::{Amount, PeerId, Timestamp};
+use serde_json::Value;
 
 fn peer(keypair: &Keypair) -> PeerId {
     peer_id_from_public_key(&keypair.public_key()).expect("a keypair derives a peer id")
@@ -47,6 +52,51 @@ fn network_with_a_trade() -> (
     let state = NodeState::new_for_test(MemoryStore::new());
     let buyer = Keypair::from_seed([11u8; 32]);
     let seller = Keypair::from_seed([22u8; 32]);
+    let price = Amount::new(129_000_000, 6);
+
+    // The advertisement and reservation are not decoration. `TradeView`
+    // iterates reservations, so a fixture holding only a settlement
+    // produces an empty `getTrades` — and a leak test against an empty
+    // list passes without testing anything. This file has already passed
+    // for the wrong reason twice; the assertion below is the guard.
+    state
+        .advertisements
+        .apply_create(SignedAdvertisementCreate::sign(
+            AdvertisementCreate {
+                id: AdvertisementId::new("ad-public-1"),
+                merchant: peer(&seller),
+                merchant_public_key: seller.public_key(),
+                asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU")
+                    .unwrap(),
+                direction: Direction::Sell,
+                fiat_currency: "KES".to_string(),
+                min_trade: Amount::new(1_000_000, 6),
+                max_trade: Amount::new(10_000_000, 6),
+                initial_liquidity: Amount::new(10_000_000, 6),
+                pricing: PricingModel::Fixed { price },
+                payment_methods: vec![],
+                timestamp: Timestamp::from_millis(500),
+            },
+            &seller,
+        ))
+        .expect("a well-formed advertisement applies");
+
+    state
+        .reservations
+        .apply_request(SignedReservationRequest::sign(
+            ReservationRequest {
+                id: ReservationId::new("r-public-1"),
+                advertisement_id: AdvertisementId::new("ad-public-1"),
+                requester: peer(&buyer),
+                requester_public_key: buyer.public_key(),
+                amount: Amount::new(2_500_000, 6),
+                agreed_price: price,
+                agreed_mid: None,
+                timestamp: Timestamp::from_millis(900),
+            },
+            &buyer,
+        ))
+        .expect("a well-formed reservation applies");
 
     state
         .settlements
@@ -65,6 +115,12 @@ fn network_with_a_trade() -> (
         ))
         .expect("a well-formed settlement applies");
 
+    assert_eq!(
+        state.trades.all().len(),
+        1,
+        "the fixture must actually produce a trade, or every assertion \
+         below passes against an empty list"
+    );
     (build_table(), state, buyer, seller)
 }
 
@@ -239,4 +295,81 @@ fn a_signature_for_one_gated_surface_does_not_open_another() {
         refused.is_err(),
         "a cross-surface signature must not verify"
     );
+}
+
+#[test]
+fn the_trade_join_is_not_a_way_around_the_redaction() {
+    // `getTrades` embeds a reservation and its settlement whole, so
+    // redacting the three underlying reads left the graph available one
+    // method along. Two people found this independently by reading the
+    // API listing, which is exactly who finds it.
+    let (table, state, buyer, seller) = network_with_a_trade();
+
+    for method in ["getTrades", "getTrade"] {
+        let answer = table
+            .dispatch(&state, method, serde_json::json!({ "id": "r-public-1" }))
+            .unwrap_or_else(|err| panic!("{method} must still answer: {err:?}"));
+        let json = answer.to_string();
+        for wallet in [&buyer, &seller] {
+            assert!(
+                !json.contains(&on_the_wire(wallet)),
+                "{method} leaked a party: {json}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_party_reads_their_own_trade_in_full() {
+    let (table, state, buyer, seller) = network_with_a_trade();
+    let mine = signed_read(
+        &table,
+        &state,
+        &buyer,
+        "getMyTrades",
+        openfiat_rpc::methods::trade::CHALLENGE_DOMAIN,
+    );
+    assert!(
+        mine.to_string().contains(&on_the_wire(&seller)),
+        "a party to a trade already knows who they traded with: {mine}"
+    );
+}
+
+/// One wallet-proof read, start to finish.
+fn signed_read(
+    table: &MethodTable<MemoryStore>,
+    state: &NodeState<MemoryStore>,
+    wallet: &Keypair,
+    method: &str,
+    domain: &str,
+) -> Value {
+    let challenge = table
+        .dispatch(
+            state,
+            "getWalletChallenge",
+            serde_json::json!({ "wallet": encode_peer_id(&peer(wallet)) }),
+        )
+        .unwrap();
+    let nonce = challenge["nonce"].as_str().unwrap().to_string();
+    let signing_bytes = openfiat_crypto::challenge::Challenge {
+        subject: encode_peer_id(&peer(wallet)),
+        nonce: nonce.clone(),
+        expires_at: Timestamp::from_millis(challenge["expires_at"].as_u64().unwrap()),
+    }
+    .signing_bytes(domain);
+
+    table
+        .dispatch(
+            state,
+            method,
+            serde_json::json!({
+                "wallet": encode_peer_id(&peer(wallet)),
+                "public_key": encode_bytes(wallet.public_key().as_bytes()),
+                "nonce": nonce,
+                "signature": encode_bytes(
+                    &wallet.sign(&signing_bytes).as_bytes().expect("64 bytes")
+                ),
+            }),
+        )
+        .unwrap_or_else(|err| panic!("{method} refused a genuine proof: {err:?}"))
 }

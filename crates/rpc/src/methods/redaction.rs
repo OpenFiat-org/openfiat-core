@@ -176,6 +176,36 @@ impl From<Dispute> for PublicDispute {
     }
 }
 
+/// A trade with both parties removed.
+///
+/// `getTrades` is a join over a reservation and its settlement, and it
+/// was the way around everything above: it returned both records whole,
+/// unauthenticated and unparameterised, so redacting the three underlying
+/// reads left the graph available one method along. Found by someone
+/// reading the API reference, which is exactly who would find it.
+///
+/// A join of two redacted records is redacted; there is nothing extra to
+/// remove, and composing it from the same `From` impls means a field
+/// added to either half cannot appear here without appearing there.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PublicTrade {
+    pub reservation: PublicReservation,
+    pub settlement: Option<PublicSettlement>,
+    /// The derived status, which is what a trade view is for and says
+    /// nothing about who is party to it.
+    pub status: openfiat_trade::TradeStatus,
+}
+
+impl From<openfiat_trade::Trade> for PublicTrade {
+    fn from(trade: openfiat_trade::Trade) -> Self {
+        Self {
+            status: trade.status(),
+            reservation: trade.reservation.into(),
+            settlement: trade.settlement.map(PublicSettlement::from),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

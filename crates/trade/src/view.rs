@@ -16,7 +16,7 @@ use std::rc::Rc;
 /// The aggregate status a client actually wants to display — one value
 /// instead of "check the reservation state, then check whether a
 /// settlement exists, then check its state".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TradeStatus {
     /// Reservation succeeded (§18); settlement hasn't started yet.
     EscrowLocked,
