@@ -47,13 +47,25 @@ pub struct SaleConfig {
     /// *result* (a verified balance increase in `usdc_vault`) is what's
     /// trusted, not any account layout internal to this program.
     pub swap_program: Pubkey,
-    /// USDC base units (6 decimals). OFS-4100 §3 proposes 30_000_000_000_000.
+    /// USDC base units (6 decimals).
+    ///
+    /// OFS-4100 §3 gives the presale no hard cap distinct from the Community
+    /// Presale bucket itself, so the confirmed value is the full bucket:
+    /// 200,000,000 OPEN at 1 OPEN = 1 USDC. It must never be set higher —
+    /// `claim` pays out of a vault holding exactly that much OPEN, and
+    /// entitlements accrue 1:1 against contributions, so a larger cap would
+    /// let the sale sell OPEN the vault cannot deliver.
     pub hard_cap: u64,
-    /// USDC base units. OFS-4100 §3 proposes 5_000_000_000_000.
+    /// USDC base units. **Zero on a spec-conforming sale**: OFS-4100 §3
+    /// confirms there is no soft cap and no refund condition derived from
+    /// one, and zero is how "no minimum to raise" is expressed here —
+    /// `finalize_sale` then always resolves to `Finalized`, never
+    /// `SoftCapMissed`, which is the intended behaviour and not an oversight.
     pub soft_cap: u64,
     /// USDC base units, applies to a wallet's first contribution only.
     pub min_contribution: u64,
     /// USDC base units, applies to a wallet's cumulative contributions.
+    /// OFS-4100 §3: 10,000,000 USDC-equivalent.
     pub max_contribution: u64,
     /// Basis points; a swap whose realized output falls below
     /// `expected_out * (10_000 - max_slippage_bps) / 10_000` is rejected.

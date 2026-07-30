@@ -59,8 +59,8 @@
       "rewardsAuthorityNote": "EA8TyQ58... — unchanged by this update, and already correct. It does concentrate reward distribution on a single EOA, the same centralisation point crates/rewards documents for the cranker, recorded here so it is a known property rather than a later discovery. Governance-controlled distribution is the eventual answer and is deliberately not this change. Note the program takes both authorities as plain Pubkeys rather than requiring them to sign: a signature would prove at write time that somebody holds the key, but a PDA cannot sign a client transaction, and that rule would foreclose ever handing either authority to a program.",
       "slashingAuthority": "EA8TyQ58C3eavg3ThRFTMu1KLyV9e1v2oTQubSBQ9s5z",
       "misconductCodes": {
-        "note": "[PROPOSED — NEEDS SIGN-OFF] OFS-4100 §4 enumerates the slashing triggers but assigns them no codes. 1 = revealed vote outside dispute consensus (OFS-2400 §328), emitted by the relay in crates/slashing.",
-        "1": "outsideConsensus"
+        "1": "outsideConsensus",
+        "note": "[PROPOSED — NEEDS SIGN-OFF] OFS-4100 §4 enumerates the slashing triggers but assigns them no codes. 1 = revealed vote outside dispute consensus (OFS-2400 §328), emitted by the relay in crates/slashing."
       },
       "rewardsAuthorityCorrection": "An earlier revision of this file claimed `rewards_authority` held HLEB5aky... and was therefore unsignable. That was wrong: the two fields were transposed in the write-up. Reading the live account before the update showed `rewards_authority` already held EA8TyQ58..., a keypair present on the deploy host, so `distribute_reward` was signable all along and was never blocked. HLEB5aky... was in `slash_destination`. The error is recorded rather than deleted because the original claim was published, and because it is a reminder that a field's value should be read off the chain before it is described.",
       "appliedOnDevnet": "update_staking_config ran against staking_config 2wrGGjcUFSn1ZiYzo2o64r7ZC88QNhvvgUYktNs2ifT9 via scripts/fix-devnet-staking-authorities.ts, which reads every numeric parameter off the live account and writes it back unchanged, then decodes the account again and asserts that only the intended address moved. Verified after: slash_destination=Aq5schhgFHNFkMyTLuGkCSg4MGYbxV1DbnHS6cK4RKGu, rewards_authority=EA8TyQ58..., slashing_authority=EA8TyQ58..., slash_bps=1000, unbonding_period_secs=604800."
@@ -188,11 +188,33 @@
     "saleConfig": "7jhxek8w1mr8h7U6SZP7wFnxbCACWZoHJ5d9CT8TUVbC",
     "usdcVault": "C6s46cTJoBYaYKdnfRpBFtNs7Ya517sVMP4eHAquaQ6s",
     "treasury": "DoyrfYuMxTqi4Hv7xtqEKo47tM1tnXvybYW3J1CbxQrD",
-    "hardCapUsdc": 1000,
-    "softCapUsdc": 10,
+    "hardCapUsdc": 200000000,
+    "softCapUsdc": 0,
     "minContributionUsdc": 1,
-    "maxContributionUsdc": 500,
+    "maxContributionUsdc": 10000000,
     "opensAt": "2026-07-27T18:16:07.000Z",
     "closesAt": "2026-08-26T18:17:07.000Z"
+  },
+  "faucet_open_draw": {
+    "reason": "Devnet faucet tooling, NOT an accounting anomaly. OPEN's mint authority is permanently unset, so the devnet faucet cannot mint OPEN the way it mints mock USDC/USDT — the only movable OPEN on devnet is the Community Presale bucket, and the only way out of it is claim() on a Finalized sale. This draw is the proceeds of one deliberate, fully-executed presale cycle at the nonce below, run purely to stock the faucet. Nothing was sold and nothing is owed to anyone. Reproduce or audit with scripts/extract-open-for-faucet.ts.",
+    "saleNonce": 2,
+    "saleConfig": "GUY6GFhEk5CjjhmYx7hSa5JURYuFQTYzLaysBGBrtxfe",
+    "openDrawn": 1000000,
+    "usdcContributed": 1000000,
+    "presaleVault": "7Da3NGQkXJGVcF4y5Z3ahpZe4vxDNgqnrhCUvB8PW5wM",
+    "presaleVaultOpenBefore": 200000000,
+    "presaleVaultOpenAfter": 199000000,
+    "faucetAuthority": "4oiCmGrMRL4m4RJsRX6F7nCDeEqoiKLYm5hsDcLFvAJB",
+    "faucetOpenAta": "6CogAbrEmPmLNv9B4efaFWwF3Ca742k9rNm1vX4A7dKD",
+    "faucetOpenBalance": 1000000,
+    "signatures": {
+      "initializeSale": "2iBcYm1JDxiUdp8uBKwh9Bc8omHVPgUbJKxrrErqu6UuNtK5oMCJ4mEYqAUz9aAnh4b6Hz8CAaKTA8SjRBiz8tvF",
+      "mintUsdc": "3hpF1WhCQU2TheHCwh8k96644BKmVAbzPgVfDBg4WGC4rkZE46tMsCKCQ5YUpkTafkB3VwfCKuHoiTsVzV1kd6Vd",
+      "contributeUsdc": "Q5RoBKuechjGRC6He7kMtb5EMhYwtqLGbssuKZFVh2GC6HgPL8gJDwvg9wzm9FLiphg46Yu1dEGx8D6jQbaBDpN",
+      "finalizeSale": "57AJExpDvEWSZTduxnnPV9X6ihhNR6uJDtqRSkMpvofqYfJ9d5UuHVpAEZX16uXhRRViReseA5ZeqtAQrw9fPbwn",
+      "claim": "5Cc6ixdv1uf5aeMjFidfzN4KAF7BQtfmKTuejd3KhgCsxY4fU1jaJrM6Ym4m9ibuJfxmjgejk3nCjqnSBag3XqkL",
+      "transferToFaucet": "N1hrppKC4owbt357bsDkuKBi5woY9xhrcdroDpBPqi6jee6ExAj1TrDem92KFp8AN5xggxD58wS9CwaBJ2KNwrE"
+    },
+    "executedAt": "2026-07-30T12:51:59.164Z"
   }
 }
