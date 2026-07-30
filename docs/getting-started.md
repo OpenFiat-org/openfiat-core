@@ -226,21 +226,41 @@ Nothing you change on the node fixes that; it needs a certificate.
 ### 7.1 Point a hostname at the node
 
 An `A` record for the host, e.g. `openfiat.example.com` → your server's
-public IP. Everything below assumes that resolves before you start, or
-certificate issuance will fail.
+public IP.
 
-### 7.2 Terminate TLS with nginx
+Check it against a public resolver rather than your own machine, whose
+cache can be stale for a record that is already live everywhere else:
+
+```bash
+dig +short @8.8.8.8 openfiat.example.com
+dig +short @1.1.1.1 openfiat.example.com
+```
+
+Both must return your server's IP before you go on. Certbot proves you
+control the name by answering a challenge on port 80, so issuance fails
+until the record resolves for the world.
+
+### 7.2 Put nginx in front, over plain HTTP first
+
+Write the proxy **without any TLS directives**. This ordering matters and
+is easy to get backwards: `certbot --nginx` works by running `nginx -t`
+and editing your config, so a config that already points at a certificate
+file cannot load, nginx will not start, and certbot fails before it can
+issue the certificate that would have fixed it:
+
+```
+[emerg] cannot load certificate "/etc/letsencrypt/live/<host>/fullchain.pem":
+        No such file or directory
+```
+
+So: HTTP only, and let certbot add the TLS half itself.
 
 ```nginx
 # /etc/nginx/sites-available/openfiat-node
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 80;
+    listen [::]:80;
     server_name openfiat.example.com;
-
-    # certbot writes these; see 7.3
-    ssl_certificate     /etc/letsencrypt/live/openfiat.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/openfiat.example.com/privkey.pem;
 
     location / {
         proxy_pass http://127.0.0.1:7080;
@@ -264,26 +284,33 @@ server {
         proxy_read_timeout 300s;
     }
 }
-
-server {
-    listen 80;
-    listen [::]:80;
-    server_name openfiat.example.com;
-    return 301 https://$host$request_uri;
-}
 ```
 
 ```bash
 ln -s /etc/nginx/sites-available/openfiat-node /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
+
+# Confirm the proxy works before involving certificates at all:
+curl -s http://openfiat.example.com/health   # ok
 ```
 
-### 7.3 Get a certificate
+### 7.3 Let certbot add TLS
+
+The `A` record must already resolve — certbot proves control of the name
+by answering a challenge on port 80.
 
 ```bash
 apt install -y certbot python3-certbot-nginx
-certbot --nginx -d openfiat.example.com   # renews itself via systemd timer
+certbot --nginx -d openfiat.example.com
 ```
+
+Certbot edits the server block above in place: it adds `listen 443 ssl`,
+the certificate paths, and a separate `:80` block redirecting to HTTPS.
+Your `location` block and its proxy headers carry over unchanged. Renewal
+installs itself as a systemd timer.
+
+Do not hand-write a `443` block afterwards. Certbot manages that config,
+and a second one racing it is how the error at the top of 7.2 comes back.
 
 ### 7.4 Keep 7080 off the internet
 
