@@ -7,7 +7,7 @@ use futures::future::select_all;
 use openfiat_advertisements::{
     AdvertisementId, AdvertisementService, AdvertisementStatus, Direction, PricingModel,
 };
-use openfiat_crypto::Keypair;
+use openfiat_crypto::{Keypair, MintAddress};
 use openfiat_gossip::EventStore;
 use openfiat_gossip::channel::Subscription;
 use openfiat_network::identity::{peer_id, to_libp2p_keypair};
@@ -105,7 +105,7 @@ async fn a_created_and_then_disabled_advertisement_replicates_to_the_whole_clust
     all[1]
         .create(
             "sell-usdc-kes-1",
-            "USDC",
+            MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
             Direction::Sell,
             "KES",
             Amount::new(1_000_000, 6),

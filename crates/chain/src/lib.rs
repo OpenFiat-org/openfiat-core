@@ -16,6 +16,7 @@ mod client;
 mod error;
 pub mod events;
 mod gossip_service;
+pub mod mints;
 mod mode;
 pub mod programs;
 pub mod protocol;
@@ -26,6 +27,7 @@ pub use blockhash::{BLOCKHASH_VALIDITY, BlockhashCache};
 pub use client::{ChainClient, RpcChainClient, SignatureStatus, validate_rpc_endpoint};
 pub use error::ChainError;
 pub use gossip_service::{ChainBridge, ChainGossipService};
+pub use mints::{KNOWN_MINTS, KnownMint, symbol_for_mint};
 pub use mode::NodeChainMode;
 // The deployed programs this build is pinned to — protocol identity, fixed
 // at compile time and deliberately not configurable; see `programs`.

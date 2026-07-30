@@ -7,7 +7,7 @@
 
 use crate::error::AdvertisementError;
 use crate::record::{AdvertisementId, Direction, PricingModel};
-use openfiat_crypto::{Keypair, verify};
+use openfiat_crypto::{Keypair, MintAddress, verify};
 use openfiat_network::identity::peer_id_from_public_key;
 use openfiat_types::{Amount, PeerId, PublicKey, Signature, Timestamp};
 
@@ -16,7 +16,7 @@ pub struct AdvertisementCreate {
     pub id: AdvertisementId,
     pub merchant: PeerId,
     pub merchant_public_key: PublicKey,
-    pub asset: String,
+    pub asset_mint: MintAddress,
     pub direction: Direction,
     pub fiat_currency: String,
     pub min_trade: Amount,

@@ -74,7 +74,7 @@ impl<S: KvStore> AdvertisementRegistry<S> {
             id: create.id,
             merchant: create.merchant,
             merchant_public_key: create.merchant_public_key,
-            asset: create.asset,
+            asset_mint: create.asset_mint,
             direction: create.direction,
             fiat_currency: create.fiat_currency,
             min_trade: create.min_trade,
@@ -209,6 +209,7 @@ mod tests {
     use crate::events::AdvertisementCreate;
     use crate::record::PricingModel;
     use openfiat_crypto::Keypair;
+    use openfiat_crypto::MintAddress;
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_storage::mem::MemoryStore;
 
@@ -217,7 +218,7 @@ mod tests {
             id: AdvertisementId::new(id),
             merchant: peer_id_from_public_key(&keypair.public_key()).unwrap(),
             merchant_public_key: keypair.public_key(),
-            asset: "USDC".to_string(),
+            asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
             direction: Direction::Sell,
             fiat_currency: "KES".to_string(),
             min_trade: Amount::new(10_000_000, 6),

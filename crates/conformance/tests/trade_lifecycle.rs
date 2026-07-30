@@ -9,7 +9,7 @@ use openfiat_advertisements::events::{AdvertisementCreate, SignedAdvertisementCr
 use openfiat_advertisements::record::{Direction, PricingModel};
 use openfiat_advertisements::{AdvertisementId, protocol as adv_protocol};
 use openfiat_conformance::spawn_cluster;
-use openfiat_crypto::Keypair;
+use openfiat_crypto::{Keypair, MintAddress};
 use openfiat_network::identity::peer_id_from_public_key;
 use openfiat_reservations::events::{ReservationRequest, SignedReservationRequest};
 use openfiat_reservations::{ReservationId, protocol as rsv_protocol};
@@ -41,7 +41,7 @@ async fn a_trade_completes_end_to_end_and_converges_across_the_cluster() {
         id: ad_id.clone(),
         merchant: merchant_peer.clone(),
         merchant_public_key: merchant.public_key(),
-        asset: "USDT".to_string(),
+        asset_mint: MintAddress::parse("C4rSGhdxWhSFQuFcAxQti1JvBxriwHJoHtJjfhs5p24Y").unwrap(),
         direction: Direction::Sell,
         fiat_currency: "PHP".to_string(),
         min_trade: Amount::new(10_00, 2),

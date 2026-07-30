@@ -10,6 +10,7 @@ use crate::events::{
 use crate::protocol;
 use crate::record::{Advertisement, AdvertisementId, Direction, PricingModel};
 use crate::store::AdvertisementRegistry;
+use openfiat_crypto::MintAddress;
 use openfiat_gossip::GossipService;
 use openfiat_serialization::json;
 use openfiat_serialization::wire;
@@ -71,7 +72,7 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
     pub fn create(
         &mut self,
         id: impl Into<String>,
-        asset: impl Into<String>,
+        asset_mint: MintAddress,
         direction: Direction,
         fiat_currency: impl Into<String>,
         min_trade: Amount,
@@ -84,7 +85,7 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
             id: AdvertisementId::new(id),
             merchant: self.gossip.node.local_peer_id(),
             merchant_public_key: self.gossip.public_key(),
-            asset: asset.into(),
+            asset_mint,
             direction,
             fiat_currency: fiat_currency.into(),
             min_trade,

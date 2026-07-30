@@ -1,5 +1,6 @@
 //! The advertisement shape (OFS-2100 §4-6) and its materialized state.
 
+use openfiat_crypto::MintAddress;
 use openfiat_types::{Amount, PeerId, PublicKey, Timestamp};
 
 /// A globally unique, permanent identifier for an advertisement (§5).
@@ -82,7 +83,22 @@ pub struct Advertisement {
     pub id: AdvertisementId,
     pub merchant: PeerId,
     pub merchant_public_key: PublicKey,
-    pub asset: String,
+    /// The token a buyer receives, named by its mint address.
+    ///
+    /// This was `asset: String` — free text the merchant chose, shown to
+    /// the buyer as what they were about to be paid in, and connected to
+    /// the escrowed token by nothing at all. A merchant could advertise
+    /// "USDC" and settle in something else, and every layer would agree
+    /// the trade completed correctly, because each did exactly what it
+    /// was asked.
+    ///
+    /// A mint address is identity; a ticker is a label. `ServicePricing.
+    /// token_mint` in the service registry reached the same conclusion
+    /// for provider fees. The name a buyer sees is resolved from this at
+    /// the edge — `openfiat_chain::symbol_for_mint` — so the merchant
+    /// never supplies it, and a mint nobody has a name for is displayed
+    /// as its address rather than as a guess.
+    pub asset_mint: MintAddress,
     pub direction: Direction,
     pub fiat_currency: String,
     pub min_trade: Amount,

@@ -36,6 +36,16 @@ use std::collections::HashMap;
 pub struct AdvertisementView {
     #[serde(flatten)]
     pub advertisement: Advertisement,
+    /// What to call `asset_mint`, if this build knows a name for it.
+    ///
+    /// Resolved here rather than stored on the record, and `None` rather
+    /// than a guess. A merchant used to supply this as free text and
+    /// nothing tied it to the token the escrow would move — so an ad
+    /// could say "USDC" and settle in something else, with every layer
+    /// agreeing the trade completed. The name now comes from the mint;
+    /// a mint nobody has named is shown by address, which is unhelpful
+    /// and true rather than helpful and false.
+    pub asset_symbol: Option<&'static str>,
     pub quote: PriceQuote,
 }
 
@@ -53,21 +63,31 @@ fn resolve<S: KvStore + 'static>(
     let quote = match &advertisement.pricing {
         PricingModel::Fixed { .. } => advertisement.pricing.quote(MidPrice::NoOracleData),
         PricingModel::Floating { .. } => {
-            let pair = (
-                advertisement.asset.clone(),
-                advertisement.fiat_currency.clone(),
-            );
+            // An oracle publishes a rate against a *symbol* — a rate is
+            // about an asset, not about one cluster's mint of it — while
+            // the advertisement names a mint, because a symbol on a record
+            // is a label the merchant chose. This is the one place the two
+            // meet, and a mint this build has no name for is simply
+            // unpriceable: no oracle publishes a pair it cannot name, so
+            // pretending otherwise would invent a rate.
+            let Some(symbol) = openfiat_chain::symbol_for_mint(&advertisement.asset_mint) else {
+                return AdvertisementView {
+                    asset_symbol: None,
+                    quote: advertisement.pricing.quote(MidPrice::NoOracleData),
+                    advertisement,
+                };
+            };
+            let pair = (symbol.to_string(), advertisement.fiat_currency.clone());
             // Each lookup is a full scan of the oracle column family, so a
             // book with many advertisements on one pair would otherwise
             // rescan it once per row. Caching per call also guarantees
             // every row in one response is priced off the *same* read,
             // rather than off a feed that lapsed midway through.
             let mid = *cache.entry(pair).or_insert_with(|| {
-                match state.oracles.exchange_rate(
-                    &advertisement.asset,
-                    &advertisement.fiat_currency,
-                    now,
-                ) {
+                match state
+                    .oracles
+                    .exchange_rate(symbol, &advertisement.fiat_currency, now)
+                {
                     ExchangeRateLookup::Current { rate, expires_at } => {
                         MidPrice::Available { rate, expires_at }
                     }
@@ -79,6 +99,7 @@ fn resolve<S: KvStore + 'static>(
         }
     };
     AdvertisementView {
+        asset_symbol: openfiat_chain::symbol_for_mint(&advertisement.asset_mint),
         advertisement,
         quote,
     }
@@ -207,7 +228,7 @@ mod tests {
         AdvertisementCreate, AdvertisementDisable, AdvertisementPriceUpdate,
     };
     use openfiat_advertisements::record::{AdvertisementStatus, Direction, PricingModel};
-    use openfiat_crypto::Keypair;
+    use openfiat_crypto::{Keypair, MintAddress};
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_storage::mem::MemoryStore;
     use openfiat_types::{Amount, Timestamp};
@@ -312,7 +333,7 @@ mod tests {
             id: AdvertisementId::new(id),
             merchant: peer_id_from_public_key(&keypair.public_key()).unwrap(),
             merchant_public_key: keypair.public_key(),
-            asset: "USDC".to_string(),
+            asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
             direction: Direction::Sell,
             fiat_currency: "USD".to_string(),
             min_trade: Amount::new(1_000, 2),
@@ -596,10 +617,77 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result["id"], "ad-1");
-        assert_eq!(result["asset"], "USDC");
+        // The record carries the mint; the name is resolved beside it and
+        // never travels in the record itself.
+        assert_eq!(
+            result["asset_mint"],
+            "2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU"
+        );
+        assert_eq!(result["asset_symbol"], "USDC");
         assert_eq!(result["status"], "Active");
         assert!(result["pricing"]["Fixed"].is_object());
         assert!(result["quote"].is_object());
+    }
+
+    /// The attack this field exists to remove.
+    ///
+    /// A merchant used to write the asset name themselves, so an ad could
+    /// say "USDC" while the escrow moved something else — and every layer
+    /// agreed the trade completed, because each did exactly what it was
+    /// asked. The name is no longer theirs to write.
+    #[test]
+    fn a_merchant_cannot_choose_what_their_asset_is_called() {
+        let merchant = Keypair::generate();
+        // A real, well-formed advertisement in every respect except that
+        // the mint field carries a ticker.
+        let honest = serde_json::to_value(create_at(
+            &merchant,
+            "ad-spoof",
+            Timestamp::from_millis(1_000),
+        ))
+        .unwrap();
+        let mut create = honest;
+        create["asset_mint"] = serde_json::json!("USDC");
+        assert!(
+            serde_json::from_value::<AdvertisementCreate>(create).is_err(),
+            "a ticker in the mint field must not deserialize — otherwise the \
+             label is back, wearing the identity field's name"
+        );
+    }
+
+    /// A mint this build has no name for is shown by address, and priced
+    /// by nobody.
+    #[test]
+    fn an_unnamed_mint_is_neither_labelled_nor_priced() {
+        let (table, state) = table_and_state();
+        // A real, well-formed address that is simply not one this build
+        // knows — Circle's canonical devnet USDC, which this deployment
+        // deliberately does not settle in.
+        let unknown = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+        let merchant = Keypair::generate();
+        let signed = SignedAdvertisementCreate::sign(
+            AdvertisementCreate {
+                asset_mint: MintAddress::parse(unknown).unwrap(),
+                ..create_at(&merchant, "ad-unknown", Timestamp::from_millis(1_000))
+            },
+            &merchant,
+        );
+        table
+            .dispatch(&state, "sendAdvertisementCreate", params(&signed))
+            .expect("a valid address is a valid advertisement, named or not");
+
+        let result = table
+            .dispatch(
+                &state,
+                "getAdvertisement",
+                serde_json::json!({ "id": "ad-unknown" }),
+            )
+            .unwrap();
+        assert_eq!(result["asset_mint"], unknown);
+        assert!(
+            result["asset_symbol"].is_null(),
+            "an unknown mint must be nameless rather than guessed at: {result}"
+        );
     }
 
     /// Every row of one response resolves off a single oracle read, so a

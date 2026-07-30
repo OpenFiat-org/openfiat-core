@@ -5,7 +5,7 @@
 
 use openfiat_advertisements::events::{AdvertisementCreate, SignedAdvertisementCreate};
 use openfiat_advertisements::{AdvertisementId, AdvertisementRegistry, Direction, PricingModel};
-use openfiat_crypto::Keypair;
+use openfiat_crypto::{Keypair, MintAddress};
 use openfiat_disputes::commitment;
 use openfiat_disputes::events::{
     ArbitratorJoin, DisputeOpen, SignedArbitratorJoin, SignedDisputeOpen, SignedVoteCommit,
@@ -54,7 +54,8 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
                 id: ad_id.clone(),
                 merchant: merchant_id.clone(),
                 merchant_public_key: merchant.public_key(),
-                asset: "USDC".to_string(),
+                asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU")
+                    .unwrap(),
                 direction: Direction::Sell,
                 fiat_currency: "KES".to_string(),
                 min_trade: Amount::new(1_000_000, 6),

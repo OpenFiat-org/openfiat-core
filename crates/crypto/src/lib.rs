@@ -18,6 +18,7 @@ pub mod challenge;
 pub mod cid;
 pub mod hash;
 pub mod keypair;
+pub mod mint;
 pub mod seal;
 pub mod verify;
 
@@ -25,6 +26,7 @@ pub use challenge::{CHALLENGE_TTL_SECS, Challenge, ChallengeError, ChallengeLedg
 pub use cid::{Cid, CidError};
 pub use hash::sha256;
 pub use keypair::Keypair;
+pub use mint::{MintAddress, MintError};
 pub use seal::{SealError, SealedBox, open, seal};
 pub use verify::{VerifyError, verify};
 

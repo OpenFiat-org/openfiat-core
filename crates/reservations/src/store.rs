@@ -187,7 +187,7 @@ mod tests {
     use crate::events::{ReservationCancel, ReservationRequest};
     use openfiat_advertisements::events::{AdvertisementCreate, SignedAdvertisementCreate};
     use openfiat_advertisements::{AdvertisementId, Direction, PricingModel};
-    use openfiat_crypto::Keypair;
+    use openfiat_crypto::{Keypair, MintAddress};
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_storage::mem::MemoryStore;
     use openfiat_types::Amount;
@@ -205,7 +205,7 @@ mod tests {
             id: ad_id.clone(),
             merchant: peer_id_from_public_key(&merchant.public_key()).unwrap(),
             merchant_public_key: merchant.public_key(),
-            asset: "USDC".to_string(),
+            asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
             direction: Direction::Sell,
             fiat_currency: "KES".to_string(),
             min_trade: Amount::new(1_000_000, 6),
@@ -273,7 +273,7 @@ mod tests {
             id: ad_id.clone(),
             merchant: peer_id_from_public_key(&merchant.public_key()).unwrap(),
             merchant_public_key: merchant.public_key(),
-            asset: "USDC".to_string(),
+            asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
             direction: Direction::Sell,
             fiat_currency: "KES".to_string(),
             min_trade: Amount::new(1_000_000, 6),
