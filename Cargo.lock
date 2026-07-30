@@ -3801,6 +3801,7 @@ dependencies = [
 name = "openfiat-wallet"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "openfiat-crypto",
  "openfiat-network",
  "openfiat-serialization",

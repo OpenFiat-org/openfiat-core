@@ -153,6 +153,27 @@ curl -s -X POST http://127.0.0.1:7080/rpc \
   -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":{}}'
 ```
 
+### Finding your own addresses
+
+The node prints both of its identities at startup. They are the same key in
+two encodings, and you need a different one for each job:
+
+```
+INFO openfiat_node: starting … address=RK5Yejkhtcm9tdBxYigwoyVFzLKSqRWunYXfNjFndbx
+                                     peer_id=12D3KooWAEgFHnKTtntFZn8cb9U2ic4KkKNxUXVzsNuZ3Mt9gaKt
+INFO openfiat_node: peers can reach this node at this address …
+                    entrypoint=/ip4/0.0.0.0/udp/4098/quic-v1/p2p/12D3KooWAEgFHnKTtntFZn8cb9U2ic4KkKNxUXVzsNuZ3Mt9gaKt
+```
+
+- `address` is the Solana address that holds the node's stake — the string
+  to give a faucet, paste into an explorer, or stake against. It is
+  identical to `solana-keygen pubkey <your wallet.json>`.
+- `entrypoint` is what another operator puts after their `--entrypoint` to
+  dial you, **with the bind address replaced by a host they can route to**.
+  A node binds `0.0.0.0` and cannot tell what a NAT or firewall makes of
+  it, so substituting your real address is the one part it cannot do for
+  you.
+
 ### Flags
 
 | Flag | Default | What it does |

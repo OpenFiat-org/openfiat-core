@@ -34,6 +34,19 @@ impl Wallet {
         self.keypair.public_key()
     }
 
+    /// This wallet's Solana address, base58 — the string an operator
+    /// pastes into an explorer, a faucet, or a stake instruction.
+    ///
+    /// It is the same 32 bytes as [`Wallet::public_key`], in the encoding
+    /// every other tool in this ecosystem prints. That matters more than
+    /// it sounds: a node that logged its identity as a byte array left an
+    /// operator with a number they could not look up anywhere, could not
+    /// search for, and could not compare against the address their wallet
+    /// showed them, even though it was the same key.
+    pub fn address(&self) -> String {
+        bs58::encode(self.public_key().as_bytes()).into_string()
+    }
+
     /// The seed this wallet was derived from — the caller's
     /// responsibility to store securely; this crate does no disk
     /// persistence of its own.

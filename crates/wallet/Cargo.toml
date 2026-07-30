@@ -13,3 +13,6 @@ openfiat-network = { path = "../network", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# Already in the tree via the Solana crates; taken directly so an
+# operator-facing address does not need the whole Solana SDK.
+bs58 = "0.5.1"

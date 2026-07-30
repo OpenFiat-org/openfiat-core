@@ -48,6 +48,7 @@ use openfiat_chain::NodeChainMode;
 use openfiat_crypto::Keypair;
 use openfiat_database::Database;
 use openfiat_network::Multiaddr;
+use openfiat_network::identity::to_libp2p_keypair;
 use openfiat_rpc::NetworkConfig;
 use openfiat_types::NodeRole;
 use openfiat_wallet::Wallet;
@@ -326,10 +327,22 @@ async fn main() {
     let snapshot = snapshot_config(&args, &data_dir);
     let snapshot_directory = snapshot.directory.clone();
 
+    // Both identities, in the encodings they are actually used in.
+    //
+    // They are the same key, and printing either as raw bytes leaves an
+    // operator with a number they cannot look up, search for, or compare
+    // against what their wallet shows them. The address is what an
+    // explorer, a faucet and a stake instruction take; the peer id is what
+    // goes in the multiaddr other operators put after `--entrypoint`, so
+    // a node that cannot state its own peer id cannot be joined.
+    let libp2p_peer_id =
+        openfiat_network::PeerId::from_public_key(&to_libp2p_keypair(&network_keypair).public());
+
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         ledger = %data_dir,
-        identity = ?wallet.peer_id(),
+        address = %wallet.address(),
+        peer_id = %libp2p_peer_id,
         chain_mode = if chain_mode.is_rpc_connected() { "RpcConnected" } else { "GossipOnly" },
         // Logged, not read: which deployment a binary is pinned to is fixed
         // at compile time (`openfiat_chain::programs`), so this is an
@@ -373,6 +386,19 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("failed to bind {http_addr}: {e}"));
     tracing::info!(address = %http_addr, "JSON-RPC and HTTP API listening (try GET /health, GET /docs)");
+
+    // The address other operators put after `--entrypoint` to reach this
+    // node. Printed with the bind address substituted in, because that is
+    // the part an operator has to correct: a node binds `0.0.0.0` and has
+    // no way to learn what a NAT or a firewall makes of it, so it can
+    // supply the shape and the peer id and nothing more. Without this,
+    // joining a cluster means knowing that a multiaddr ends in
+    // `/p2p/<peer id>` and working out where that peer id is printed.
+    tracing::info!(
+        entrypoint = %format!("{}/p2p/{libp2p_peer_id}", args.gossip_bind_address),
+        "peers can reach this node at this address, with the bind address \
+         replaced by one they can route to"
+    );
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await

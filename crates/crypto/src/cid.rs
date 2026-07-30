@@ -237,6 +237,28 @@ mod tests {
     const REAL_CID: &str = "bafkreibdmq27skp3wnycoyoqcei47etyaulerpsegivlkfvyhjkw7ufjva";
     const REAL_CONTENT: &[u8] = b"openfiat ipfs probe 1785426891\n";
 
+    /// What the same provider returned for a 900 KB upload. Filebase
+    /// chunks past its own threshold and hands back a dag-pb root, so
+    /// this is not a hypothetical codec — it is what half of all real
+    /// uploads produce, and rejecting it would break every attachment
+    /// larger than a small image.
+    const REAL_DAG_PB_CID: &str = "bafybeig3ci7io2duyknu34co3zw42oodnfyamwazsus42vpgnvq2hpzodm";
+
+    #[test]
+    fn parses_the_dag_pb_cid_a_chunked_upload_produces() {
+        let cid = Cid::parse(REAL_DAG_PB_CID).expect("a chunked upload's CID must parse");
+        assert_eq!(cid.as_str(), REAL_DAG_PB_CID);
+    }
+
+    #[test]
+    fn a_dag_pb_root_does_not_match_the_file_it_addresses() {
+        // Its digest is over the DAG node, not the bytes, so `matches`
+        // cannot be used to check a chunked file — documented on the
+        // method, asserted here so the documentation stays true.
+        let cid = Cid::parse(REAL_DAG_PB_CID).unwrap();
+        assert!(!cid.matches(REAL_CONTENT));
+    }
+
     #[test]
     fn parses_a_cid_this_project_actually_uploaded() {
         let cid = Cid::parse(REAL_CID).expect("a CID Filebase returned must parse");
