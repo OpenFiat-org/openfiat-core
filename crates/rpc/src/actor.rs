@@ -25,9 +25,11 @@ use openfiat_governance::events::SignedVoteCast;
 use openfiat_network::{Multiaddr, Node};
 use openfiat_notifications::{HttpGateway, NotificationProvider};
 use openfiat_serialization::wire;
+use openfiat_snapshot::SnapshotConfig;
 use openfiat_storage::KvStore;
 use openfiat_types::NodeRole;
 use serde_json::Value;
+use std::rc::Rc;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 /// `[PROPOSED — NEEDS SIGN-OFF]`: how often an `RpcConnected` node polls
@@ -139,6 +141,10 @@ pub struct NetworkConfig {
     pub listen_addr: Multiaddr,
     pub bootstrap_peers: Vec<Multiaddr>,
     pub chain_mode: NodeChainMode,
+    /// Where this node keeps snapshots, how often it writes one, and the
+    /// public URL it announces them under (OFS-1300). Defaults to
+    /// producing nothing — see [`SnapshotConfig::produces`].
+    pub snapshot: SnapshotConfig,
 }
 
 impl NetworkConfig {
@@ -153,6 +159,7 @@ impl NetworkConfig {
             listen_addr: "/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap(),
             bootstrap_peers: Vec::new(),
             chain_mode: NodeChainMode::GossipOnly,
+            snapshot: SnapshotConfig::default(),
         }
     }
 }
@@ -398,6 +405,140 @@ fn discard_unverifiable_votes<S: KvStore + 'static>(state: &NodeState<S>) {
     }
 }
 
+/// How often a node with no checkpoint looks for a snapshot to bootstrap
+/// from.
+///
+/// Thirty seconds because this only runs *until* the node has a
+/// checkpoint, and what it is waiting on is the first announcement to
+/// arrive over gossip after startup — usually seconds. A node that has
+/// already imported one never runs this again, so the cadence costs a
+/// timer wakeup for the rest of the process's life and nothing else.
+const SNAPSHOT_BOOTSTRAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Writes and announces a snapshot of this node's own state (OFS-1300
+/// §11). No-op unless the operator configured both an interval and a
+/// public URL — see [`SnapshotConfig::produces`].
+///
+/// Every failure is reported and contained. A node that cannot produce a
+/// snapshot is a node that is not helping others bootstrap; it is not a
+/// node that should stop serving, so nothing here is fatal. The one
+/// failure worth naming loudly is `Unauthorized`, which means this node
+/// is not registered as a snapshot provider and so its announcements
+/// would be dropped by every peer — a configuration problem an operator
+/// can only fix if they are told about it.
+fn poll_snapshot_production<S: KvStore + 'static>(state: &NodeState<S>, config: &SnapshotConfig) {
+    if !config.produces() {
+        return;
+    }
+    let store = Rc::clone(&state.store);
+    let height = state.gossip.borrow().event_count() as u64;
+    let (producer, producer_public_key) = {
+        let gossip = state.gossip.borrow();
+        (gossip.node.local_peer_id(), gossip.public_key())
+    };
+
+    let produced = match openfiat_snapshot::producer::produce(
+        &store,
+        crate::state::SNAPSHOT_COLUMN_FAMILIES,
+        config,
+        height,
+        producer,
+        producer_public_key,
+    ) {
+        Ok(produced) => produced,
+        Err(error) => {
+            eprintln!("openfiat-node: could not write a snapshot: {error}");
+            return;
+        }
+    };
+
+    // Signed, applied locally, then gossiped — the same order every
+    // `sendX` handler uses, so a rejection is a real error here rather
+    // than a silent drop at every peer.
+    let metadata = produced.metadata.clone();
+    let signature = {
+        let bytes = openfiat_serialization::json::to_bytes(&metadata)
+            .expect("SnapshotMetadata always serializes");
+        state.gossip.borrow().sign(&bytes)
+    };
+    let signed = openfiat_snapshot::events::SignedSnapshotAnnounce {
+        metadata: metadata.clone(),
+        signature,
+    };
+    let gossip_bytes = wire::to_bytes(&signed).expect("SignedSnapshotAnnounce always serializes");
+    match state.snapshots.apply_announce(signed) {
+        Ok(id) => {
+            crate::dispatch::originate(
+                state,
+                openfiat_snapshot::protocol::EVENT_ANNOUNCED,
+                openfiat_snapshot::protocol::OFS_SPEC,
+                openfiat_types::Priority::Snapshot,
+                gossip_bytes,
+            );
+            println!(
+                "openfiat-node: announced snapshot {} at height {} ({} bytes) from {}",
+                id.as_str(),
+                metadata.height,
+                metadata.size_bytes,
+                produced.path.display()
+            );
+        }
+        Err(error) => eprintln!(
+            "openfiat-node: wrote snapshot {} but could not announce it: {error}. \
+             A node must be registered as an Infrastructure/SnapshotProvider service \
+             before its announcements are accepted by any peer.",
+            metadata.id.as_str()
+        ),
+    }
+}
+
+/// Bootstraps this node from the best snapshot it knows of, if it has
+/// never imported one (OFS-1300 §13-17).
+///
+/// Runs only while `checkpoint_height()` is `None`: once a snapshot has
+/// landed, this node's state comes from gossip, and re-importing would
+/// overwrite newer state with older — which `SnapshotIndex::import`
+/// refuses anyway, but there is no reason to ask.
+///
+/// The chosen snapshot is the highest-height one this node has a
+/// *verified* announcement for. Every announcement in that index already
+/// passed a signature check and a service-registry authorization check,
+/// and the bytes fetched against it are verified again before anything is
+/// written, so choosing by height alone is safe: the worst a hostile
+/// producer can do by claiming an enormous height is waste this node one
+/// download that then fails to verify.
+async fn poll_snapshot_bootstrap<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    client: &reqwest::Client,
+) {
+    if state.snapshots.checkpoint_height().is_some() {
+        return;
+    }
+    let Some(candidate) = state.snapshots.latest() else {
+        return;
+    };
+
+    match openfiat_snapshot::fetch::fetch_and_import(&state.snapshots, client, &candidate.id).await
+    {
+        Ok(restored) => println!(
+            "openfiat-node: bootstrapped from snapshot {} at height {} — {restored} state \
+             entries imported, gossip catch-up resumes from there instead of full replay",
+            candidate.id.as_str(),
+            candidate.height
+        ),
+        // Loud, and specifically not fatal: the next tick tries again,
+        // and a snapshot that fails verification has changed nothing.
+        // Starting without state is recoverable; starting with someone
+        // else's forged state is not.
+        Err(error) => eprintln!(
+            "openfiat-node: refused snapshot {} from {:?}: {error}. Continuing without a \
+             checkpoint; will retry.",
+            candidate.id.as_str(),
+            candidate.producer
+        ),
+    }
+}
+
 /// Spawns the actor thread. `build_store` and `network` both take effect
 /// *inside* that thread, not before — `S`, `Node`, and everything built
 /// from them never needs to be `Send`, only the values handed in do.
@@ -459,6 +600,18 @@ where
             // node sees just as well as an `RpcConnected` one.
             let mut notification_poll = tokio::time::interval(NOTIFICATION_POLL_INTERVAL);
             let notification_provider = HttpGateway::default();
+            // A node that produces nothing still ticks this arm, which
+            // returns immediately — cheaper than the conditional-arm
+            // gymnastics `tokio::select!` would otherwise need, and the
+            // interval is an hour by default.
+            let snapshot_config = network.snapshot;
+            let mut snapshot_produce = tokio::time::interval(
+                snapshot_config
+                    .interval
+                    .unwrap_or(openfiat_snapshot::config::DEFAULT_INTERVAL),
+            );
+            let mut snapshot_bootstrap = tokio::time::interval(SNAPSHOT_BOOTSTRAP_INTERVAL);
+            let snapshot_client = reqwest::Client::new();
 
             loop {
                 tokio::select! {
@@ -494,6 +647,12 @@ where
                     }
                     _ = notification_poll.tick() => {
                         poll_notifications(&state, &notification_provider).await;
+                    }
+                    _ = snapshot_produce.tick() => {
+                        poll_snapshot_production(&state, &snapshot_config);
+                    }
+                    _ = snapshot_bootstrap.tick() => {
+                        poll_snapshot_bootstrap(&state, &snapshot_client).await;
                     }
                 }
             }

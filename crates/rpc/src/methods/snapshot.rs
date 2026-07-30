@@ -1,7 +1,14 @@
-//! Snapshot methods (OFS-1300). `import` isn't exposed here — actual
-//! snapshot bytes travel over whatever transport a client chooses (§14),
-//! not this JSON-RPC surface; a client downloads out of band and calls
-//! `openfiat_snapshot::SnapshotIndex::import` directly.
+//! Snapshot methods (OFS-1300). Metadata only — the bytes themselves are
+//! served by `openfiat_snapshot::serve`'s `GET /snapshot/{id}`, merged
+//! into the same axum router as these methods (see `crate::server`).
+//!
+//! `import` deliberately has no method here. Importing replaces this
+//! node's entire worldview, and a node decides for itself when to do that
+//! — on startup with no checkpoint, from an announcement it verified
+//! itself (`actor::poll_snapshot_bootstrap`). Exposing it as an RPC would
+//! hand any caller that decision; every `getX` below is a read of what
+//! this node already believes, and `sendSnapshotAnnounce` only relays a
+//! payload the caller's own wallet signed.
 
 use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, method_fn};
 use crate::error::RpcError;

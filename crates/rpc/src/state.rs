@@ -63,8 +63,46 @@ pub struct PendingVoteVerification {
     pub attempts: u32,
 }
 
+/// Every column family that makes up this node's replicated worldview,
+/// and therefore everything a snapshot of it must carry.
+///
+/// Defined here, in the one module that composes all of them, rather than
+/// in `openfiat-snapshot` (which deliberately knows no domain crate) or in
+/// `openfiat-node` (where a new registry could be added to the database's
+/// open list and silently left out of every snapshot). A domain crate
+/// joining `NodeState` above and not appearing here would ship snapshots
+/// missing its state.
+///
+/// Three column families are deliberately absent:
+/// - `gossip_events` — the event log a snapshot exists to spare a joining
+///   node from replaying. Including it would make a snapshot larger than
+///   the history it replaces.
+/// - `snapshot_metadata` and `snapshot_checkpoint` — node-local snapshot
+///   bookkeeping, which `openfiat_snapshot::store::RESERVED_COLUMN_FAMILIES`
+///   also refuses to let an import overwrite.
+pub const SNAPSHOT_COLUMN_FAMILIES: &[&str] = &[
+    "advertisements",
+    "reservations",
+    "settlements",
+    "disputes",
+    "identity_claims",
+    "governance_proposals",
+    "registry_services",
+    "notification_subscriptions",
+    "notification_receipts",
+    "notification_dispatches",
+    "oracle_records",
+    "risk_records",
+    "sessions",
+];
+
 pub struct NodeState<S> {
     pub gossip: RefCell<GossipService<Rc<S>>>,
+    /// The one physical store every registry above writes through — held
+    /// so this node can snapshot its own state (see
+    /// `actor::poll_snapshot_production`). Every other reader goes
+    /// through a registry; nothing should reach past one to this.
+    pub store: Rc<S>,
     pub advertisements: Rc<AdvertisementRegistry<Rc<S>>>,
     pub reservations: Rc<ReservationRegistry<Rc<S>>>,
     pub settlements: Rc<SettlementRegistry<Rc<S>>>,
@@ -304,6 +342,7 @@ impl<S: KvStore + 'static> NodeState<S> {
 
         Self {
             gossip: RefCell::new(gossip),
+            store,
             pending_notifications,
             notification_dispatcher,
             advertisements,

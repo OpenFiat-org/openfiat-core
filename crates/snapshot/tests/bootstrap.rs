@@ -23,8 +23,7 @@ use openfiat_snapshot::location::SnapshotLocation;
 use openfiat_snapshot::{SnapshotError, SnapshotService, fetch, serve};
 use openfiat_storage::mem::MemoryStore;
 use openfiat_types::{
-    InfrastructureService, MarketplaceService, PeerId, PublicKey, ServiceId, ServiceType,
-    Timestamp,
+    InfrastructureService, MarketplaceService, PeerId, PublicKey, ServiceId, ServiceType, Timestamp,
 };
 use std::future::Future;
 use std::net::SocketAddr;
@@ -104,10 +103,7 @@ fn identity(seed: u8) -> (PeerId, PublicKey) {
     (peer_id(&to_libp2p_keypair(&keypair)), keypair.public_key())
 }
 
-async fn drive_until(
-    nodes: &mut [TestNode],
-    mut condition: impl FnMut(&[TestNode]) -> bool,
-) {
+async fn drive_until(nodes: &mut [TestNode], mut condition: impl FnMut(&[TestNode]) -> bool) {
     tokio::time::timeout(Duration::from_secs(15), async {
         while !condition(nodes) {
             let futures: Vec<Pin<Box<dyn Future<Output = ()> + '_>>> = nodes
@@ -170,7 +166,9 @@ async fn serve_directory(directory: PathBuf) -> SnapshotLocation {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, serve::router(directory)).await.unwrap();
+        axum::serve(listener, serve::router(directory))
+            .await
+            .unwrap();
     });
     SnapshotLocation::parse(format!("http://{address}")).unwrap()
 }
@@ -321,8 +319,7 @@ async fn a_corrupted_download_is_rejected_and_changes_nothing() {
     std::fs::write(&path, &bytes).unwrap();
 
     let client = reqwest::Client::new();
-    let result =
-        fetch::fetch_and_import(nodes[1].snapshots.index(), &client, &metadata.id).await;
+    let result = fetch::fetch_and_import(nodes[1].snapshots.index(), &client, &metadata.id).await;
     assert_eq!(
         result,
         Err(SnapshotError::StateRootMismatch),

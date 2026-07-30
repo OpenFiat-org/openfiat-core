@@ -1,7 +1,13 @@
 //! The axum HTTP/WebSocket surface: one POST endpoint speaking JSON-RPC
 //! 2.0 (`/rpc`), one WebSocket endpoint streaming the generic mutation
-//! firehose (`/ws` — see [`crate::actor::RpcHandle::subscribe`]), plus
-//! `/health` and `/metrics`.
+//! firehose (`/ws` — see [`crate::actor::RpcHandle::subscribe`]),
+//! `/health`, `/metrics`, and `GET /snapshot/{id}` merged in from
+//! `openfiat_snapshot::serve`.
+//!
+//! The snapshot route rides here rather than on a port of its own — see
+//! that module's doc for why — and holds no `RpcHandle`, so a peer
+//! downloading a multi-gigabyte snapshot never queues a byte through the
+//! single-threaded actor that answers every JSON-RPC call.
 
 use crate::actor::RpcHandle;
 use crate::jsonrpc::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
@@ -11,6 +17,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use openfiat_metrics::MetricsRegistry;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
@@ -20,7 +27,15 @@ struct AppState {
     metrics: Arc<MetricsRegistry>,
 }
 
-pub fn router(rpc: RpcHandle, metrics: Arc<MetricsRegistry>) -> Router {
+/// `snapshot_directory` is where this node's produced snapshots live
+/// (`SnapshotConfig::directory`); the merged route serves from it and
+/// answers 404 for everything else, so pointing it at an empty or absent
+/// directory is safe for a node that produces nothing.
+pub fn router(
+    rpc: RpcHandle,
+    metrics: Arc<MetricsRegistry>,
+    snapshot_directory: PathBuf,
+) -> Router {
     let state = AppState { rpc, metrics };
     Router::new()
         .route("/rpc", post(handle_rpc))
@@ -28,6 +43,7 @@ pub fn router(rpc: RpcHandle, metrics: Arc<MetricsRegistry>) -> Router {
         .route("/health", get(handle_health))
         .route("/metrics", get(handle_metrics))
         .with_state(state)
+        .merge(openfiat_snapshot::serve::router(snapshot_directory))
         // A third-party browser UI calling this node directly from its own
         // origin (OFS-8200's whole point — a stable, third-party-facing RPC
         // surface) needs this node to actually allow that cross-origin
@@ -117,10 +133,44 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_router() -> Router {
+        router_over(std::env::temp_dir().join("openfiat-rpc-test-snapshots"))
+    }
+
+    fn router_over(snapshot_directory: PathBuf) -> Router {
         router(
             spawn_actor(MemoryStore::new, crate::actor::NetworkConfig::for_test()),
             Arc::new(MetricsRegistry::new()),
+            snapshot_directory,
         )
+    }
+
+    /// The merge itself is the thing under test: `openfiat_snapshot::serve`
+    /// has its own tests, but nothing else proves an archival node's
+    /// snapshot is reachable from the port an operator actually exposes.
+    #[tokio::test]
+    async fn the_merged_router_serves_snapshots_from_the_configured_directory() {
+        let directory = std::env::temp_dir().join(format!(
+            "openfiat-rpc-merged-snapshots-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("snap-7-42.snapshot"), b"compressed state").unwrap();
+
+        let response = router_over(directory.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/snapshot/snap-7-42")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"compressed state");
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[tokio::test]

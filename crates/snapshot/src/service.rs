@@ -62,10 +62,7 @@ impl<S: KvStore + 'static> SnapshotService<S> {
     /// The node's own identity, for a caller assembling metadata to
     /// announce — see [`announce_produced`](Self::announce_produced).
     pub fn identity(&self) -> (openfiat_types::PeerId, openfiat_types::PublicKey) {
-        (
-            self.gossip.node.local_peer_id(),
-            self.gossip.public_key(),
-        )
+        (self.gossip.node.local_peer_id(), self.gossip.public_key())
     }
 
     /// §11-12: sign and gossip metadata describing a snapshot this node

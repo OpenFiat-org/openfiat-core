@@ -133,9 +133,9 @@ fn prune(directory: &Path, retain: usize) {
     if files.len() <= retain {
         return;
     }
-    // Ids embed height then creation second, both zero-padding-free but
-    // monotonic in practice; sorting by modification time is what
-    // actually holds when a clock or a height is not what it should be.
+    // Ids embed height then creation time, neither zero-padded, so
+    // sorting by name would order `snap-9-...` after `snap-10-...`.
+    // Modification time is what actually holds.
     files.sort_by_key(|path| {
         let modified = std::fs::metadata(path)
             .and_then(|meta| meta.modified())
@@ -168,10 +168,8 @@ mod tests {
     }
 
     fn temporary_directory(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "openfiat-snapshot-{name}-{}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("openfiat-snapshot-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         path
     }
@@ -199,7 +197,10 @@ mod tests {
         let bytes = std::fs::read(&produced.path).unwrap();
         assert_eq!(produced.metadata.size_bytes, bytes.len() as u64);
         let state_bytes = codec::decompress(&bytes, produced.metadata.compression).unwrap();
-        assert_eq!(produced.metadata.state_root, codec::state_root(&state_bytes));
+        assert_eq!(
+            produced.metadata.state_root,
+            codec::state_root(&state_bytes)
+        );
         assert_eq!(produced.metadata.height, 4217);
         assert_eq!(
             produced.metadata.locations[0].as_str(),

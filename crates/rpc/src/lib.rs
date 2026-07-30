@@ -21,7 +21,7 @@ pub use actor::{NetworkConfig, RpcHandle, spawn_actor};
 pub use dispatch::MethodTable;
 pub use error::RpcError;
 pub use server::router;
-pub use state::NodeState;
+pub use state::{NodeState, SNAPSHOT_COLUMN_FAMILIES};
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {

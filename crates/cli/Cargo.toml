@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 openfiat-rpc = { path = "../rpc", version = "0.1.0" }
+openfiat-snapshot = { path = "../snapshot", version = "0.1.0" }
 openfiat-api = { path = "../api", version = "0.1.0" }
 openfiat-metrics = { path = "../metrics", version = "0.1.0" }
 openfiat-database = { path = "../database", version = "0.1.0" }

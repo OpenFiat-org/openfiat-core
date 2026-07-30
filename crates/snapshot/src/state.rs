@@ -21,15 +21,18 @@
 
 use crate::error::SnapshotError;
 use openfiat_serialization::wire;
-use openfiat_storage::KvStore;
+use openfiat_storage::{Entry, KvStore};
+
+/// One column family's full contents: its name, and every `(key, value)`
+/// pair in it sorted by key.
+pub type ColumnFamilySnapshot = (String, Vec<Entry>);
 
 /// The on-the-wire body of a snapshot. Sorted at construction, never
 /// after — see the module doc on why the ordering is load-bearing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StateSnapshot {
-    /// `(column family, sorted (key, value) pairs)`, itself sorted by
-    /// column family name.
-    pub column_families: Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>,
+    /// Sorted by column family name.
+    pub column_families: Vec<ColumnFamilySnapshot>,
 }
 
 impl StateSnapshot {
@@ -192,7 +195,9 @@ mod tests {
     #[test]
     fn a_snapshot_reaching_for_a_reserved_column_family_writes_nothing() {
         let hostile = MemoryStore::new();
-        hostile.put("advertisements", b"ad-1", b"legitimate").unwrap();
+        hostile
+            .put("advertisements", b"ad-1", b"legitimate")
+            .unwrap();
         hostile
             .put("snapshot_checkpoint", b"local", &u64::MAX.to_le_bytes())
             .unwrap();

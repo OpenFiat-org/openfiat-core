@@ -21,8 +21,7 @@ const CHECKPOINT_KEY: &[u8] = b"local";
 /// The column families an imported snapshot may never write — this
 /// node's own snapshot bookkeeping. See `crate::state::restore` for the
 /// lockout this prevents.
-pub const RESERVED_COLUMN_FAMILIES: &[&str] =
-    &[SNAPSHOTS_COLUMN_FAMILY, CHECKPOINT_COLUMN_FAMILY];
+pub const RESERVED_COLUMN_FAMILIES: &[&str] = &[SNAPSHOTS_COLUMN_FAMILY, CHECKPOINT_COLUMN_FAMILY];
 
 pub struct SnapshotIndex<S> {
     store: S,
@@ -132,11 +131,7 @@ impl<S: KvStore> SnapshotIndex<S> {
     ///    roll the node backwards.
     /// 4. **Size, then digest, then write.** Nothing reaches the store
     ///    until the decompressed bytes hash to the announced `state_root`.
-    pub fn import(
-        &self,
-        id: &SnapshotId,
-        compressed_bytes: &[u8],
-    ) -> Result<usize, SnapshotError> {
+    pub fn import(&self, id: &SnapshotId, compressed_bytes: &[u8]) -> Result<usize, SnapshotError> {
         let metadata = self.get(id).ok_or(SnapshotError::UnknownSnapshot)?;
         if metadata.protocol_version != protocol::SUPPORTED_PROTOCOL_VERSION {
             return Err(SnapshotError::UnsupportedProtocolVersion);

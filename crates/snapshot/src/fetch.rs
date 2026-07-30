@@ -43,7 +43,10 @@ pub async fn download(
     if !response.status().is_success() {
         return Err(SnapshotError::DownloadFailed);
     }
-    if response.content_length().is_some_and(|len| len > size_bytes) {
+    if response
+        .content_length()
+        .is_some_and(|len| len > size_bytes)
+    {
         return Err(SnapshotError::SizeMismatch);
     }
 
