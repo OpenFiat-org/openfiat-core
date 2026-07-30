@@ -23,7 +23,7 @@ mod state;
 mod validate;
 
 pub use blockhash::{BLOCKHASH_VALIDITY, BlockhashCache};
-pub use client::{ChainClient, RpcChainClient, SignatureStatus};
+pub use client::{ChainClient, RpcChainClient, SignatureStatus, validate_rpc_endpoint};
 pub use error::ChainError;
 pub use gossip_service::{ChainBridge, ChainGossipService};
 pub use mode::NodeChainMode;

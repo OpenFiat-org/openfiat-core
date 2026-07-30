@@ -269,3 +269,82 @@ mod tests {
         RpcChainClient::new(vec![]);
     }
 }
+
+/// Checks that a URL actually speaks Solana JSON-RPC, before a node claims
+/// to be `RpcConnected`.
+///
+/// # Why this exists
+///
+/// `solana_client` reads its responses with `value["result"]`. Given a URL
+/// that answers with something other than a JSON-RPC object, that indexing
+/// **panics** rather than returning an error, and the panic kills the chain
+/// thread while the HTTP server keeps running — so the node reports itself
+/// up, `systemctl` shows it active, and nothing on chain ever happens again.
+///
+/// This is not hypothetical. A provider's REST API sitting on the same host
+/// is the easy mistake: Helius serves JSON-RPC at
+/// `https://devnet.helius-rpc.com/?api-key=…` and an Enhanced Transactions
+/// REST API at `…/v0/transactions/?api-key=…`. The second returns a bare
+/// JSON array (`[]`), and pointing a node at it produced exactly the panic
+/// above — "cannot access key \"result\" in JSON array".
+///
+/// A URL-shape heuristic would be wrong: plenty of legitimate providers put
+/// the key in the path. So this asks the endpoint what it is, by making the
+/// simplest possible call and requiring a JSON-RPC-shaped answer. An `error`
+/// object counts as success — that is still a JSON-RPC server talking, and
+/// whether it likes our request is a separate question from whether it is
+/// the right kind of endpoint.
+pub async fn validate_rpc_endpoint(url: &str) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("could not build an HTTP client: {e}"))?;
+
+    let response = client
+        .post(url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "getVersion", "params": []
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("could not reach {url}: {e}"))?;
+
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|_| format!("{url} did not return JSON (HTTP {status})"))?;
+
+    match &body {
+        serde_json::Value::Object(map)
+            if map.contains_key("result") || map.contains_key("error") =>
+        {
+            Ok(())
+        }
+        serde_json::Value::Array(_) => Err(format!(
+            "{url} answered a JSON-RPC request with a JSON array, so it is not a Solana \
+             JSON-RPC endpoint — it looks like a provider's REST API. Providers often host \
+             both: check for a JSON-RPC URL without the REST path (for Helius, drop \
+             `/v0/transactions/` and keep `https://<host>/?api-key=…`)."
+        )),
+        _ => Err(format!(
+            "{url} returned JSON with no `result` or `error` field, so it is not speaking \
+             Solana JSON-RPC (HTTP {status})"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod endpoint_validation_tests {
+    use super::validate_rpc_endpoint;
+
+    #[tokio::test]
+    async fn rejects_an_unreachable_host() {
+        // Reserved for documentation examples, so it never resolves to a
+        // real service that might answer.
+        let err = validate_rpc_endpoint("http://127.0.0.1:1/")
+            .await
+            .unwrap_err();
+        assert!(err.contains("could not reach"), "{err}");
+    }
+}

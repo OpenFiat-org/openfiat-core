@@ -193,19 +193,47 @@ async fn drive_gossip<S: KvStore + 'static>(state: &NodeState<S>) {
 /// one synchronous statement, never spanning an `.await`, so this needs
 /// no `RefCell`-across-await allowance the way `drive_gossip` does.
 async fn poll_chain<S: KvStore + 'static>(state: &NodeState<S>, client: &dyn ChainClient) {
-    if let Ok((blockhash, slot)) = client.get_latest_blockhash().await {
-        let _ =
-            state
-                .chain_bridge
-                .announce_blockhash(&mut state.gossip.borrow_mut(), &blockhash, slot);
+    match client.get_latest_blockhash().await {
+        Ok((blockhash, slot)) => {
+            tracing::debug!(slot, %blockhash, "announcing blockhash to peers");
+            let _ = state.chain_bridge.announce_blockhash(
+                &mut state.gossip.borrow_mut(),
+                &blockhash,
+                slot,
+            );
+        }
+        // WARN, not DEBUG: an RpcConnected node that cannot read the chain
+        // is the one every GossipOnly peer is relying on for on-chain
+        // truth. It keeps serving cached state, so nothing else about the
+        // node looks wrong.
+        Err(err) => tracing::warn!(
+            ?err,
+            "could not read the chain — peers relying on this node for on-chain facts will go stale"
+        ),
     }
 
     for pending in state.chain.drain_pending_relay() {
         if let Ok(signature) = client.send_transaction(&pending.tx_bytes).await {
             let slot_submitted = state.chain.current_blockhash().map_or(0, |(_, slot)| slot);
+            tracing::info!(
+                %signature,
+                slot_submitted,
+                correlation = ?pending.correlation,
+                "relayed transaction submitted — awaiting confirmation"
+            );
             state
                 .chain
                 .track_awaiting_confirmation(signature, slot_submitted, pending.correlation);
+        } else {
+            // Best-effort by design (OFS-4300), and silent until now: a
+            // caller saw `queued: true` and never learned the submission
+            // failed. The bytes are not requeued because the signed
+            // blockhash expires anyway.
+            tracing::warn!(
+                correlation = ?pending.correlation,
+                "relayed transaction was not accepted by any endpoint and will NOT be retried — \
+                 the caller must resubmit against a fresher blockhash"
+            );
         }
         // A failed submission is silently dropped (OFS-4300's own relay
         // path is explicitly best-effort) — the bytes aren't re-queued

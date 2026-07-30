@@ -150,6 +150,50 @@ pub struct Args {
     /// since an interval alone would produce snapshots nobody can fetch.
     #[arg(long, value_name = "SECS")]
     pub snapshot_interval_secs: Option<u64>,
+
+    /// Log verbosity: `error`, `warn`, `info`, `debug` or `trace`.
+    ///
+    /// Accepts per-module filters too, so a noisy subsystem can be turned up
+    /// alone — `--log info,openfiat_rpc::actor=debug` traces chain polling
+    /// and relays without the rest. Dependencies stay at `warn` unless named
+    /// explicitly; libp2p and hyper at `debug` bury everything the node
+    /// itself says.
+    #[arg(long, value_name = "FILTER", default_value = "info")]
+    pub log: String,
+}
+
+/// Sets up logging before anything else runs.
+///
+/// The node previously emitted six `println!`s at startup and nothing
+/// afterwards: no record of whether the chain was reachable, whether a peer
+/// connected, whether a relayed transaction was submitted. An operator's
+/// only signal that anything was wrong was the absence of an effect.
+///
+/// Written to stderr so that stdout stays free for anything a future
+/// subcommand may want to pipe, and so `journalctl` captures it either way.
+fn init_logging(filter: &str) {
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    // Dependencies default to `warn`: libp2p, hyper and reqwest at `info`
+    // or below produce enough volume to hide the node's own lines, which
+    // defeats the purpose of turning logging up in the first place.
+    //
+    // The target is `openfiat_node`, NOT `openfiat_cli`. The crate is
+    // packaged as openfiat-cli but the BINARY is openfiat-node, and tracing
+    // targets come from the module path of the compiled binary. Filtering
+    // on the package name silently dropped every line the node itself
+    // logged; only warnings slipped through via the global default, so the
+    // logger looked like it worked while emitting almost nothing.
+    let directives = format!(
+        "warn,openfiat_node={filter},openfiat_rpc={filter},openfiat_chain={filter},openfiat_gossip={filter},openfiat_discovery={filter},openfiat_api={filter}"
+    );
+    let env_filter = EnvFilter::try_new(&directives).unwrap_or_else(|_| EnvFilter::new("info"));
+
+    fmt()
+        .with_env_filter(env_filter)
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 /// This node's identity: a Solana CLI-format wallet.json (the same file
@@ -163,14 +207,16 @@ pub struct Args {
 fn load_or_generate_wallet(path: &str) -> Wallet {
     match openfiat_wallet::solana_keyfile::load(path) {
         Ok(wallet) => {
-            println!("openfiat-node: loaded node identity from {path}");
+            tracing::info!(path, "loaded node identity");
             wallet
         }
         Err(err) => {
-            eprintln!(
-                "openfiat-node: no usable wallet at {path} ({err}), generating a fresh identity \
-                 for this run — it is NOT saved, so this node's identity (and any stake bound \
-                 to it) will differ on the next start. Create one with `solana-keygen new -o {path}`."
+            tracing::warn!(
+                path,
+                %err,
+                "no usable wallet — generating a throwaway identity for this run. It is NOT \
+                 saved, so this node's identity, and any stake bound to it, will differ on the \
+                 next start. Create one with `solana-keygen new -o <path>`."
             );
             Wallet::generate()
         }
@@ -243,6 +289,7 @@ fn snapshot_config(args: &Args, ledger: &str) -> openfiat_snapshot::SnapshotConf
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    init_logging(&args.log);
 
     let identity_path = args
         .identity
@@ -262,25 +309,47 @@ async fn main() {
     let listen_addr = args.gossip_bind_address.clone();
     let bootstrap_peers = args.entrypoints.clone();
     let chain_mode = chain_mode(&args);
+
+    // Probe every endpoint before claiming RpcConnected.
+    //
+    // `solana_client` reads responses with `value["result"]`, which PANICS
+    // rather than erroring when the endpoint answers with anything else —
+    // and the panic kills the chain thread while the HTTP server keeps
+    // serving, so the node reports itself healthy and silently stops doing
+    // anything on chain. Better to refuse to start, naming the endpoint.
+    for url in &args.solana_rpc_urls {
+        if let Err(err) = openfiat_chain::validate_rpc_endpoint(url).await {
+            tracing::error!(%err, "--solana-rpc-url is not usable");
+            std::process::exit(1);
+        }
+    }
     let snapshot = snapshot_config(&args, &data_dir);
     let snapshot_directory = snapshot.directory.clone();
 
-    println!(
-        "openfiat-node {} — data dir: {data_dir}, gossip identity: {:?}, chain mode: {}, \
-         programs: {} (staking {})",
-        env!("CARGO_PKG_VERSION"),
-        wallet.peer_id(),
-        if chain_mode.is_rpc_connected() {
-            "RpcConnected"
-        } else {
-            "GossipOnly"
-        },
-        // Printed, not read: which deployment a binary is pinned to is
-        // fixed at compile time (`openfiat_chain::programs`), so this is
-        // an operator's way to *see* it, never to change it.
-        openfiat_chain::PROGRAM_IDS.network,
-        openfiat_chain::PROGRAM_IDS.staking,
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        ledger = %data_dir,
+        identity = ?wallet.peer_id(),
+        chain_mode = if chain_mode.is_rpc_connected() { "RpcConnected" } else { "GossipOnly" },
+        // Logged, not read: which deployment a binary is pinned to is fixed
+        // at compile time (`openfiat_chain::programs`), so this is an
+        // operator's way to *see* it, never to change it.
+        network = openfiat_chain::PROGRAM_IDS.network,
+        staking_program = openfiat_chain::PROGRAM_IDS.staking,
+        entrypoints = args.entrypoints.len(),
+        "starting"
     );
+
+    // Worth its own line at WARN: a node with no entrypoints and no peer
+    // discovery is isolated, which looks identical to a healthy node from
+    // every local check — it serves its own state happily and simply never
+    // learns anything from anyone.
+    if args.entrypoints.is_empty() {
+        tracing::warn!(
+            "no --entrypoint given: this node will not connect to any peer. Peer discovery \
+             does not run yet, so entrypoints are currently the only way to join a cluster."
+        );
+    }
 
     let rpc_handle = openfiat_rpc::spawn_actor(
         move || {
@@ -303,7 +372,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&http_addr)
         .await
         .unwrap_or_else(|e| panic!("failed to bind {http_addr}: {e}"));
-    println!("openfiat-node listening on http://{http_addr} (try GET /health, GET /docs)");
+    tracing::info!(address = %http_addr, "JSON-RPC and HTTP API listening (try GET /health, GET /docs)");
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -336,5 +405,5 @@ async fn shutdown_signal() {
         () = ctrl_c => {}
         () = terminate => {}
     }
-    println!("openfiat-node: shutdown signal received, closing gracefully");
+    tracing::info!("shutdown signal received, closing gracefully");
 }
