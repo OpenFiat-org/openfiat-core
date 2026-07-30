@@ -20,7 +20,7 @@ use openfiat_network::identity::{peer_id, to_libp2p_keypair};
 use openfiat_network::{Multiaddr, Node};
 use openfiat_reservations::{ReservationService, ReservationState};
 use openfiat_storage::mem::MemoryStore;
-use openfiat_types::{Amount, PeerId, PublicKey, Timestamp};
+use openfiat_types::{Amount, FiatCurrency, PeerId, PublicKey, Timestamp};
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -37,7 +37,7 @@ fn seeded_ad_registry(
         merchant_public_key: merchant.public_key(),
         asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
         direction: Direction::Sell,
-        fiat_currency: "KES".to_string(),
+        fiat_currency: FiatCurrency::parse("KES").unwrap(),
         min_trade: Amount::new(1_000_000, 6),
         max_trade: Amount::new(5_000_000, 6),
         initial_liquidity: Amount::new(10_000_000, 6),

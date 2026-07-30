@@ -77,7 +77,10 @@ fn resolve<S: KvStore + 'static>(
                     advertisement,
                 };
             };
-            let pair = (symbol.to_string(), advertisement.fiat_currency.clone());
+            let pair = (
+                symbol.to_string(),
+                advertisement.fiat_currency.as_str().to_string(),
+            );
             // Each lookup is a full scan of the oracle column family, so a
             // book with many advertisements on one pair would otherwise
             // rescan it once per row. Caching per call also guarantees
@@ -86,7 +89,7 @@ fn resolve<S: KvStore + 'static>(
             let mid = *cache.entry(pair).or_insert_with(|| {
                 match state
                     .oracles
-                    .exchange_rate(symbol, &advertisement.fiat_currency, now)
+                    .exchange_rate(symbol, advertisement.fiat_currency.as_str(), now)
                 {
                     ExchangeRateLookup::Current { rate, expires_at } => {
                         MidPrice::Available { rate, expires_at }
@@ -266,6 +269,7 @@ mod tests {
     use openfiat_crypto::{Keypair, MintAddress};
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_storage::mem::MemoryStore;
+    use openfiat_types::FiatCurrency;
     use openfiat_types::{Amount, Timestamp};
 
     fn table_and_state() -> (MethodTable<MemoryStore>, NodeState<MemoryStore>) {
@@ -342,7 +346,7 @@ mod tests {
     /// A floating USDC/KES advertisement at `premium_bps` over mid.
     fn floating_create(keypair: &Keypair, id: &str, premium_bps: i32) -> AdvertisementCreate {
         AdvertisementCreate {
-            fiat_currency: "KES".to_string(),
+            fiat_currency: FiatCurrency::parse("KES").unwrap(),
             pricing: PricingModel::Floating {
                 oracle_provider: "any".to_string(),
                 premium_bps,
@@ -370,7 +374,7 @@ mod tests {
             merchant_public_key: keypair.public_key(),
             asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
             direction: Direction::Sell,
-            fiat_currency: "USD".to_string(),
+            fiat_currency: FiatCurrency::parse("USD").unwrap(),
             min_trade: Amount::new(1_000, 2),
             max_trade: Amount::new(100_000, 2),
             initial_liquidity: Amount::new(1_000_000, 2),
@@ -732,7 +736,7 @@ mod tests {
         for (id, fiat) in [("ad-kes", "KES"), ("ad-ngn", "NGN")] {
             let signed = SignedAdvertisementCreate::sign(
                 AdvertisementCreate {
-                    fiat_currency: fiat.to_string(),
+                    fiat_currency: FiatCurrency::parse(fiat).unwrap(),
                     ..create_at(&merchant, id, Timestamp::from_millis(1_000))
                 },
                 &merchant,

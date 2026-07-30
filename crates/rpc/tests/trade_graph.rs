@@ -24,7 +24,7 @@ use openfiat_rpc::state::NodeState;
 use openfiat_settlement::SettlementId;
 use openfiat_settlement::events::{SettlementInitiate, SignedSettlementInitiate};
 use openfiat_storage::mem::MemoryStore;
-use openfiat_types::{Amount, PeerId, Timestamp};
+use openfiat_types::{Amount, FiatCurrency, PeerId, Timestamp};
 use serde_json::Value;
 
 fn peer(keypair: &Keypair) -> PeerId {
@@ -69,7 +69,7 @@ fn network_with_a_trade() -> (
                 asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU")
                     .unwrap(),
                 direction: Direction::Sell,
-                fiat_currency: "KES".to_string(),
+                fiat_currency: FiatCurrency::parse("KES").unwrap(),
                 min_trade: Amount::new(1_000_000, 6),
                 max_trade: Amount::new(10_000_000, 6),
                 initial_liquidity: Amount::new(10_000_000, 6),

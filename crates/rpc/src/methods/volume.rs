@@ -169,7 +169,7 @@ mod tests {
         SignedSettlementApproved, SignedSettlementInitiate,
     };
     use openfiat_storage::mem::MemoryStore;
-    use openfiat_types::{Amount, PeerId, Timestamp};
+    use openfiat_types::{Amount, FiatCurrency, PeerId, Timestamp};
 
     const USDC: &str = "2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU";
     const WSOL: &str = "So11111111111111111111111111111111111111112";
@@ -202,7 +202,7 @@ mod tests {
                     merchant_public_key: merchant.public_key(),
                     asset_mint: MintAddress::parse(mint).unwrap(),
                     direction: Direction::Sell,
-                    fiat_currency: "KES".to_string(),
+                    fiat_currency: FiatCurrency::parse("KES").unwrap(),
                     min_trade: Amount::new(1, decimals),
                     max_trade: Amount::new(u64::MAX, decimals),
                     initial_liquidity: Amount::new(u64::MAX, decimals),

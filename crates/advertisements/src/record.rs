@@ -1,7 +1,7 @@
 //! The advertisement shape (OFS-2100 §4-6) and its materialized state.
 
 use openfiat_crypto::MintAddress;
-use openfiat_types::{Amount, PeerId, PublicKey, Timestamp};
+use openfiat_types::{Amount, FiatCurrency, PeerId, PublicKey, Timestamp};
 
 /// A globally unique, permanent identifier for an advertisement (§5).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -100,7 +100,19 @@ pub struct Advertisement {
     /// as its address rather than as a guess.
     pub asset_mint: MintAddress,
     pub direction: Direction,
-    pub fiat_currency: String,
+    /// The fiat side of the pair, as an ISO 4217 code.
+    ///
+    /// Was a bare `String` that nothing validated, so `KES`, `kes`,
+    /// `Kenyan Shillings` and `""` were all equally acceptable on a
+    /// signed, replicated record — which meant an order book could show
+    /// one corridor under several headings and a filter had to compare
+    /// case-insensitively to work at all. `FiatCurrency` normalises at
+    /// the door, so equality means what it looks like it means.
+    ///
+    /// Checked for *form*, never for membership of a list. See
+    /// `openfiat_types::currency` — and `PricingModel::Floating`'s
+    /// `price_decimals` above, which reached the same conclusion first.
+    pub fiat_currency: FiatCurrency,
     pub min_trade: Amount,
     pub max_trade: Amount,
     /// §9: for a Sell ad, the unreserved balance in the merchant's

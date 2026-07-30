@@ -9,7 +9,7 @@ use crate::error::AdvertisementError;
 use crate::record::{AdvertisementId, Direction, PricingModel};
 use openfiat_crypto::{Keypair, MintAddress, verify};
 use openfiat_network::identity::peer_id_from_public_key;
-use openfiat_types::{Amount, PeerId, PublicKey, Signature, Timestamp};
+use openfiat_types::{Amount, FiatCurrency, PeerId, PublicKey, Signature, Timestamp};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AdvertisementCreate {
@@ -18,7 +18,19 @@ pub struct AdvertisementCreate {
     pub merchant_public_key: PublicKey,
     pub asset_mint: MintAddress,
     pub direction: Direction,
-    pub fiat_currency: String,
+    /// The fiat side of the pair, as an ISO 4217 code.
+    ///
+    /// Was a bare `String` that nothing validated, so `KES`, `kes`,
+    /// `Kenyan Shillings` and `""` were all equally acceptable on a
+    /// signed, replicated record — which meant an order book could show
+    /// one corridor under several headings and a filter had to compare
+    /// case-insensitively to work at all. `FiatCurrency` normalises at
+    /// the door, so equality means what it looks like it means.
+    ///
+    /// Checked for *form*, never for membership of a list. See
+    /// `openfiat_types::currency` — and `PricingModel::Floating`'s
+    /// `price_decimals` above, which reached the same conclusion first.
+    pub fiat_currency: FiatCurrency,
     pub min_trade: Amount,
     pub max_trade: Amount,
     pub initial_liquidity: Amount,

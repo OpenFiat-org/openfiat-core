@@ -18,7 +18,7 @@ use openfiat_settlement::events::{
 };
 use openfiat_storage::mem::MemoryStore;
 use openfiat_trade::{TradeStatus, TradeView};
-use openfiat_types::{Amount, Timestamp};
+use openfiat_types::{Amount, FiatCurrency, Timestamp};
 use std::rc::Rc;
 
 #[test]
@@ -40,7 +40,7 @@ fn a_trade_progresses_through_the_expected_aggregate_statuses() {
         merchant_public_key: merchant.public_key(),
         asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
         direction: Direction::Sell,
-        fiat_currency: "KES".to_string(),
+        fiat_currency: FiatCurrency::parse("KES").unwrap(),
         min_trade: Amount::new(1_000_000, 6),
         max_trade: Amount::new(5_000_000, 6),
         initial_liquidity: Amount::new(10_000_000, 6),

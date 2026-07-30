@@ -13,7 +13,7 @@ use openfiat_gossip::channel::Subscription;
 use openfiat_network::identity::{peer_id, to_libp2p_keypair};
 use openfiat_network::{Multiaddr, Node};
 use openfiat_storage::mem::MemoryStore;
-use openfiat_types::{Amount, NodeRole, PeerId, PublicKey};
+use openfiat_types::{Amount, FiatCurrency, NodeRole, PeerId, PublicKey};
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
@@ -107,7 +107,7 @@ async fn a_created_and_then_disabled_advertisement_replicates_to_the_whole_clust
             "sell-usdc-kes-1",
             MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
             Direction::Sell,
-            "KES",
+            FiatCurrency::parse("KES").unwrap(),
             Amount::new(1_000_000, 6),
             Amount::new(1_000_000_000, 6),
             Amount::new(10_000_000_000, 6),
@@ -124,7 +124,7 @@ async fn a_created_and_then_disabled_advertisement_replicates_to_the_whole_clust
     .await;
     for service in &all {
         let ad = service.get(&ad_id).unwrap();
-        assert_eq!(ad.fiat_currency, "KES");
+        assert_eq!(ad.fiat_currency.as_str(), "KES");
         assert_eq!(ad.status, AdvertisementStatus::Active);
     }
 

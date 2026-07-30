@@ -23,7 +23,7 @@ use openfiat_settlement::events::{
 };
 use openfiat_settlement::{PaymentDiscrepancy, SettlementId, SettlementRegistry};
 use openfiat_storage::mem::MemoryStore;
-use openfiat_types::{Amount, Timestamp};
+use openfiat_types::{Amount, FiatCurrency, Timestamp};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -57,7 +57,7 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
                 asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU")
                     .unwrap(),
                 direction: Direction::Sell,
-                fiat_currency: "KES".to_string(),
+                fiat_currency: FiatCurrency::parse("KES").unwrap(),
                 min_trade: Amount::new(1_000_000, 6),
                 max_trade: Amount::new(5_000_000, 6),
                 initial_liquidity: Amount::new(50_000_000, 6),

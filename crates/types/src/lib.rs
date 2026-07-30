@@ -7,6 +7,7 @@
 //! the crate that owns that concern instead.
 
 pub mod amount;
+pub mod currency;
 pub mod error;
 pub mod event;
 pub mod identity;
@@ -15,6 +16,7 @@ pub mod service;
 pub mod timestamp;
 
 pub use amount::Amount;
+pub use currency::{CurrencyError, FiatCurrency};
 pub use error::ErrorCode;
 pub use event::{EventEnvelope, EventId, EventType, InvalidEventType};
 pub use identity::{NodeRole, PeerId, PublicKey, Signature};

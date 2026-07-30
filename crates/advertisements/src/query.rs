@@ -28,7 +28,7 @@
 
 use crate::record::{Advertisement, AdvertisementId, AdvertisementStatus, Direction};
 use openfiat_crypto::MintAddress;
-use openfiat_types::Amount;
+use openfiat_types::{Amount, FiatCurrency};
 
 /// The most advertisements one response will carry.
 ///
@@ -53,7 +53,7 @@ pub struct AdvertisementFilter {
     #[serde(default)]
     pub asset_mint: Option<MintAddress>,
     #[serde(default)]
-    pub fiat_currency: Option<String>,
+    pub fiat_currency: Option<FiatCurrency>,
     #[serde(default)]
     pub direction: Option<Direction>,
     /// A payment method the merchant accepts. Matches if the
@@ -123,11 +123,13 @@ impl AdvertisementFilter {
         {
             return false;
         }
-        // Case-insensitive: a currency code is a code, and refusing "kes"
-        // for "KES" would be a filter that works only for callers who
-        // already know the book's spelling.
+        // A plain comparison, because `FiatCurrency` normalises at the
+        // door. This used to fold case, which worked and hid the real
+        // problem: the record itself could hold two spellings of one
+        // currency, so the filter was compensating for an ambiguity that
+        // should never have reached it.
         if let Some(fiat) = &self.fiat_currency
-            && !ad.fiat_currency.eq_ignore_ascii_case(fiat)
+            && &ad.fiat_currency != fiat
         {
             return false;
         }
@@ -224,7 +226,7 @@ mod tests {
             merchant_public_key: keypair.public_key(),
             asset_mint: MintAddress::parse(mint).unwrap(),
             direction,
-            fiat_currency: fiat.to_string(),
+            fiat_currency: FiatCurrency::parse(fiat).unwrap(),
             min_trade: Amount::new(1_000_000, 6),
             max_trade: Amount::new(100_000_000, 6),
             available_liquidity: Amount::new(100_000_000, 6),
@@ -274,7 +276,7 @@ mod tests {
 
         let usdc_for_kes_sell = AdvertisementFilter {
             asset_mint: Some(MintAddress::parse(USDC).unwrap()),
-            fiat_currency: Some("kes".to_string()),
+            fiat_currency: Some(FiatCurrency::parse("kes").unwrap()),
             direction: Some(Direction::Sell),
             ..Default::default()
         };

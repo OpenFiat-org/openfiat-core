@@ -210,6 +210,7 @@ mod tests {
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_storage::mem::MemoryStore;
     use openfiat_types::Amount;
+    use openfiat_types::FiatCurrency;
 
     fn setup() -> (
         Rc<AdvertisementRegistry<MemoryStore>>,
@@ -226,7 +227,7 @@ mod tests {
             merchant_public_key: merchant.public_key(),
             asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
             direction: Direction::Sell,
-            fiat_currency: "KES".to_string(),
+            fiat_currency: FiatCurrency::parse("KES").unwrap(),
             min_trade: Amount::new(1_000_000, 6),
             max_trade: Amount::new(5_000_000, 6),
             initial_liquidity: Amount::new(10_000_000, 6),
@@ -351,7 +352,7 @@ mod tests {
             merchant_public_key: merchant.public_key(),
             asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
             direction: Direction::Sell,
-            fiat_currency: "KES".to_string(),
+            fiat_currency: FiatCurrency::parse("KES").unwrap(),
             min_trade: Amount::new(1_000_000, 6),
             max_trade: Amount::new(5_000_000, 6),
             initial_liquidity: Amount::new(6_000_000, 6),

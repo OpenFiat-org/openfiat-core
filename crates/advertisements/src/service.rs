@@ -15,7 +15,7 @@ use openfiat_gossip::GossipService;
 use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
-use openfiat_types::{Amount, EventType, Priority, Timestamp};
+use openfiat_types::{Amount, EventType, FiatCurrency, Priority, Timestamp};
 use std::rc::Rc;
 
 pub struct AdvertisementService<S> {
@@ -74,7 +74,7 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
         id: impl Into<String>,
         asset_mint: MintAddress,
         direction: Direction,
-        fiat_currency: impl Into<String>,
+        fiat_currency: FiatCurrency,
         min_trade: Amount,
         max_trade: Amount,
         initial_liquidity: Amount,
@@ -87,7 +87,7 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
             merchant_public_key: self.gossip.public_key(),
             asset_mint,
             direction,
-            fiat_currency: fiat_currency.into(),
+            fiat_currency,
             min_trade,
             max_trade,
             initial_liquidity,

@@ -19,7 +19,7 @@ use openfiat_settlement::events::{
 };
 use openfiat_settlement::{SettlementId, protocol as set_protocol};
 use openfiat_trade::TradeStatus;
-use openfiat_types::{Amount, NodeRole, Priority, Timestamp};
+use openfiat_types::{Amount, FiatCurrency, NodeRole, Priority, Timestamp};
 
 #[tokio::test]
 async fn a_trade_completes_end_to_end_and_converges_across_the_cluster() {
@@ -43,7 +43,7 @@ async fn a_trade_completes_end_to_end_and_converges_across_the_cluster() {
         merchant_public_key: merchant.public_key(),
         asset_mint: MintAddress::parse("C4rSGhdxWhSFQuFcAxQti1JvBxriwHJoHtJjfhs5p24Y").unwrap(),
         direction: Direction::Sell,
-        fiat_currency: "PHP".to_string(),
+        fiat_currency: FiatCurrency::parse("PHP").unwrap(),
         min_trade: Amount::new(10_00, 2),
         max_trade: Amount::new(100_000, 2),
         initial_liquidity: Amount::new(100_000, 2),
