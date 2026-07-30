@@ -35,6 +35,25 @@ pub fn from_libp2p_peer_id(id: Libp2pPeerId) -> PeerId {
     PeerId::from_bytes(id.to_bytes())
 }
 
+/// The `12D3Koo…` spelling of a protocol peer id.
+///
+/// `openfiat_types::PeerId` holds the libp2p peer id's own bytes, and
+/// serializes as a byte array — which is correct on the wire and unusable
+/// to a person. An operator reading a log line or a `getPeers` response
+/// needs the base58 form: it is what they recognise, and it is the form
+/// that goes in a multiaddr's `/p2p/` segment, so it can be pasted
+/// straight into an `--entrypoint`.
+///
+/// `None` for bytes that are not a peer id at all. Discovery caches a
+/// placeholder record for a peer it has connected to but not yet learned
+/// about, so a caller must be able to render an incomplete one without
+/// asserting it is well-formed.
+pub fn readable_peer_id(id: &PeerId) -> Option<String> {
+    Libp2pPeerId::from_bytes(id.as_bytes())
+        .ok()
+        .map(|id| id.to_string())
+}
+
 /// Derive the `PeerId` a bare `openfiat_types::PublicKey` claims, without
 /// needing the corresponding private key.
 ///

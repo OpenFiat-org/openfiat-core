@@ -215,6 +215,7 @@ INFO openfiat_node: peers can reach this node at this address …
 | `--rpc-bind-address <HOST:PORT>` | `0.0.0.0:7080` | JSON-RPC and HTTP API (OFS-8200) |
 | `--gossip-bind-address <MULTIADDR>` | `/ip4/0.0.0.0/udp/4001/quic-v1` | libp2p transport |
 | `--entrypoint <MULTIADDR>` | none | Peer to dial at startup; repeatable |
+| `--external-addr <MULTIADDR>` | none | Repeatable. The address peers should dial you at, when it is not the one you bind (NAT, containers, cloud) |
 | `--solana-rpc-url <URL>` | none | Repeatable. Any value puts the node in `RpcConnected` mode |
 | `--solana-ws-url <URL>` | none | Recorded on the chain mode; nothing subscribes yet |
 | `--snapshot-dir <DIR>` | `<ledger>/snapshots` | Where produced snapshots are written and served from |
@@ -233,9 +234,18 @@ Two behaviours worth knowing before you deploy:
   not a broken state: the node still serves the marketplace and relays
   transactions to an RPC-connected peer. Its chain answers are second-hand
   and can lag.
-- **Peer discovery does not run yet** ([#146]). A node finds only the peers
-  given with `--entrypoint`, and announces no addresses of its own, so
-  nothing will discover it either.
+- **Peer discovery runs, but something has to make the first connection.**
+  A node announces the addresses it is reachable at and learns peers it
+  was never given, through peer exchange (OFS-1100). What it cannot do is
+  find the network from nothing, so `--entrypoint` is still how a node
+  joins — after that, knowledge spreads. `getPeers` shows what a node has
+  learned and what it announces about itself.
+- **Behind NAT, declare your address.** A node binds a private address
+  inside a container or behind a router and cannot observe its public one
+  — only something on the far side can. Pass
+  `--external-addr /ip4/<public-ip>/udp/4001/quic-v1` and it is announced
+  ahead of the bound addresses, so a dialing peer reaches you first try
+  instead of timing out on `172.17.0.2`.
 - **A node is a bounded storage commitment by default.** `--retention`
   keeps a rolling 30-day window and evicts past it; `--retention archival`
   keeps everything and is a deliberate choice. Not every node should carry

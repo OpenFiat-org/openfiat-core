@@ -389,9 +389,30 @@ impl<S: KvStore> GossipService<S> {
         self.handle(event);
     }
 
-    fn handle(&mut self, event: SwarmEvent<OpenFiatBehaviourEvent>) {
+    /// One swarm event, when this service is the only thing on the swarm.
+    ///
+    /// A node that also runs peer discovery routes instead — see
+    /// [`Self::handle_lifecycle`] and [`Self::handle_message`], which this
+    /// is written in terms of so the two paths cannot drift.
+    pub fn handle(&mut self, event: SwarmEvent<OpenFiatBehaviourEvent>) {
+        if let SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Envelope(
+            request_response::Event::Message { peer, message, .. },
+        )) = event
+        {
+            self.handle_message(peer, message);
+            return;
+        }
+        self.handle_lifecycle(&event);
+    }
+
+    /// Connection, listen-address and identify events.
+    ///
+    /// By reference, because every service sharing this swarm needs them.
+    /// Only envelope messages have a single owner.
+    pub fn handle_lifecycle(&mut self, event: &SwarmEvent<OpenFiatBehaviourEvent>) {
         match event {
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                let peer_id = *peer_id;
                 self.connected.insert(peer_id);
                 // Two independently-started nodes have no advance
                 // knowledge of each other's signing key — recover it
@@ -405,12 +426,12 @@ impl<S: KvStore> GossipService<S> {
                 self.request_recovery(peer_id);
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                self.connected.remove(&peer_id);
+                self.connected.remove(peer_id);
             }
             // What libp2p actually bound, one event per interface once a
             // wildcard is expanded.
             SwarmEvent::NewListenAddr { address, .. } => {
-                self.record_reachable(address);
+                self.record_reachable(address.clone());
             }
             // What a peer saw. The only source that can see through NAT,
             // and unverified by design: a peer could report anything. It
@@ -421,17 +442,20 @@ impl<S: KvStore> GossipService<S> {
             SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Identify(
                 libp2p::identify::Event::Received { info, .. },
             )) => {
-                self.record_reachable(info.observed_addr);
+                self.record_reachable(info.observed_addr.clone());
             }
-            SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Envelope(
-                request_response::Event::Message { peer, message, .. },
-            )) => match message {
-                Message::Request {
-                    request, channel, ..
-                } => self.on_request(peer, request, channel),
-                Message::Response { response, .. } => self.on_response(peer, response),
-            },
             _ => {}
+        }
+    }
+
+    /// One gossip envelope. The caller has already established it is not
+    /// another protocol's — see `openfiat_discovery::DiscoveryService::owns`.
+    pub fn handle_message(&mut self, peer: Libp2pPeerId, message: Message<Envelope, Envelope>) {
+        match message {
+            Message::Request {
+                request, channel, ..
+            } => self.on_request(peer, request, channel),
+            Message::Response { response, .. } => self.on_response(peer, response),
         }
     }
 

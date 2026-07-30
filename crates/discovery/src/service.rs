@@ -18,7 +18,7 @@ use crate::exchange::{
     MESSAGE_TYPE_RESPONSE, OFS_SPEC, PeerAdvert,
 };
 use crate::record::PeerRecord;
-use libp2p::request_response::{self, Message, ResponseChannel};
+use libp2p::request_response::{Message, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
 use openfiat_network::behaviour::OpenFiatBehaviourEvent;
 use openfiat_network::identity::from_libp2p_peer_id;
@@ -34,8 +34,21 @@ use std::collections::HashSet;
 /// explicitly rather than relying on the default).
 const DEFAULT_MAX_EXCHANGE_PEERS: u32 = 20;
 
+/// # Why this does not own a swarm
+///
+/// It used to hold its own [`Node`], and that is exactly why it never ran:
+/// a node has one libp2p swarm, only one thing can drive that swarm's
+/// event loop, and the actor gave the loop to `GossipService`. A service
+/// holding a second swarm nobody drives receives nothing, for ever, while
+/// looking perfectly well-formed.
+///
+/// So the swarm is passed in where it is needed. The actor owns the loop,
+/// reads one event, and routes it — discovery's envelopes carry OFS spec
+/// 1100 ([`crate::exchange::OFS_SPEC`]), which is what the field is for —
+/// and hands this service the same `Node` gossip uses. One connection,
+/// one identity, two protocols multiplexed over it, which is what OFNP
+/// §20 asks for.
 pub struct DiscoveryService<S> {
-    pub node: Node,
     pub cache: PeerCache<S>,
     self_peer_id: PeerId,
     self_public_key: PublicKey,
@@ -53,7 +66,7 @@ pub struct DiscoveryService<S> {
 
 impl<S: KvStore> DiscoveryService<S> {
     pub fn new(
-        node: Node,
+        self_peer_id: PeerId,
         cache: PeerCache<S>,
         self_public_key: PublicKey,
         self_node_version: impl Into<String>,
@@ -61,9 +74,7 @@ impl<S: KvStore> DiscoveryService<S> {
         self_roles: Vec<NodeRole>,
         target_peers: usize,
     ) -> Self {
-        let self_peer_id = node.local_peer_id();
         Self {
-            node,
             cache,
             self_peer_id,
             self_public_key,
@@ -75,10 +86,6 @@ impl<S: KvStore> DiscoveryService<S> {
             connected: HashSet::new(),
             target_peers,
         }
-    }
-
-    pub fn dial(&mut self, addr: Multiaddr) -> Result<(), openfiat_network::NetworkError> {
-        self.node.dial(addr)
     }
 
     /// Addresses this node has learned it's actually listening on
@@ -120,10 +127,9 @@ impl<S: KvStore> DiscoveryService<S> {
     /// reaches a NAT'd node on the first attempt rather than after timing out
     /// on an unreachable private address.
     ///
-    /// Unspecified and loopback addresses are never announced: `0.0.0.0` is
-    /// not an address any peer can dial, and `127.0.0.1` resolves to the
-    /// dialing peer's own machine — announcing either sends peers somewhere
-    /// useless, and in the loopback case somewhere actively misleading.
+    /// Only the unspecified wildcard is filtered — see [`is_announceable`],
+    /// which explains why loopback and private ranges are deliberately
+    /// announced rather than excluded.
     pub fn announced_addresses(&self) -> Vec<String> {
         self.external_addresses
             .iter()
@@ -133,32 +139,55 @@ impl<S: KvStore> DiscoveryService<S> {
             .collect()
     }
 
-    /// Wait for and process exactly one swarm event.
-    pub async fn drive_once(&mut self) {
-        let event = self.node.next_event().await;
-        self.handle(event);
-    }
-
-    fn handle(&mut self, event: SwarmEvent<OpenFiatBehaviourEvent>) {
+    /// Connection and listen-address events, which belong to no single
+    /// protocol.
+    ///
+    /// Taken by reference because the other services on this swarm need
+    /// the same event. Only the envelope messages have a single owner,
+    /// and those are routed by spec number — see [`Self::owns`].
+    pub fn handle_lifecycle(
+        &mut self,
+        event: &SwarmEvent<OpenFiatBehaviourEvent>,
+        node: &mut Node,
+    ) {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 self.self_addresses.push(address.to_string());
             }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                self.on_connected(peer_id);
+                self.on_connected(*peer_id, node);
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                self.connected.remove(&peer_id);
+                self.connected.remove(peer_id);
             }
-            SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Envelope(
-                request_response::Event::Message { peer, message, .. },
-            )) => match message {
-                Message::Request {
-                    request, channel, ..
-                } => self.on_request(peer, request, channel),
-                Message::Response { response, .. } => self.on_response(peer, response),
-            },
             _ => {}
+        }
+    }
+
+    /// Whether an envelope on the shared request-response protocol is this
+    /// service's.
+    ///
+    /// The spec number, not a guess. Several protocols share one envelope
+    /// carrier by OFNP §20's design, and `ofs_spec` is the field that says
+    /// whose a message is — routing on anything else (message type, payload
+    /// shape) would be inferring what is already stated.
+    pub fn owns(envelope: &Envelope) -> bool {
+        envelope.header.ofs_spec == OFS_SPEC
+    }
+
+    /// One peer-exchange message. The caller has already established it is
+    /// ours, via [`Self::owns`].
+    pub fn handle_message(
+        &mut self,
+        peer: Libp2pPeerId,
+        message: Message<Envelope, Envelope>,
+        node: &mut Node,
+    ) {
+        match message {
+            Message::Request {
+                request, channel, ..
+            } => self.on_request(peer, request, channel, node),
+            Message::Response { response, .. } => self.on_response(peer, response, node),
         }
     }
 
@@ -198,7 +227,7 @@ impl<S: KvStore> DiscoveryService<S> {
     /// announcement): cache each one, dial genuinely new peers, and report
     /// which ones were new so the caller can decide whether to propagate
     /// further.
-    fn learn_peers(&mut self, adverts: Vec<PeerAdvert>) -> Vec<PeerId> {
+    fn learn_peers(&mut self, adverts: Vec<PeerAdvert>, node: &mut Node) -> Vec<PeerId> {
         let mut newly_learned = Vec::new();
         for advert in adverts {
             if advert.peer_id == self.self_peer_id {
@@ -231,7 +260,7 @@ impl<S: KvStore> DiscoveryService<S> {
                         .first()
                         .and_then(|addr| addr.parse::<Multiaddr>().ok())
                 {
-                    let _ = self.node.dial(addr);
+                    let _ = node.dial(addr);
                 }
             }
         }
@@ -240,7 +269,7 @@ impl<S: KvStore> DiscoveryService<S> {
 
     /// Push an announcement of everything we know to every connected peer
     /// except `exclude` (typically whoever we just learned it from).
-    fn broadcast_announcement(&mut self, exclude: Libp2pPeerId) {
+    fn broadcast_announcement(&mut self, exclude: Libp2pPeerId, node: &mut Node) {
         let excluded_peer_id = from_libp2p_peer_id(exclude);
         let peers = self.advert_batch(&excluded_peer_id);
         let payload = wire::to_bytes(&ExchangeResponse { peers })
@@ -249,14 +278,14 @@ impl<S: KvStore> DiscoveryService<S> {
             if peer == exclude {
                 continue;
             }
-            self.node.send_envelope(
+            node.send_envelope(
                 peer,
                 Envelope::new(OFS_SPEC, MESSAGE_TYPE_ANNOUNCEMENT, 1, payload.clone()),
             );
         }
     }
 
-    fn on_connected(&mut self, peer: Libp2pPeerId) {
+    fn on_connected(&mut self, peer: Libp2pPeerId, node: &mut Node) {
         self.connected.insert(peer);
         let peer_id = from_libp2p_peer_id(peer);
         if self.cache.get(&peer_id).ok().flatten().is_none() {
@@ -275,7 +304,7 @@ impl<S: KvStore> DiscoveryService<S> {
             max_peers: DEFAULT_MAX_EXCHANGE_PEERS,
         };
         let payload = wire::to_bytes(&request).expect("ExchangeRequest always serializes");
-        self.node.send_envelope(
+        node.send_envelope(
             peer,
             Envelope::new(OFS_SPEC, MESSAGE_TYPE_REQUEST, 1, payload),
         );
@@ -286,16 +315,24 @@ impl<S: KvStore> DiscoveryService<S> {
         peer: Libp2pPeerId,
         envelope: Envelope,
         channel: ResponseChannel<Envelope>,
+        node: &mut Node,
     ) {
         if envelope.header.message_type == MESSAGE_TYPE_ANNOUNCEMENT {
             if let Ok(announcement) = wire::from_bytes::<ExchangeResponse>(&envelope.payload) {
-                let newly_learned = self.learn_peers(announcement.peers);
+                let newly_learned = self.learn_peers(announcement.peers, node);
                 if !newly_learned.is_empty() {
-                    self.broadcast_announcement(peer);
+                    self.broadcast_announcement(peer, node);
                 }
             }
-            // Announcements are fire-and-forget; dropping `channel` is a
-            // valid, harmless outcome (OFNP request-response semantics).
+            // An announcement wants no reply, but the channel must still be
+            // closed. libp2p holds an inbound stream open until the response
+            // is written or the channel is dropped *and the handler notices*
+            // — and a node at its inbound limit starts logging "Dropping
+            // inbound stream because we are at capacity" and refusing real
+            // requests. An earlier comment here called dropping the channel
+            // "a valid, harmless outcome". It was not; the same mistake was
+            // found and fixed in `openfiat-gossip` first.
+            acknowledge(channel, node);
             return;
         }
         if envelope.header.message_type != MESSAGE_TYPE_REQUEST {
@@ -308,26 +345,36 @@ impl<S: KvStore> DiscoveryService<S> {
         })
         .expect("ExchangeResponse always serializes");
         let response = Envelope::new(OFS_SPEC, MESSAGE_TYPE_RESPONSE, 1, payload);
-        let _ = self
-            .node
+        let _ = node
             .swarm
             .behaviour_mut()
             .envelope
             .send_response(channel, response);
     }
 
-    fn on_response(&mut self, peer: Libp2pPeerId, envelope: Envelope) {
+    fn on_response(&mut self, peer: Libp2pPeerId, envelope: Envelope, node: &mut Node) {
         if envelope.header.message_type != MESSAGE_TYPE_RESPONSE {
             return;
         }
         let Ok(response) = wire::from_bytes::<ExchangeResponse>(&envelope.payload) else {
             return;
         };
-        let newly_learned = self.learn_peers(response.peers);
+        let newly_learned = self.learn_peers(response.peers, node);
         if !newly_learned.is_empty() {
-            self.broadcast_announcement(peer);
+            self.broadcast_announcement(peer, node);
         }
     }
+}
+
+/// Closes an inbound stream that wants no reply.
+///
+/// An empty envelope rather than a dropped channel: see the call site for
+/// why a dropped one is not free.
+fn acknowledge(channel: ResponseChannel<Envelope>, node: &mut Node) {
+    let _ = node.swarm.behaviour_mut().envelope.send_response(
+        channel,
+        Envelope::new(OFS_SPEC, MESSAGE_TYPE_ANNOUNCEMENT, 1, Vec::new()),
+    );
 }
 
 /// Whether an address is worth announcing to a peer.

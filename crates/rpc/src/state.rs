@@ -20,6 +20,8 @@ use openfiat_chain::{ChainBridge, ChainState, NodeChainMode};
 use openfiat_content::{AttachmentRegistry, HeldContent};
 use openfiat_crypto::Keypair;
 use openfiat_crypto::challenge::ChallengeLedger;
+use openfiat_discovery::DiscoveryService;
+use openfiat_discovery::cache::PeerCache;
 use openfiat_disputes::DisputeRegistry;
 use openfiat_gossip::{EventStore, GossipService, Subscription};
 use openfiat_governance::GovernanceRegistry;
@@ -104,8 +106,60 @@ pub const SNAPSHOT_COLUMN_FAMILIES: &[&str] = &[
     "sessions",
 ];
 
+/// The OFS specifications this node implements, as it tells peers.
+///
+/// Defined here for the same reason `SNAPSHOT_COLUMN_FAMILIES` is: this
+/// module is the one place that composes every domain crate, so it is the
+/// only place that can honestly answer "what does this node speak". A
+/// crate joining `NodeState` and not appearing here would be a capability
+/// the node has and never advertises — and one appearing here without its
+/// crate would be a claim it cannot honour, which is worse.
+pub const SUPPORTED_OFS: &[u16] = &[
+    1000, // Network transport
+    1100, // Peer discovery
+    1200, // Gossip
+    1300, // Snapshot synchronisation
+    1400, // Session synchronisation
+    1500, // Service registry
+    2000, // Trade
+    2100, // Advertisements
+    2200, // Reservations
+    2300, // Settlement
+    2400, // Disputes
+    3000, // Reputation
+    4000, // Governance
+    4300, // Chain bridge
+    6000, // Notifications
+    7000, // Oracles
+    8200, // JSON-RPC / HTTP API
+];
+
+/// How many peers a node dials of its own accord.
+///
+/// A ceiling on discovery's appetite, not a target to reach: a node under
+/// it dials newly-learned peers, and one over it caches them without
+/// dialling. Every connection costs a file descriptor and a heartbeat, so
+/// an unbounded version turns a large network into a node that spends its
+/// time maintaining connections rather than using them.
+const DISCOVERY_TARGET_PEERS: usize = 32;
+
 pub struct NodeState<S> {
     pub gossip: RefCell<GossipService<Rc<S>>>,
+    /// Peer discovery (OFS-1100), running on the same swarm `gossip` owns.
+    ///
+    /// It is a separate `RefCell` rather than a field of `GossipService`
+    /// because the two are peers, not layers: gossip replicates events,
+    /// discovery finds who to replicate with, and neither is built on the
+    /// other. What they share is one connection — which is the whole point
+    /// of OFNP §20's multiplexing, and why `actor::drive_network` routes
+    /// each envelope by its OFS spec number rather than either service
+    /// reaching into the other.
+    ///
+    /// This crate did not depend on `openfiat-discovery` at all until now.
+    /// The service was fully implemented, tested to five-node convergence,
+    /// and constructed by nothing — so a running node announced no address
+    /// and learned no peer it was not handed statically.
+    pub discovery: RefCell<DiscoveryService<Rc<S>>>,
     /// The one physical store every registry above writes through — held
     /// so this node can snapshot its own state (see
     /// `actor::poll_snapshot_production`). Every other reader goes
@@ -223,6 +277,17 @@ impl<S: KvStore + 'static> NodeState<S> {
     ) -> Self {
         let store = Rc::new(store);
         let event_store = EventStore::new(Rc::clone(&store));
+        // Built before the swarm is handed to gossip, because the service
+        // needs this node's own peer id and the swarm is what knows it.
+        let discovery = DiscoveryService::new(
+            node.local_peer_id(),
+            PeerCache::new(Rc::clone(&store)),
+            keypair.public_key(),
+            openfiat_network::behaviour::AGENT_VERSION.to_string(),
+            SUPPORTED_OFS.to_vec(),
+            self_roles.clone(),
+            DISCOVERY_TARGET_PEERS,
+        );
         let mut gossip =
             GossipService::new(node, event_store, keypair, self_roles, Subscription::All);
 
@@ -384,6 +449,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             advertisements,
             reservations,
             settlements,
+            discovery: RefCell::new(discovery),
             trades,
             counterparties,
             counterparty_challenges: Rc::new(RefCell::new(ChallengeLedger::new())),

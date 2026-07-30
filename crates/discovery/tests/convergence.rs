@@ -13,31 +13,62 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-fn make_service(seed: u8) -> DiscoveryService<MemoryStore> {
+/// A node paired with the discovery service that runs on it.
+///
+/// The service no longer owns a swarm — a node has one, and the actor
+/// drives it (see `DiscoveryService`'s own doc for why owning a second one
+/// is how this service ended up never running at all). So the pairing that
+/// used to be a field is made here instead, which is also what the real
+/// node does.
+struct Peer {
+    node: Node,
+    service: DiscoveryService<MemoryStore>,
+}
+
+impl Peer {
+    /// Wait for one swarm event and let discovery act on it.
+    ///
+    /// Routes the same way the node actor does: envelopes carrying
+    /// discovery's own spec number go to `handle_message`, everything else
+    /// is lifecycle. Written out rather than hidden behind a helper so a
+    /// reader can see this test exercises the real routing rather than a
+    /// convenience path that only exists for tests.
+    async fn drive_once(&mut self) {
+        let event = self.node.next_event().await;
+        match event {
+            libp2p::swarm::SwarmEvent::Behaviour(
+                openfiat_network::behaviour::OpenFiatBehaviourEvent::Envelope(
+                    libp2p::request_response::Event::Message { peer, message, .. },
+                ),
+            ) => self.service.handle_message(peer, message, &mut self.node),
+            other => self.service.handle_lifecycle(&other, &mut self.node),
+        }
+    }
+}
+
+fn make_service(seed: u8) -> Peer {
     let keypair = Keypair::from_seed([seed; 32]);
     let node = Node::new(&keypair).unwrap();
     let cache = PeerCache::new(MemoryStore::new());
-    DiscoveryService::new(
-        node,
+    let service = DiscoveryService::new(
+        node.local_peer_id(),
         cache,
         keypair.public_key(),
         "1.0.0",
         vec![1000, 1100],
         vec![],
         10,
-    )
+    );
+    Peer { node, service }
 }
 
 /// Drive every service concurrently until `converged` returns true.
-async fn drive_until(
-    services: &mut [DiscoveryService<MemoryStore>],
-    mut converged: impl FnMut(&[DiscoveryService<MemoryStore>]) -> bool,
-) {
+async fn drive_until(peers: &mut [Peer], mut converged: impl FnMut(&[Peer]) -> bool) {
     tokio::time::timeout(Duration::from_secs(30), async {
-        while !converged(services) {
-            let futures: Vec<Pin<Box<dyn Future<Output = ()> + '_>>> = services
+        while !converged(peers) {
+            let futures: Vec<Pin<Box<dyn Future<Output = ()> + '_>>> = peers
                 .iter_mut()
-                .map(|s| Box::pin(s.drive_once()) as Pin<Box<dyn Future<Output = ()> + '_>>)
+                .map(|p| Box::pin(p.drive_once()) as Pin<Box<dyn Future<Output = ()> + '_>>)
                 .collect();
             select_all(futures).await;
         }
@@ -49,8 +80,7 @@ async fn drive_until(
 #[tokio::test]
 async fn a_five_node_cluster_converges_to_a_consistent_peer_set() {
     const NODE_COUNT: usize = 5;
-    let mut services: Vec<DiscoveryService<MemoryStore>> =
-        (1..=NODE_COUNT as u8).map(make_service).collect();
+    let mut services: Vec<Peer> = (1..=NODE_COUNT as u8).map(make_service).collect();
 
     // Every node listens (not just the bootstrap) — a node with no
     // dialable address of its own has nothing to advertise, so peer
@@ -62,19 +92,21 @@ async fn a_five_node_cluster_converges_to_a_consistent_peer_set() {
             .unwrap();
     }
     drive_until(&mut services, |services| {
-        services.iter().all(|s| !s.listen_addresses().is_empty())
+        services
+            .iter()
+            .all(|s| !s.service.listen_addresses().is_empty())
     })
     .await;
 
     let bootstrap_addr: openfiat_network::Multiaddr =
-        services[0].listen_addresses()[0].parse().unwrap();
+        services[0].service.listen_addresses()[0].parse().unwrap();
     for service in &mut services[1..] {
-        service.dial(bootstrap_addr.clone()).unwrap();
+        service.node.dial(bootstrap_addr.clone()).unwrap();
     }
 
     drive_until(&mut services, |services| {
         services.iter().all(|service| {
-            let peers = service.cache.all().unwrap();
+            let peers = service.service.cache.all().unwrap();
             peers.len() == NODE_COUNT - 1 && peers.iter().all(|record| !record.addresses.is_empty())
         })
     })
@@ -94,6 +126,7 @@ async fn a_five_node_cluster_converges_to_a_consistent_peer_set() {
 
     for service in &services {
         let known: std::collections::HashSet<_> = service
+            .service
             .cache
             .all()
             .unwrap()

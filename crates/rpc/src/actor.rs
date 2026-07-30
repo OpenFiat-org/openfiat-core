@@ -24,7 +24,9 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use openfiat_chain::{ChainClient, NodeChainMode, RpcChainClient, SignatureStatus};
 use openfiat_crypto::Keypair;
 use openfiat_governance::events::SignedVoteCast;
+use openfiat_network::behaviour::OpenFiatBehaviourEvent;
 use openfiat_network::{Multiaddr, Node};
+use openfiat_network::{SwarmEvent, request_response};
 use openfiat_notifications::{HttpGateway, NotificationProvider};
 use openfiat_serialization::wire;
 use openfiat_snapshot::SnapshotConfig;
@@ -182,6 +184,19 @@ pub struct NetworkConfig {
     /// bounded rolling window — running a node should not be an
     /// open-ended storage commitment.
     pub retention: openfiat_content::Retention,
+    /// Addresses peers should dial to reach this node, when the bound
+    /// address is not one of them.
+    ///
+    /// A node behind NAT, in a container, or on a cloud host with a mapped
+    /// public IP binds a private address and cannot discover its public
+    /// one — by construction only something on the far side can observe
+    /// it. So the operator declares it, and peer discovery announces it
+    /// ahead of the bound addresses so a dialer reaches the node on the
+    /// first attempt rather than after timing out on `10.0.0.5`.
+    ///
+    /// Empty is right for a node genuinely on a public interface: its
+    /// bound address already is its public one.
+    pub external_addresses: Vec<Multiaddr>,
     /// This node's publicly reachable API URL, if it has one.
     ///
     /// `Some` means the operator has put the node behind TLS and wants it
@@ -204,6 +219,7 @@ impl NetworkConfig {
             listen_addr: "/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap(),
             bootstrap_peers: Vec::new(),
             chain_mode: NodeChainMode::GossipOnly,
+            external_addresses: Vec::new(),
             serve_content: true,
             content_gateway: openfiat_content::DEFAULT_GATEWAY.to_string(),
             ipfs_api_url: None,
@@ -224,7 +240,53 @@ impl NetworkConfig {
 #[allow(clippy::await_holding_refcell_ref)]
 async fn drive_gossip<S: KvStore + 'static>(state: &NodeState<S>) {
     let mut gossip = state.gossip.borrow_mut();
-    gossip.drive_once().await;
+    let event = gossip.node.next_event().await;
+
+    // One swarm, two protocols, routed by the envelope's own spec number.
+    //
+    // This is the wiring peer discovery never had. `DiscoveryService` was
+    // fully implemented and converged five nodes in its own test, and no
+    // running node ever constructed one — so nodes announced no address
+    // and learned no peer they were not handed statically. The reason it
+    // was not a one-line dependency addition is right here: each service
+    // used to own a `Node`, only one thing can drive a swarm's event loop,
+    // and gossip had it. Whichever service did not own the swarm received
+    // nothing, for ever, while looking entirely healthy.
+    //
+    // Envelope messages have exactly one owner and are dispatched by
+    // `ofs_spec`, which is the field OFNP §20 defines for precisely this.
+    // Everything else — connections opening and closing, addresses being
+    // bound, a peer reporting what it observed — belongs to both, so both
+    // see it.
+    match event {
+        SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Envelope(
+            request_response::Event::Message { peer, message, .. },
+        )) => {
+            let is_discovery = match &message {
+                request_response::Message::Request { request, .. } => {
+                    openfiat_discovery::DiscoveryService::<std::rc::Rc<S>>::owns(request)
+                }
+                request_response::Message::Response { response, .. } => {
+                    openfiat_discovery::DiscoveryService::<std::rc::Rc<S>>::owns(response)
+                }
+            };
+            if is_discovery {
+                state
+                    .discovery
+                    .borrow_mut()
+                    .handle_message(peer, message, &mut gossip.node);
+            } else {
+                gossip.handle_message(peer, message);
+            }
+        }
+        other => {
+            state
+                .discovery
+                .borrow_mut()
+                .handle_lifecycle(&other, &mut gossip.node);
+            gossip.handle_lifecycle(&other);
+        }
+    }
 
     // Report where this node turned out to be reachable, once per address.
     //
@@ -1134,6 +1196,23 @@ where
                 network.self_roles,
                 network.chain_mode,
             );
+            {
+                // Declared before listening, so the first peer to connect
+                // is already told the right address. A node that announced
+                // only its bound address for the first few seconds would
+                // hand out an undialable one to exactly the peers that
+                // arrive at startup.
+                let mut discovery = state.discovery.borrow_mut();
+                for address in &network.external_addresses {
+                    discovery.add_external_address(address.to_string());
+                }
+                if !network.external_addresses.is_empty() {
+                    tracing::info!(
+                        addresses = ?network.external_addresses,
+                        "announcing operator-declared external addresses"
+                    );
+                }
+            }
             {
                 let mut gossip = state.gossip.borrow_mut();
                 gossip

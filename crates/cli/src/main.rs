@@ -207,6 +207,25 @@ pub struct Args {
     #[arg(long, value_name = "URL")]
     pub ipfs_api_url: Option<String>,
 
+    /// A multiaddr peers should dial to reach this node's gossip port,
+    /// e.g. `/ip4/203.0.113.7/udp/4001/quic-v1`. Repeatable.
+    ///
+    /// Needed when the address the node binds is not the address peers can
+    /// reach it at — behind NAT, inside a container, or on a cloud host
+    /// with a mapped public IP. The node cannot work this out for itself:
+    /// only something on the far side of the NAT can observe the public
+    /// address, so it is declared rather than guessed.
+    ///
+    /// Announced ahead of the bound addresses, so a peer trying them in
+    /// order reaches the node immediately instead of timing out on a
+    /// private one. The bound addresses are still announced too — peers on
+    /// the same LAN or docker network can only reach each other that way.
+    ///
+    /// Omit it if the node is genuinely on a public interface. Its bound
+    /// address already is its public one.
+    #[arg(long = "external-addr", value_name = "MULTIADDR")]
+    pub external_addrs: Vec<Multiaddr>,
+
     /// This node's publicly reachable API URL, e.g.
     /// `https://openfiat.allenhark.com`.
     ///
@@ -460,6 +479,7 @@ async fn main() {
         network = openfiat_chain::PROGRAM_IDS.network,
         staking_program = openfiat_chain::PROGRAM_IDS.staking,
         entrypoints = args.entrypoints.len(),
+        external_addrs = args.external_addrs.len(),
         retention = %args.retention.describe(),
         content_serving = if args.no_content_serving { "off" } else { "on" },
         public_url = args.public_rpc_url.as_deref().unwrap_or("(not advertised)"),
@@ -473,7 +493,8 @@ async fn main() {
     if args.entrypoints.is_empty() {
         tracing::warn!(
             "no --entrypoint given: this node will not connect to any peer. Peer discovery \
-             does not run yet, so entrypoints are currently the only way to join a cluster."
+             spreads knowledge between connected nodes, but something has to make the first \
+             connection."
         );
     }
 
@@ -489,6 +510,7 @@ async fn main() {
             bootstrap_peers,
             chain_mode,
             snapshot,
+            external_addresses: args.external_addrs.clone(),
             serve_content: !args.no_content_serving,
             content_gateway: args.content_gateway.clone(),
             ipfs_api_url: args.ipfs_api_url.clone(),

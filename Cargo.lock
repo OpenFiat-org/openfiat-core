@@ -3681,6 +3681,7 @@ dependencies = [
  "openfiat-chain",
  "openfiat-content",
  "openfiat-crypto",
+ "openfiat-discovery",
  "openfiat-disputes",
  "openfiat-gossip",
  "openfiat-governance",
