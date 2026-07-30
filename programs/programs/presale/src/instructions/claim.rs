@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
 use crate::{constants::*, error::ErrorCode, state::*};
@@ -18,6 +18,7 @@ pub struct Claim<'info> {
     )]
     pub sale_config: Account<'info, SaleConfig>,
 
+    #[account(mint::token_program = token_program)]
     pub open_mint: InterfaceAccount<'info, Mint>,
 
     /// CHECK: verified via seeds/bump; signs the OPEN transfer below.
@@ -42,7 +43,7 @@ pub struct Claim<'info> {
     )]
     pub buyer_open: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_claim(ctx: Context<Claim>, _sale_nonce: u64) -> Result<()> {

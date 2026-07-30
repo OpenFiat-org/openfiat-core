@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 // sysvar address is derived from the type rather than pasted as a literal.
 use anchor_lang::solana_program::sysvar::SysvarId;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 use openfiat_programs_shared::{DisputeOutcome, VaultState};
 
@@ -36,6 +36,7 @@ pub struct ExecuteDisputeOutcome<'info> {
     /// still produces a binary — but an "Access violation ... at address
     /// 0x0" at runtime, on the *decided* path, nowhere near the account
     /// that was added. Keep new accounts here boxed.
+    #[account(mint::token_program = token_program)]
     pub mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
@@ -101,8 +102,12 @@ pub struct ExecuteDisputeOutcome<'info> {
     pub emergency_reserve: Box<InterfaceAccount<'info, TokenAccount>>,
 
     /// The OPEN mint the arbitration deposit is held in — distinct from
-    /// `mint`, which is the settlement stablecoin.
-    #[account(constraint = deposit_mint.key() == dispute_case.deposit_mint)]
+    /// `mint`, which is the settlement stablecoin, and pinned to its own
+    /// `deposit_token_program` for that reason.
+    #[account(
+        constraint = deposit_mint.key() == dispute_case.deposit_mint,
+        mint::token_program = deposit_token_program,
+    )]
     pub deposit_mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
@@ -139,7 +144,29 @@ pub struct ExecuteDisputeOutcome<'info> {
     )]
     pub merchant_open_token_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    pub token_program: Program<'info, Token2022>,
+    /// Moves the settlement stablecoin: the escrow release, the unwind back
+    /// to the liquidity vault, and the even split.
+    pub token_program: Interface<'info, TokenInterface>,
+
+    /// Moves the OPEN arbitration deposit, and **must** be a separate handle
+    /// from `token_program` above.
+    ///
+    /// This instruction is the one place in the workspace that transfers two
+    /// different mints atomically, and a mint's owning token program is fixed
+    /// when the mint is created. OPEN is Token-2022; the settlement
+    /// stablecoin is frequently legacy SPL (devnet wSOL and USDC both are).
+    /// A single shared handle would therefore be provably wrong for one of
+    /// the two transfers in the normal production pairing — and wrong at CPI
+    /// time, deep inside `settle_deposit`, rather than at account validation
+    /// where it could be read off an error. That would have made the entire
+    /// dispute-resolution path uncallable for exactly the mints this
+    /// migration exists to support, while every Token-2022-only test kept
+    /// passing. See [`openfiat_programs_shared::token_dispatch`].
+    ///
+    /// The two may legitimately be the *same* program id when both mints
+    /// happen to share one — that is a coincidence of configuration, not
+    /// something to collapse the accounts over.
+    pub deposit_token_program: Interface<'info, TokenInterface>,
 
     /// CHECK: pinned to the real sysvar by `address`, then read as raw
     /// bytes — see `shared_logic::latch_case_seed`.
@@ -182,9 +209,12 @@ fn settle_deposit(
     if !forfeited {
         let fee_bump = ctx.accounts.fee_config.bump;
         let signer_seeds: &[&[u8]] = &[FEE_CONFIG_SEED, &[fee_bump]];
+        // `deposit_token_program`, not `token_program`: this transfer is
+        // OPEN-denominated, and OPEN's owning program need not be the
+        // settlement stablecoin's.
         transfer_checked(
             CpiContext::new_with_signer(
-                ctx.accounts.token_program.key(),
+                ctx.accounts.deposit_token_program.key(),
                 TransferChecked {
                     from: ctx.accounts.arbitration_pool.to_account_info(),
                     mint: ctx.accounts.deposit_mint.to_account_info(),

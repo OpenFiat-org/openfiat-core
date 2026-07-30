@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 // sysvar address is derived from the type rather than pasted as a literal.
 use anchor_lang::solana_program::sysvar::SysvarId;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 use openfiat_programs_shared::VaultState;
 
@@ -73,6 +73,7 @@ pub struct OpenDisputeCase<'info> {
     pub fee_config: Box<Account<'info, FeeConfig>>,
 
     /// The OPEN mint the deposit is denominated in (OFS-4100 §6).
+    #[account(mint::token_program = token_program)]
     pub deposit_mint: Box<InterfaceAccount<'info, Mint>>,
 
     /// The merchant's OPEN liquidity vault. Seeds pin it to
@@ -102,7 +103,7 @@ pub struct OpenDisputeCase<'info> {
     )]
     pub arbitration_pool: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
 
     pub system_program: Program<'info, System>,
 

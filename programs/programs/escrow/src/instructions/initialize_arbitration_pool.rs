@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{Mint, Token2022, TokenAccount};
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
 use crate::{constants::*, error::ErrorCode, state::*};
 
@@ -25,6 +25,7 @@ pub struct InitializeArbitrationPool<'info> {
 
     /// The OPEN mint. Arbitration deposits are OPEN-denominated
     /// (OFS-4100 §6), not settlement-stablecoin denominated.
+    #[account(mint::token_program = token_program)]
     pub mint: InterfaceAccount<'info, Mint>,
 
     /// Authority is the `FeeConfig` PDA, so only this program can move
@@ -41,7 +42,7 @@ pub struct InitializeArbitrationPool<'info> {
     )]
     pub arbitration_pool: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 

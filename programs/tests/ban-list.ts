@@ -28,6 +28,7 @@ import {
 } from "@solana/web3.js";
 import { expect } from "chai";
 import {
+  getSharedFeeConfig,
   getSharedMint,
   getSharedStakingConfig,
   getSharedGovernanceConfig,
@@ -278,6 +279,11 @@ describe("ban list (OFS-7100 §12)", () => {
 
   before(async () => {
     mint = await getSharedMint();
+    // `setUpMerchant` below creates a liquidity vault, which now reads the
+    // shared FeeConfig for the settlement allowlist and the arbitration
+    // pool for the OPEN carve-out. Both are created by this fixture, and
+    // this file runs first in the suite, so nothing else would create them.
+    await getSharedFeeConfig(escrow);
     ({ stakingConfig, stakeVault, rewardsVault } = await getSharedStakingConfig(
       staking
     ));

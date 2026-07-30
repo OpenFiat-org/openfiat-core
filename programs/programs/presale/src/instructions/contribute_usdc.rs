@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
 use crate::{constants::*, error::ErrorCode, state::*};
@@ -45,7 +45,10 @@ pub struct ContributeUsdc<'info> {
     #[account(mut)]
     pub usdc_vault: InterfaceAccount<'info, TokenAccount>,
 
-    #[account(constraint = usdc_mint.key() == sale_config.usdc_mint)]
+    #[account(
+        constraint = usdc_mint.key() == sale_config.usdc_mint,
+        mint::token_program = token_program,
+    )]
     pub usdc_mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -57,7 +60,7 @@ pub struct ContributeUsdc<'info> {
     )]
     pub contribution: Account<'info, Contribution>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 

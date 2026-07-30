@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 use openfiat_programs_shared::VaultState;
 
@@ -10,6 +10,7 @@ use crate::{constants::*, error::ErrorCode, state::*};
 pub struct FundTradeEscrow<'info> {
     pub merchant: Signer<'info>,
 
+    #[account(mint::token_program = token_program)]
     pub mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -45,7 +46,7 @@ pub struct FundTradeEscrow<'info> {
     )]
     pub trade_escrow_token_vault: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_fund_trade_escrow(ctx: Context<FundTradeEscrow>) -> Result<()> {

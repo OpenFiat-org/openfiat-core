@@ -26,9 +26,30 @@ pub struct ReserveLiquidity<'info> {
         has_one = merchant,
     )]
     pub liquidity_vault: Account<'info, LiquidityVault>,
+
+    /// Read for one thing only: whether this vault's mint is still on the
+    /// settlement allowlist.
+    ///
+    /// This is what makes de-listing safe rather than destructive. A
+    /// de-listed mint must not strand anybody's money, so the vault stays
+    /// intact, `deposit_liquidity` and `withdraw_liquidity` keep working,
+    /// and every already-open trade runs to completion. What stops is *new
+    /// exposure*, and a reservation is where new exposure starts: it is the
+    /// commitment a merchant advertises against, so refusing here means a
+    /// de-listed mint quietly stops being offered instead of failing later
+    /// in front of a buyer who has already agreed to trade.
+    #[account(seeds = [FEE_CONFIG_SEED], bump = fee_config.bump)]
+    pub fee_config: Box<Account<'info, FeeConfig>>,
 }
 
 pub fn handle_reserve_liquidity(ctx: Context<ReserveLiquidity>, amount: u64) -> Result<()> {
+    require!(
+        ctx.accounts
+            .fee_config
+            .allows_settlement_mint(&ctx.accounts.liquidity_vault.mint),
+        ErrorCode::SettlementMintNotAllowed
+    );
+
     let liquidity_vault = &mut ctx.accounts.liquidity_vault;
     require!(
         liquidity_vault.available >= amount,

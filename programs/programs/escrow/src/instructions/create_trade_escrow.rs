@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{Mint, Token2022, TokenAccount};
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use openfiat_programs_shared::VaultState;
 
 use crate::{constants::*, error::ErrorCode, state::*};
@@ -18,7 +18,20 @@ pub struct CreateTradeEscrow<'info> {
     /// CHECK: recorded verbatim, never read/written.
     pub buyer: UncheckedAccount<'info>,
 
+    #[account(mint::token_program = token_program)]
     pub mint: InterfaceAccount<'info, Mint>,
+
+    /// Read for one thing only: whether `mint` is on the settlement
+    /// allowlist.
+    ///
+    /// This is the second of the two gates, and the one that cannot be
+    /// omitted. `reserve_liquidity` refuses a de-listed mint earlier, but a
+    /// reservation is a counter — nothing has moved yet. This instruction
+    /// is where a token account is created to receive the buyer's money, so
+    /// it is the last point at which refusing costs nothing and the first
+    /// at which allowing creates an obligation.
+    #[account(seeds = [FEE_CONFIG_SEED], bump = fee_config.bump)]
+    pub fee_config: Box<Account<'info, FeeConfig>>,
 
     #[account(
         mut,
@@ -49,7 +62,7 @@ pub struct CreateTradeEscrow<'info> {
     )]
     pub token_vault: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
@@ -60,6 +73,12 @@ pub fn handle_create_trade_escrow(
     amount: u64,
     timeout_secs: i64,
 ) -> Result<()> {
+    require!(
+        ctx.accounts
+            .fee_config
+            .allows_settlement_mint(&ctx.accounts.mint.key()),
+        ErrorCode::SettlementMintNotAllowed
+    );
     require!(
         ctx.accounts.liquidity_vault.reserved >= amount,
         ErrorCode::InsufficientReservedLiquidity

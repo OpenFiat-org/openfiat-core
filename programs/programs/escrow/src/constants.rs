@@ -116,6 +116,85 @@ pub const MAX_DISPUTE_ROUNDS: u8 = 3;
 /// and the code ships the values that are true on the day it deploys.
 pub const RECOMMENDED_MIN_ARBITRATOR_STAKE_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 
+/// Capacity of `FeeConfig`'s settlement-mint allowlist.
+///
+/// Sixteen rather than the three the list ships with, because the whole
+/// point of the design is that governance adding a stablecoin is a
+/// *parameter write* through `update_fee_config`. Sizing the array to the
+/// initial contents would make the fourth mint an account-layout change, a
+/// resize migration and a redeploy — which is how a governance-tunable
+/// allowlist quietly becomes a hardcoded one.
+///
+/// It costs 512 bytes of rent on a single global singleton, paid once.
+pub const MAX_SETTLEMENT_MINTS: usize = 16;
+
+/// The mints a trade may be escrowed and settled in on day one.
+///
+/// Protocol-steward directive: "Token mints allowed by default wsol, usdc,
+/// usdt. Governance can vote to add more tokens. Open will be supported
+/// once it comes to public sale."
+///
+/// # OPEN is deliberately absent
+///
+/// Per the directive above. Note this restricts what may be *traded*, not
+/// what the protocol charges in: a merchant's OPEN vault — which funds the
+/// ad-listing fee and the arbitration deposit — is still creatable, because
+/// `create_liquidity_vault` carves it out explicitly. That carve-out is
+/// `[PROPOSED — NEEDS SIGN-OFF]`; see that instruction for the argument and
+/// for what breaks without it.
+///
+/// # Three of these four addresses were verified on devnet, not assumed
+///
+/// Each was read off the cluster before being written here: wSOL,
+/// `2bHPi5hA…` and `C4rSGhdx…` are all owned by the legacy SPL Token
+/// program, and `SK1JEb…` by Token-2022. That check is the whole point —
+/// an allowlist whose entries were taken on trust is a list of addresses
+/// somebody typed, and the failure it is supposed to prevent is exactly a
+/// mint that looks right and is not.
+///
+/// # Three of the four entries are DEVNET SCAFFOLDING
+///
+/// Only wSOL is cluster-independent. The other three are mints this project
+/// controls on devnet so that end-to-end tests can actually obtain the
+/// tokens they settle in, and **none of them may carry to any other
+/// cluster**: on mainnet each would be a look-alike of the asset it is
+/// named after, which is the precise failure this allowlist exists to
+/// refuse. A mainnet deployment replaces entries 2–4 wholesale.
+///
+/// The list is also a deliberate mix of both token programs — three legacy
+/// SPL and one Token-2022 — so that the allowlist itself demonstrates both
+/// dispatch paths are reachable rather than leaving one of them untested.
+/// That is the same mistake the pre-migration fixtures made: every fixture
+/// mint was Token-2022, so nothing ever exercised the mints the escrow
+/// actually needs to hold.
+pub const DEFAULT_SETTLEMENT_MINTS: [Pubkey; 4] = [
+    // Wrapped SOL. Cluster-independent, and owned by the **legacy** SPL
+    // Token program — one of the mints that proved the
+    // `Program<'info, Token2022>` constraint could never have held real
+    // settlement assets.
+    pubkey!("So11111111111111111111111111111111111111112"),
+    // DEVNET-ONLY mock USDC. Legacy SPL Token, 6 decimals, faucet mint
+    // authority `4oiCmGrMRL4m4RJsRX6F7nCDeEqoiKLYm5hsDcLFvAJB` — a
+    // dedicated key, deliberately not the program upgrade authority.
+    //
+    // Circle's canonical devnet USDC (`4zMMC9srt5Ri…`) was considered and
+    // rejected for this slot: nobody here holds its mint authority, so no
+    // test can obtain it. An allowlisted mint that no test can acquire is
+    // worse than an absent one, because it reads as supported without ever
+    // being exercised.
+    pubkey!("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU"),
+    // DEVNET-ONLY mock USDT. Legacy SPL Token, 6 decimals, same faucet
+    // authority as the mock USDC above.
+    pubkey!("C4rSGhdxWhSFQuFcAxQti1JvBxriwHJoHtJjfhs5p24Y"),
+    // DEVNET-ONLY settlement mint, and the one Token-2022 entry. Minted by
+    // this repository (`scripts/mint-test-usdc.ts`) and already wired into
+    // the live deployment as `feeConfigTreasuryAtas.settlementMint` — all
+    // four devnet fee-treasury ATAs are denominated in it, so a list
+    // without it would de-list the running deployment from its own fee
+    // collection the moment the migration ran.
+    pubkey!("SK1JEbfsjjTG2WELNirmM7iJVcdnwerqfF32kCnoWsM"),
+];
+
 /// The opening sortition threshold OFS-4100 §4.1 signed off: **100 bps
 /// (1/100)**. Ships disabled for the reason above, and additionally
 /// because a draw needs a pool to draw from — at 1/100 with ten registered

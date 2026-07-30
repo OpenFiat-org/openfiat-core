@@ -1,6 +1,8 @@
 use anchor_lang::prelude::*;
 use openfiat_programs_shared::{DisputeOutcome, VaultState};
 
+use crate::constants::MAX_SETTLEMENT_MINTS;
+
 /// Maximum arbitrators one dispute case can seat. Bounds `DisputeCase`'s
 /// on-chain size (fixed via `#[max_len]`) — not a spec-mandated number
 /// (Chapter 11 §11.9 deliberately keeps the real per-case threshold
@@ -155,6 +157,46 @@ pub struct FeeConfig {
     /// its meaning, so `migrate_fee_config` is a resize rather than a
     /// rewrite and no existing decoder shifts.
     pub arbitrator_sortition_bps: u16,
+    /// The mints a trade may be escrowed and settled in — the first
+    /// [`Self::settlement_mint_count`] entries are live, the rest are
+    /// `Pubkey::default()` padding.
+    ///
+    /// Protocol-steward directive: wSOL, USDC and USDT allowed by default,
+    /// governance votes to add more, OPEN once it reaches public sale. See
+    /// [`DEFAULT_SETTLEMENT_MINTS`](crate::constants::DEFAULT_SETTLEMENT_MINTS)
+    /// for what actually ships and which entries are devnet-only.
+    ///
+    /// # Why a fixed array rather than a `Vec`
+    ///
+    /// `#[max_len]` would reserve the same space but write a four-byte
+    /// length prefix ahead of the elements, so the tail's meaning would
+    /// depend on a value inside it. A fixed array plus a separate count
+    /// keeps every byte at a constant offset, which is what makes
+    /// `migrate_fee_config` a resize-and-fill rather than a re-encode.
+    ///
+    /// Appended after `arbitrator_sortition_bps` for the same reason that
+    /// field was appended after `bump`: the live singleton migrates by a
+    /// resize alone and no existing decoder shifts.
+    pub settlement_mints: [Pubkey; MAX_SETTLEMENT_MINTS],
+    /// How many of [`Self::settlement_mints`] are in force. Never above
+    /// [`MAX_SETTLEMENT_MINTS`]; zero would refuse every settlement, which
+    /// `update_fee_config` rejects rather than allowing the protocol to be
+    /// switched off by a parameter write.
+    pub settlement_mint_count: u8,
+}
+
+impl FeeConfig {
+    /// Whether `mint` may be escrowed and settled in.
+    ///
+    /// Reads only the first `settlement_mint_count` entries, so a mint that
+    /// was de-listed by shortening the list cannot be matched against stale
+    /// bytes left in the tail. It also means `Pubkey::default()` — the
+    /// padding value — is never accidentally allowed, which matters because
+    /// an unsupplied account defaults to exactly that.
+    pub fn allows_settlement_mint(&self, mint: &Pubkey) -> bool {
+        let live = (self.settlement_mint_count as usize).min(MAX_SETTLEMENT_MINTS);
+        self.settlement_mints[..live].contains(mint)
+    }
 }
 
 /// On-chain bridge for a trade escrow's dispute (Phase 4b, plan decision

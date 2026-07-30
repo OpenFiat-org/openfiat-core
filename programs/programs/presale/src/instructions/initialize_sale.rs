@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{Mint, Token2022, TokenAccount};
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
 use crate::{constants::*, error::ErrorCode, state::*};
 
@@ -22,7 +22,15 @@ pub struct InitializeSale<'info> {
     )]
     pub sale_config: Account<'info, SaleConfig>,
 
+    /// Deliberately *not* pinned to `token_program`, unlike `usdc_mint`
+    /// below. This instruction dispatches no CPI against OPEN — it only
+    /// reads the mint's decimals and records its address — and `claim`,
+    /// which does move OPEN, carries its own pinned `token_program`.
+    /// Constraining it here would additionally force OPEN and USDC to share
+    /// a token program, which is the exact coupling this migration removes:
+    /// OPEN is Token-2022 while the stablecoin need not be.
     pub open_mint: InterfaceAccount<'info, Mint>,
+    #[account(mint::token_program = token_program)]
     pub usdc_mint: InterfaceAccount<'info, Mint>,
 
     /// CHECK: the `presale_vault` PDA — verified via seeds/bump below and
@@ -63,7 +71,7 @@ pub struct InitializeSale<'info> {
     /// deterministic mock instead.
     pub swap_program: UncheckedAccount<'info>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }

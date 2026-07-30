@@ -5,7 +5,7 @@
 
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 use openfiat_programs_shared::VaultState;
 
@@ -41,7 +41,7 @@ pub fn unwind_funded_trade_escrow<'info>(
     liquidity_vault: &mut Account<'info, LiquidityVault>,
     liquidity_token_vault: &InterfaceAccount<'info, TokenAccount>,
     mint: &InterfaceAccount<'info, Mint>,
-    token_program: &Program<'info, Token2022>,
+    token_program: &Interface<'info, TokenInterface>,
 ) -> Result<()> {
     let amount = trade_escrow.amount;
     let id_bytes = trade_escrow.reservation_id.to_le_bytes();
@@ -98,7 +98,7 @@ pub fn split_trade_escrow_evenly<'info>(
     liquidity_vault: &mut Account<'info, LiquidityVault>,
     liquidity_token_vault: &InterfaceAccount<'info, TokenAccount>,
     mint: &InterfaceAccount<'info, Mint>,
-    token_program: &Program<'info, Token2022>,
+    token_program: &Interface<'info, TokenInterface>,
 ) -> Result<()> {
     let amount = trade_escrow.amount;
     let buyer_share = amount / 2;
@@ -220,7 +220,7 @@ pub fn release_trade_escrow_funds<'info>(
     infra_treasury: &InterfaceAccount<'info, TokenAccount>,
     emergency_reserve: &InterfaceAccount<'info, TokenAccount>,
     mint: &InterfaceAccount<'info, Mint>,
-    token_program: &Program<'info, Token2022>,
+    token_program: &Interface<'info, TokenInterface>,
 ) -> Result<(u64, [u64; 4])> {
     let amount = trade_escrow.amount;
     let (buyer_amount, fee_shares) = compute_fee_split(fee_config, amount)?;

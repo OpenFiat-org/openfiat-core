@@ -76,11 +76,41 @@ export function getSharedMint(): Promise<PublicKey> {
 
 export interface SharedFeeConfig {
   feeConfig: PublicKey;
+  arbitrationPool: PublicKey;
   devTreasury: PublicKey;
   ecosystemTreasury: PublicKey;
   infraTreasury: PublicKey;
   emergencyReserve: PublicKey;
 }
+
+/**
+ * The numeric half of the shared `FeeConfig`, in the exact shape
+ * `update_fee_config` takes.
+ *
+ * Exported because more than one suite has to write it back after
+ * perturbing the shared singleton, and a second hand-copied literal that
+ * drifted from this one would silently change the fee, timeout or
+ * allowlist every later suite runs against.
+ *
+ * `settlementMints` is filled in per call — it has to name the fixture's
+ * own mint, which does not exist until the fixture creates it.
+ */
+export const SHARED_FEE_PARAMS = {
+  adListingFee: new BN(0),
+  disputeFilingFee: new BN(0),
+  settlementFeeBps: 85,
+  devTreasuryBps: 4000,
+  ecosystemTreasuryBps: 3000,
+  infraTreasuryBps: 2000,
+  emergencyReserveBps: 1000,
+  timeoutSecs: new BN(1800),
+  // Both arbitrator-eligibility gates off, matching what
+  // `initialize_fee_config` writes: the arbitrators these suites create
+  // stake seconds before voting, so any age requirement would reject all
+  // of them.
+  minArbitratorStakeAgeSecs: new BN(0),
+  arbitratorSortitionBps: 0,
+};
 
 // A second mint, standing in for OPEN. The settlement stablecoin and OPEN
 // are different mints in production, and the dispute path depends on that:
@@ -105,31 +135,21 @@ export function getSharedOpenMint(): Promise<PublicKey> {
   return openMintPromise;
 }
 
-let arbitrationPoolPromise: Promise<PublicKey> | null = null;
+/**
+ * The arbitration pool is now part of the base fee-config fixture rather
+ * than a lazily-created extra, and that is deliberate rather than tidying.
+ *
+ * `create_liquidity_vault` reads the pool to recognise the OPEN mint —
+ * OPEN is not on the settlement allowlist, so an OPEN vault is only
+ * creatable via that carve-out — which means the pool must exist before
+ * the *first* vault of any kind is created, not before the first dispute.
+ * It used to be initialized on demand deep inside the dispute suite, which
+ * would now leave every earlier suite failing with
+ * `ArbitrationPoolNotInitialized`. Awaiting it here makes the ordering a
+ * property of the fixture instead of an accident of which spec ran first.
+ */
 export function getSharedArbitrationPool(escrow: Program<Escrow>): Promise<PublicKey> {
-  if (!arbitrationPoolPromise) {
-    arbitrationPoolPromise = (async () => {
-      const openMint = await getSharedOpenMint();
-      const { feeConfig } = await getSharedFeeConfig(escrow);
-      const arbitrationPool = PublicKey.findProgramAddressSync(
-        [Buffer.from("arbitration_pool")],
-        escrow.programId,
-      )[0];
-      await escrow.methods
-        .initializeArbitrationPool()
-        .accountsPartial({
-          admin: admin.publicKey,
-          feeConfig,
-          mint: openMint,
-          arbitrationPool,
-          tokenProgram: TOKEN_2022_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc({ commitment: "confirmed" });
-      return arbitrationPool;
-    })();
-  }
-  return arbitrationPoolPromise;
+  return getSharedFeeConfig(escrow).then((c) => c.arbitrationPool);
 }
 
 let feeConfigPromise: Promise<SharedFeeConfig> | null = null;
@@ -137,8 +157,13 @@ export function getSharedFeeConfig(escrow: Program<Escrow>): Promise<SharedFeeCo
   if (!feeConfigPromise) {
     feeConfigPromise = (async () => {
       const mint = await getSharedMint();
+      const openMint = await getSharedOpenMint();
       const feeConfig = PublicKey.findProgramAddressSync(
         [Buffer.from("fee_config")],
+        escrow.programId,
+      )[0];
+      const arbitrationPool = PublicKey.findProgramAddressSync(
+        [Buffer.from("arbitration_pool")],
         escrow.programId,
       )[0];
       const devTreasury = await ata(mint, Keypair.generate().publicKey);
@@ -168,7 +193,49 @@ export function getSharedFeeConfig(escrow: Program<Escrow>): Promise<SharedFeeCo
         })
         .rpc({ commitment: "confirmed" });
 
-      return { feeConfig, devTreasury, ecosystemTreasury, infraTreasury, emergencyReserve };
+      await escrow.methods
+        .initializeArbitrationPool()
+        .accountsPartial({
+          admin: admin.publicKey,
+          feeConfig,
+          mint: openMint,
+          arbitrationPool,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc({ commitment: "confirmed" });
+
+      // `initialize_fee_config` seeds the allowlist with the four devnet
+      // mints the steward named, none of which exist on an ephemeral
+      // validator. Every suite settles in `mint`, a mint created seconds
+      // ago at a random address, so it has to be added through the same
+      // governance path a real cluster would use.
+      //
+      // This is load-bearing as a test in its own right: if the default
+      // list allowed anything, or if the allowlist were not actually
+      // enforced, this call could be deleted and the whole suite would
+      // still pass.
+      await escrow.methods
+        .updateFeeConfig({ ...SHARED_FEE_PARAMS, settlementMints: [mint] })
+        .accountsPartial({
+          admin: admin.publicKey,
+          feeConfig,
+          mint,
+          devTreasury,
+          ecosystemTreasury,
+          infraTreasury,
+          emergencyReserve,
+        })
+        .rpc({ commitment: "confirmed" });
+
+      return {
+        feeConfig,
+        arbitrationPool,
+        devTreasury,
+        ecosystemTreasury,
+        infraTreasury,
+        emergencyReserve,
+      };
     })();
   }
   return feeConfigPromise;
