@@ -19,20 +19,22 @@ Node.js/Java services that don't have native SCM support built in.
    ```powershell
    nssm install OpenFiatNode "C:\OpenFiat\openfiat-node.exe"
    nssm set OpenFiatNode AppDirectory "C:\ProgramData\OpenFiat"
-   nssm set OpenFiatNode AppEnvironmentExtra `
-     "CLI_DATA_DIR=C:\ProgramData\OpenFiat" `
-     "CLI_HTTP_ADDR=0.0.0.0:7080" `
-     "CLI_LISTEN_ADDR=/ip4/0.0.0.0/udp/4001/quic-v1" `
-     "CLI_WALLET_PATH=C:\ProgramData\OpenFiat\wallet.json"
+   nssm set OpenFiatNode AppParameters `
+     "--ledger C:\ProgramData\OpenFiat " + `
+     "--identity C:\ProgramData\OpenFiat\wallet.json " + `
+     "--rpc-bind-address 0.0.0.0:7080 " + `
+     "--gossip-bind-address /ip4/0.0.0.0/udp/4001/quic-v1"
    nssm set OpenFiatNode AppStdout "C:\ProgramData\OpenFiat\node.log"
    nssm set OpenFiatNode AppStderr "C:\ProgramData\OpenFiat\node.log"
    nssm set OpenFiatNode Start SERVICE_AUTO_START
    nssm start OpenFiatNode
    ```
 
-   Add `CLI_BOOTSTRAP_PEERS` / `CLI_SOLANA_RPC_URLS` to the
-   `AppEnvironmentExtra` list the same way if needed — see
-   `packaging/systemd/node.env.example` for what each variable does.
+   Add `--entrypoint` and `--solana-rpc-url` to `AppParameters` the same
+   way if needed, and `--ipfs-api-url` to pin content and earn the full
+   reward share. `openfiat-node --help` lists every flag; there is no
+   environment-variable fallback and no config file, so `AppParameters` is
+   the whole configuration surface.
 
 5. NSSM sends the service a graceful `CTRL_SHUTDOWN_EVENT` on stop, which
    `openfiat-node` handles the same way it handles Ctrl+C — closing

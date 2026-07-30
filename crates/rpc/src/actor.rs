@@ -196,6 +196,25 @@ async fn drive_gossip<S: KvStore + 'static>(state: &NodeState<S>) {
     // bind address as though it were an entrypoint, which this node used
     // to do, hands an operator a string that fails on the far side with no
     // hint as to why.
+    // A cloned identity is the loudest thing this node can discover about
+    // itself, and it is discovered here or nowhere: only the node holding
+    // the key can tell an event it did not emit from one it did.
+    let conflicts = gossip.identity_conflicts();
+    if conflicts > 0 && conflicts != state.reported_identity_conflicts.get() {
+        state.reported_identity_conflicts.set(conflicts);
+        tracing::error!(
+            events = conflicts,
+            "ANOTHER NODE IS RUNNING THIS WALLET. Events signed by this \
+             node's own key, which this node did not emit, are arriving \
+             from the network. One wallet is one node: a second node on \
+             the same identity splits this node's stake and reputation \
+             across two machines and makes a compromise of either \
+             indistinguishable. Stop the other node, or give it its own \
+             identity with `solana-keygen new`. Those events are being \
+             rejected, not applied."
+        );
+    }
+
     let peer_id = gossip.node.libp2p_peer_id();
     for address in gossip.take_newly_reachable() {
         tracing::info!(

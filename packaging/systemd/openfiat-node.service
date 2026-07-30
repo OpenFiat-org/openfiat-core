@@ -1,33 +1,87 @@
 [Unit]
-Description=OpenFiat node
-Documentation=https://docs.openfiat.network
-After=network-online.target
+Description=OpenFiat full node
+Documentation=https://github.com/OpenFiat-org/openfiat-core
+# Wants= rather than Requires=: the node should still come up and serve
+# cached state if the network is briefly unavailable at boot, rather than
+# refusing to start and needing a human.
 Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
 User=openfiat
 Group=openfiat
-ExecStart=/usr/local/bin/openfiat-node
-WorkingDirectory=/var/lib/openfiat
-EnvironmentFile=-/etc/openfiat/node.env
-Restart=on-failure
-RestartSec=5s
+# Every setting is a flag. No EnvironmentFile and no config file: with two
+# sources, a node's real configuration becomes a function of the invocation
+# AND the ambient environment, and "why does this node behave differently
+# from the identical one beside it" turns into archaeology across shell
+# profiles and unit files. `systemctl cat openfiat-node` shows exactly what
+# this node was given, and `openfiat-node --help` is the whole surface.
+ExecStart=/usr/local/bin/openfiat-node \
+    --ledger /var/lib/openfiat \
+    --identity /var/lib/openfiat/wallet.json \
+    --rpc-bind-address 0.0.0.0:7080 \
+    --gossip-bind-address /ip4/0.0.0.0/udp/4001/quic-v1 \
+    --solana-rpc-url https://api.devnet.solana.com
 
-# openfiat-node handles SIGTERM itself (graceful shutdown — see
-# crates/cli's shutdown_signal) rather than needing systemd to force-kill
-# it; this just gives that shutdown path a reasonable window before
-# systemd escalates to SIGKILL.
-TimeoutStopSec=30s
+# Pinning is opt-in and changes what this node earns. Add
+#     --ipfs-api-url http://127.0.0.1:5001
+# above once an IPFS daemon is running, and the node will pin the content
+# protocol records reference and be able to answer a peer's retrievability
+# challenge — which is what earns the full reward share (OFS-4100 §9.2).
 
-# Minimal sandboxing: this process only ever needs its own data directory,
-# outbound network (gossip dialing, optional Solana RPC), and one inbound
-# HTTP/QUIC port — no other filesystem or capability access.
+# Restart on any exit, including a clean one. A node that stops is not
+# serving the network, and there is no exit this binary makes that should
+# leave the machine quietly without a node.
+Restart=always
+RestartSec=5
+
+# Give RocksDB time to flush and close cleanly. A hard kill mid-compaction
+# is how a data directory becomes one that needs repair on next boot.
+TimeoutStopSec=60
+KillSignal=SIGTERM
+
+# --- Hardening -------------------------------------------------------
+# The node needs exactly one writable path, one keypair, and outbound
+# network. Everything else is denied so that a compromise of the process
+# cannot reach the rest of the machine — and, specifically, cannot read
+# other users' keys.
 NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# ^ false deliberately: the Rust binary is AOT-compiled and does not JIT,
+#   but some TLS/crypto backends map W+X pages during init. Turning it on
+#   without testing that is how a node fails to start at 3am.
 ReadWritePaths=/var/lib/openfiat
-PrivateTmp=true
+# AF_NETLINK is required, not optional: binding a wildcard address makes
+# libp2p enumerate this host's interfaces, and interface enumeration on
+# Linux goes over a netlink socket. Without it the QUIC listener fails with
+# a bare "Internal" error and the gossip actor panics — while the HTTP
+# thread survives, so systemd still reports the unit active and the node
+# looks healthy from the outside while serving nothing.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# RocksDB opens many files; the default 1024 is low enough to bite under
+# compaction with several column families.
+LimitNOFILE=65536
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openfiat-node
 
 [Install]
 WantedBy=multi-user.target

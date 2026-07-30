@@ -27,7 +27,7 @@ use openfiat_types::{
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// What happened when an event was offered to [`GossipService::receive_event`].
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiveOutcome {
     Stored,
     Duplicate,
@@ -66,6 +66,13 @@ pub struct GossipService<S> {
     /// address that cannot be dialled is worse than none, because it looks
     /// like an answer.
     reachable: BTreeSet<Multiaddr>,
+    /// When this node started, used to tell its own history from an
+    /// impostor's traffic — see [`GossipService::accept`].
+    started_at: Timestamp,
+    /// How many events signed by this node's own key, but not emitted by
+    /// it, have arrived. Non-zero means the identity is running in more
+    /// than one place.
+    identity_conflicts: u64,
     /// Reachable addresses not yet handed to a caller, so each is reported
     /// once rather than on every tick of whatever is polling.
     newly_reachable: Vec<Multiaddr>,
@@ -106,6 +113,20 @@ impl<S: KvStore> GossipService<S> {
         subscription: Subscription,
     ) -> Self {
         let self_peer_id = node.local_peer_id();
+        // This node's own key goes in the map beside its peers'.
+        //
+        // Not vanity: `validate` looks the origin's key up here, so
+        // without it an event claiming our origin fails as
+        // `InvalidSignature` and we can never tell a clumsy spoof from
+        // proof that our wallet is running somewhere else. That
+        // distinction is the entire value of `is_impostor`, and it is
+        // only available once the signature has actually been checked —
+        // which is also why the impostor test runs *after* validation
+        // rather than before it. Checking first would let anyone trigger
+        // a false alarm on our node by putting our peer id in an
+        // envelope they never signed.
+        let mut peer_keys = HashMap::new();
+        peer_keys.insert(self_peer_id.clone(), keypair.public_key());
         Self {
             node,
             store,
@@ -113,9 +134,11 @@ impl<S: KvStore> GossipService<S> {
             self_peer_id,
             self_roles,
             subscription,
-            peer_keys: HashMap::new(),
+            peer_keys,
             connected: HashSet::new(),
             reachable: BTreeSet::new(),
+            started_at: Timestamp::now(),
+            identity_conflicts: 0,
             newly_reachable: Vec::new(),
             event_handlers: Vec::new(),
             forward_filters: Vec::new(),
@@ -250,12 +273,51 @@ impl<S: KvStore> GossipService<S> {
         if let Err(err) = self.validate(&event) {
             return ReceiveOutcome::Rejected(err);
         }
+        if self.is_impostor(&event) {
+            self.identity_conflicts += 1;
+            return ReceiveOutcome::Rejected(GossipError::IdentityInUseElsewhere);
+        }
         self.store.put(&event);
         self.notify(&event);
         if self.should_forward(&event) {
             self.forward(from, &event);
         }
         ReceiveOutcome::Stored
+    }
+
+    /// Whether `event` was signed by this node's key but not emitted by
+    /// this node — meaning a second node is running the same identity.
+    ///
+    /// One wallet is one node. A `PeerId` is derived from the wallet's
+    /// key, so two nodes sharing a `wallet.json` do not appear as two
+    /// peers: they appear as one peer in two places, both signing under
+    /// the same name. Nothing in an envelope distinguishes them, which is
+    /// exactly why this has to be detected from the one vantage point
+    /// that can: our own.
+    ///
+    /// The test is precise. Anything this node originated went into the
+    /// store at origination, so an echo of it is already `Duplicate`
+    /// before reaching here. An event still claiming our origin is
+    /// therefore one we did not emit, and if it is stamped after we
+    /// booted, we would have known about it. That last clause is what
+    /// keeps an honest restart from accusing itself: a node that lost its
+    /// data directory and restarted on the same wallet will meet its own
+    /// older events again, and those are stamped before this boot.
+    ///
+    /// Two nodes running one wallet is not a configuration to support. It
+    /// makes gossip attributable to a peer that is two machines, splits
+    /// one stake across both in any accounting that keys on identity, and
+    /// means a compromise of either is indistinguishable from the other.
+    /// The event is refused and the operator is told.
+    fn is_impostor(&self, event: &EventEnvelope) -> bool {
+        event.origin == self.self_peer_id && event.timestamp > self.started_at
+    }
+
+    /// How many events signed by this identity, but not emitted here,
+    /// have been seen. Any non-zero value means the wallet is in use
+    /// somewhere else.
+    pub fn identity_conflicts(&self) -> u64 {
+        self.identity_conflicts
     }
 
     /// Whether every registered forward filter agrees to re-forward
@@ -442,5 +504,141 @@ impl<S: KvStore> GossipService<S> {
                 self.receive_event(None, event);
             }
         }
+    }
+}
+
+#[cfg(test)]
+/// One wallet is one node, enforced from the only vantage point that
+/// can tell: the node whose identity is being used.
+mod identity_conflicts {
+    use super::*;
+    use openfiat_storage::mem::MemoryStore;
+
+    /// Builds an event genuinely signed by `keypair` — an impostor
+    /// holding a copied `wallet.json` produces exactly this, and it
+    /// passes every signature check, because the signature is real.
+    fn signed_as(keypair: &Keypair, at: Timestamp) -> EventEnvelope {
+        let peer =
+            openfiat_network::identity::peer_id_from_public_key(&keypair.public_key()).unwrap();
+        let event_type = EventType::new("AdvertisementCreated").unwrap();
+        let payload = b"from the other machine".to_vec();
+        let signable = event_id::signable_bytes(&event_type, 2100, &peer, at, &payload);
+        let signature = keypair.sign(&signable);
+        let id = event_id::compute(&event_type, &payload, at, &peer, &signature);
+        EventEnvelope {
+            id,
+            event_type,
+            ofs_spec: 2100,
+            version: 1,
+            origin: peer,
+            timestamp: at,
+            ttl: 8,
+            priority: Priority::Advertisement,
+            signature,
+            payload,
+        }
+    }
+
+    fn service_for(keypair: &Keypair) -> GossipService<MemoryStore> {
+        let node = openfiat_network::Node::new(keypair).unwrap();
+        GossipService::new(
+            node,
+            EventStore::new(MemoryStore::new()),
+            Keypair::from_seed(keypair.seed()),
+            vec![NodeRole::MerchantGateway],
+            Subscription::All,
+        )
+    }
+
+    #[test]
+    fn an_event_signed_by_our_own_key_that_we_did_not_emit_is_refused() {
+        let keypair = Keypair::from_seed([21u8; 32]);
+        let mut service = service_for(&keypair);
+
+        // Stamped a second after this node booted: the other machine is
+        // running right alongside us. Explicitly later rather than
+        // `now()`, because both can land in the same millisecond and the
+        // rule is "after we booted", not "at or after".
+        let after_boot = Timestamp::from_millis(service.started_at.as_millis() + 1_000);
+        let forged = signed_as(&keypair, after_boot);
+        let outcome = service.receive_event(None, forged.clone());
+
+        assert_eq!(
+            outcome,
+            ReceiveOutcome::Rejected(GossipError::IdentityInUseElsewhere)
+        );
+        assert_eq!(service.identity_conflicts(), 1);
+        assert!(
+            !service.store.contains(&forged.id),
+            "acting on an instruction issued under our name by someone \
+             else is the one thing a node must never do"
+        );
+    }
+
+    #[test]
+    fn our_own_older_events_are_not_mistaken_for_an_impostor() {
+        // The restart case: a node that lost its data directory and
+        // came back on the same wallet meets its own history again.
+        // Accusing itself here would make recovery impossible.
+        let keypair = Keypair::from_seed([22u8; 32]);
+        let mut service = service_for(&keypair);
+
+        let before_boot = Timestamp::from_millis(service.started_at.as_millis() - 60_000);
+        let own_history = signed_as(&keypair, before_boot);
+
+        assert_eq!(
+            service.receive_event(None, own_history),
+            ReceiveOutcome::Stored
+        );
+        assert_eq!(service.identity_conflicts(), 0);
+    }
+
+    #[test]
+    fn another_peers_event_is_untouched_by_the_check() {
+        let ours = Keypair::from_seed([23u8; 32]);
+        let theirs = Keypair::from_seed([24u8; 32]);
+        let mut service = service_for(&ours);
+
+        service.register_peer_key(
+            openfiat_network::identity::peer_id_from_public_key(&theirs.public_key()).unwrap(),
+            theirs.public_key(),
+        );
+        let after_boot = Timestamp::from_millis(service.started_at.as_millis() + 1_000);
+        let legitimate = signed_as(&theirs, after_boot);
+        assert_eq!(
+            service.receive_event(None, legitimate),
+            ReceiveOutcome::Stored
+        );
+        assert_eq!(service.identity_conflicts(), 0);
+    }
+
+    #[test]
+    fn an_echo_of_our_own_broadcast_is_a_duplicate_not_an_accusation() {
+        // Our own events go into the store at origination, so a peer
+        // reflecting one back is caught as a duplicate before the
+        // impostor check ever runs. Without that ordering, every node
+        // would accuse itself the moment its own event came back.
+        let keypair = Keypair::from_seed([25u8; 32]);
+        let mut service = service_for(&keypair);
+
+        let id = service
+            .originate(
+                EventType::new("AdvertisementCreated").unwrap(),
+                2100,
+                Priority::Advertisement,
+                8,
+                b"ours".to_vec(),
+            )
+            .unwrap();
+        let echoed = service
+            .store
+            .get(&id)
+            .expect("we stored what we originated");
+
+        assert_eq!(
+            service.receive_event(None, echoed),
+            ReceiveOutcome::Duplicate
+        );
+        assert_eq!(service.identity_conflicts(), 0);
     }
 }

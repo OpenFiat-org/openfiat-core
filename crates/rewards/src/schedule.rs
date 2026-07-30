@@ -18,10 +18,29 @@ use std::collections::HashMap;
 /// `effective_stake` is the value decoded from the node's on-chain
 /// `StakeAccount` — never a self-reported figure. `registered` is
 /// presence in the OFS-1500 service registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Eligibility {
     pub effective_stake: u64,
     pub registered: bool,
+    /// The on-chain `StakeAccount` this figure was read from.
+    ///
+    /// # It must be DERIVED from the peer, never accepted from it
+    ///
+    /// A `PeerId` embeds the Ed25519 public key it was generated from —
+    /// `openfiat_network::identity::public_key_from_peer_id` recovers it
+    /// with no cooperation from the peer — and a `StakeAccount`'s PDA is
+    /// seeded by its owner's key and role. So a caller can compute this
+    /// address itself, from the identity that signed the events it
+    /// observed, and never has to ask.
+    ///
+    /// That is the whole defence against one stake paying for several
+    /// nodes. If this were a self-reported field, an operator could stake
+    /// once, run any number of nodes, and have each of them name the same
+    /// account — every one of them credited the full balance. Because it
+    /// is derived, a node cannot point at a stake it does not own, and
+    /// [`compute`]'s duplicate rule below only ever fires on a genuine
+    /// attempt to do so.
+    pub stake_account: String,
 }
 
 /// One node's entitlement for one epoch.
@@ -76,6 +95,27 @@ pub fn compute(
     let emission = params.per_epoch_emission.min(bootstrap_remaining);
     let observed = ledger.epoch(epoch);
 
+    // One stake, one node.
+    //
+    // A single `StakeAccount` backing several peers means someone staked
+    // once and is running several nodes in the hope of being paid several
+    // times. Every one of them is excluded for the epoch rather than
+    // picking a winner: paying one would still reward the attempt, and
+    // leave the operator strictly better off than a peer who staked
+    // honestly for each node. Excluding all of them makes the attempt
+    // cost more than not making it.
+    //
+    // This cannot be used to grief an honest node. `Eligibility`'s own doc
+    // requires the account to be derived from the peer's embedded public
+    // key, so an attacker has no way to make a second peer resolve to
+    // someone else's stake account in the first place.
+    let mut peers_per_stake: HashMap<&str, usize> = HashMap::new();
+    for el in eligibility.values() {
+        *peers_per_stake
+            .entry(el.stake_account.as_str())
+            .or_default() += 1;
+    }
+
     // Weight each eligible node. A node absent from `eligibility`, below
     // the stake floor, or unregistered contributes nothing and receives
     // nothing — the zero-weight participant is exactly the shape of the
@@ -89,6 +129,14 @@ pub fn compute(
             continue;
         };
         if !el.registered || el.effective_stake < params.min_stake {
+            continue;
+        }
+        if peers_per_stake
+            .get(el.stake_account.as_str())
+            .copied()
+            .unwrap_or(0)
+            > 1
+        {
             continue;
         }
 
@@ -234,10 +282,17 @@ mod tests {
 
     const OPEN: u64 = 1_000_000_000;
 
+    /// Each test peer gets its own stake account, which is what
+    /// derivation from a distinct identity would produce.
     fn eligible(stake_open: u64) -> Eligibility {
+        eligible_with_stake_account(stake_open, "stake-unique")
+    }
+
+    fn eligible_with_stake_account(stake_open: u64, account: &str) -> Eligibility {
         Eligibility {
             effective_stake: stake_open * OPEN,
             registered: true,
+            stake_account: account.to_string(),
         }
     }
 
@@ -270,7 +325,10 @@ mod tests {
         fully_live(&mut ledger, &params, &a, 5, true);
         fully_live(&mut ledger, &params, &b, 5, true);
 
-        let el = HashMap::from([(a.clone(), eligible(5_000)), (b.clone(), eligible(5_000))]);
+        let el = HashMap::from([
+            (a.clone(), eligible_with_stake_account(5_000, "stake-a")),
+            (b.clone(), eligible_with_stake_account(5_000, "stake-b")),
+        ]);
         let s = compute(&params, &ledger, &el, 5, u64::MAX).unwrap();
 
         assert_eq!(s.entries.len(), 2);
@@ -286,7 +344,10 @@ mod tests {
         fully_live(&mut ledger, &params, &a, 5, true);
         fully_live(&mut ledger, &params, &b, 5, true);
 
-        let el = HashMap::from([(a.clone(), eligible(3_000)), (b.clone(), eligible(1_000))]);
+        let el = HashMap::from([
+            (a.clone(), eligible_with_stake_account(3_000, "stake-a")),
+            (b.clone(), eligible_with_stake_account(1_000, "stake-b")),
+        ]);
         let s = compute(&params, &ledger, &el, 5, u64::MAX).unwrap();
 
         let big = s.entries.iter().find(|e| e.peer == a).unwrap().amount;
@@ -303,8 +364,11 @@ mod tests {
         fully_live(&mut ledger, &params, &gossip, 9, false);
 
         let el = HashMap::from([
-            (rpc.clone(), eligible(5_000)),
-            (gossip.clone(), eligible(5_000)),
+            (rpc.clone(), eligible_with_stake_account(5_000, "stake-rpc")),
+            (
+                gossip.clone(),
+                eligible_with_stake_account(5_000, "stake-gossip"),
+            ),
         ]);
         let s = compute(&params, &ledger, &el, 9, u64::MAX).unwrap();
 
@@ -333,8 +397,14 @@ mod tests {
         ledger.observe_content_served(&params, &pinner, Timestamp::from_millis(start));
 
         let el = HashMap::from([
-            (pinner.clone(), eligible(5_000)),
-            (freeloader.clone(), eligible(5_000)),
+            (
+                pinner.clone(),
+                eligible_with_stake_account(5_000, "stake-pinner"),
+            ),
+            (
+                freeloader.clone(),
+                eligible_with_stake_account(5_000, "stake-free"),
+            ),
         ]);
         let s = compute(&params, &ledger, &el, 9, u64::MAX).unwrap();
 
@@ -410,8 +480,14 @@ mod tests {
         ledger.observe_content_served(&params, &gossip_pinner, Timestamp::from_millis(start));
 
         let el = HashMap::from([
-            (gossip_pinner.clone(), eligible(5_000)),
-            (rpc_only.clone(), eligible(5_000)),
+            (
+                gossip_pinner.clone(),
+                eligible_with_stake_account(5_000, "stake-gp"),
+            ),
+            (
+                rpc_only.clone(),
+                eligible_with_stake_account(5_000, "stake-ro"),
+            ),
         ]);
         let s = compute(&params, &ledger, &el, 6, u64::MAX).unwrap();
         let pinner_amount = s
@@ -443,7 +519,12 @@ mod tests {
             }
         }
         let el: HashMap<_, _> = (1..=6u8)
-            .map(|t| (peer(t), eligible(1_000 * u64::from(t))))
+            .map(|t| {
+                (
+                    peer(t),
+                    eligible_with_stake_account(1_000 * u64::from(t), &format!("stake-{t}")),
+                )
+            })
             .collect();
 
         let s = compute(&params, &ledger, &el, 11, u64::MAX).unwrap();
@@ -469,8 +550,11 @@ mod tests {
         }
 
         let el = HashMap::from([
-            (up.clone(), eligible(5_000)),
-            (flaky.clone(), eligible(5_000)),
+            (up.clone(), eligible_with_stake_account(5_000, "stake-up")),
+            (
+                flaky.clone(),
+                eligible_with_stake_account(5_000, "stake-flaky"),
+            ),
         ]);
         let s = compute(&params, &ledger, &el, 4, u64::MAX).unwrap();
         let up_amount = s.entries.iter().find(|e| e.peer == up).unwrap().amount;
@@ -493,6 +577,7 @@ mod tests {
                 Eligibility {
                     effective_stake: 500_000 * OPEN,
                     registered: false,
+                    stake_account: "stake-unregistered".to_string(),
                 },
             ),
         ]);
@@ -519,6 +604,7 @@ mod tests {
                 Eligibility {
                     effective_stake: 0,
                     registered: true,
+                    stake_account: "stake-sybil".to_string(),
                 },
             ),
         ]);
@@ -542,6 +628,7 @@ mod tests {
             Eligibility {
                 effective_stake: params.min_stake - 1,
                 registered: true,
+                stake_account: "stake-thin".to_string(),
             },
         )]);
         assert!(
@@ -586,7 +673,12 @@ mod tests {
             fully_live(&mut ledger, &params, &peer(tag), 5, tag % 2 == 0);
         }
         let el: HashMap<_, _> = (1..=5u8)
-            .map(|t| (peer(t), eligible(1_000 * u64::from(t))))
+            .map(|t| {
+                (
+                    peer(t),
+                    eligible_with_stake_account(1_000 * u64::from(t), &format!("stake-{t}")),
+                )
+            })
             .collect();
 
         let first = compute(&params, &ledger, &el, 5, u64::MAX).unwrap();
@@ -626,9 +718,13 @@ mod tests {
                 Eligibility {
                     effective_stake: 1_000_000_000 * OPEN,
                     registered: true,
+                    stake_account: "stake-whale".to_string(),
                 },
             ),
-            (minnow.clone(), eligible(1_000)),
+            (
+                minnow.clone(),
+                eligible_with_stake_account(1_000, "stake-minnow"),
+            ),
         ]);
 
         let s = compute(&params, &ledger, &el, 2, u64::MAX).unwrap();

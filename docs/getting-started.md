@@ -85,12 +85,75 @@ curl -X POST http://localhost:7080/rpc -H 'content-type: application/json' \
 # {"jsonrpc":"2.0","id":1,"result":{"mode":"RpcConnected","blockhash":"...","slot":...,"age_ms":...}}
 ```
 
-Never commit a real RPC endpoint/API key to version control — set it via
-environment only (`packaging/systemd/node.env.example` shows the
-production convention: an `/etc/openfiat/node.env` file readable only by
-the service's own user).
+An endpoint that is not JSON-RPC is refused at startup rather than
+crashing the node later. `solana-client` reads a response as
+`value["result"]`, which panics on anything else — and the panic kills the
+chain thread while the HTTP server keeps serving, so the node reports
+itself healthy while doing nothing on chain. A common way to hit this is
+Helius's Enhanced Transactions path (`/v0/transactions/`), which returns
+a bare JSON array; use the plain endpoint.
 
-## 5. The on-chain programs this node talks to
+Never commit a real RPC endpoint or API key. It is a command-line flag,
+so it belongs in the unit file that starts the node (`systemctl cat
+openfiat-node` shows exactly what a running node was given) and in
+nothing that is version controlled.
+
+## 5. Pin content, and earn more for it
+
+A node can hold the files protocol records reference — dispute evidence,
+merchant avatars — and prove it. Opt in by pointing the node at an IPFS
+daemon:
+
+```bash
+# A local Kubo daemon, the usual case.
+ipfs daemon &
+
+./target/release/openfiat-node \
+    --ledger ~/openfiat \
+    --identity ~/openfiat/wallet.json \
+    --solana-rpc-url https://api.devnet.solana.com \
+    --ipfs-api-url http://127.0.0.1:5001
+```
+
+What this changes:
+
+- The node pins the content referenced by attachment records it has
+  accepted, so evidence stays retrievable after the uploader stops paying
+  for it — which matters, because a dispute can open weeks after a trade.
+- It keeps a local copy of the part small enough to verify (256 KiB, the
+  IPFS chunk boundary) so it can answer another node's retrievability
+  challenge from memory.
+- **It earns the full reward share.** Peers challenge each other by asking
+  for content by CID and hashing what comes back; a content address is the
+  hash of its content, so the right bytes cannot be produced without
+  having them. A node that answers keeps its full multiplier, and one that
+  cannot is scaled to 0.7 (`[PROPOSED — NEEDS SIGN-OFF]`). See
+  [OFS-4100 §9.2] and `crates/rewards`.
+
+Without `--ipfs-api-url` a node stores no content and earns the reduced
+share, which is the honest outcome — it is doing less for the network. It
+still challenges its peers either way: measuring who serves content costs
+nothing and is a service in itself.
+
+Check what your node is holding:
+
+```bash
+curl -s -X POST http://localhost:7080/rpc -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHeldContent","params":{"cid":"bafkrei..."}}'
+# {"jsonrpc":"2.0","id":1,"result":{"content":"<base64>"}}   ← held
+# {"jsonrpc":"2.0","id":1,"result":{"content":null}}          ← not held
+```
+
+Pinning is opt-in rather than automatic on purpose. A node that fetched
+every CID it saw would store whatever anyone chose to point it at. What
+bounds the opted-in case is that an attachment must name a settlement, and
+a settlement needs a real reservation against real escrow — so the ceiling
+on what your disk is asked for is the network's actual trading volume, not
+a stranger's patience.
+
+[OFS-4100 §9.2]: https://github.com/OpenFiat-org/openfiat-specs
+
+## 6. The on-chain programs this node talks to
 
 Three Anchor programs are deployed to devnet today (see
 `programs/README.md` and `programs/devnet-addresses.json` for the full,
@@ -116,7 +179,7 @@ devnet deployment above), see `programs/README.md` in full — it covers
 the Anchor toolchain, `anchor test`, and `anchor deploy
 --provider.cluster devnet`.
 
-## 6. Run a local multi-node cluster
+## 7. Run a local multi-node cluster
 
 A real, persistently-running 3-node cluster (one `RpcConnected` bootstrap
 node plus two `GossipOnly` followers, each a genuine `openfiat-node`
@@ -136,20 +199,22 @@ Node 0 is reachable at `http://localhost:7080`, node 1 at
 directory to use a faster private RPC endpoint than Solana's public
 devnet one.
 
-## 7. Production deployment
+## 8. Production deployment
 
 - **Linux (systemd)** — [`packaging/systemd/README.md`](../packaging/systemd/README.md):
-  a real unit file with auto-restart and graceful `SIGTERM` shutdown, an
-  `/etc/openfiat/node.env` convention for secrets, and `ufw` firewall
-  rules for the HTTP (7080/tcp) and gossip (4001/udp) ports.
+  a real unit file with auto-restart and graceful `SIGTERM` shutdown,
+  every setting as a flag on `ExecStart`, and `ufw` firewall rules for the
+  HTTP (7080/tcp) and gossip (4001/udp) ports.
 - **Windows** — [`packaging/windows/README.md`](../packaging/windows/README.md):
   running the same binary as a real Windows Service via NSSM.
 
-Both start from the exact same binary and environment-variable surface
-documented in §3 above — nothing production-specific changes about how
-the node itself is configured.
+Both start from the exact same binary and the same command-line flags
+documented above — nothing production-specific changes about how the node
+is configured. There is no environment-variable fallback and no config
+file: `openfiat-node --help` is the entire surface, deliberately, so a
+node's behaviour is a function of its invocation and nothing ambient.
 
-## 8. Next steps
+## 9. Next steps
 
 - [`architecture.md`](architecture.md) — crate dependency graph, wire
   format, transport, and canonical protocol parameters.

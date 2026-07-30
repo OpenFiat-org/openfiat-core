@@ -138,6 +138,9 @@ pub struct NodeState<S> {
     /// opted in with `--ipfs-api-url`; see `openfiat_content::held` for
     /// why the copy exists and why it is bounded at 256 KiB an item.
     pub held_content: Rc<HeldContent<Rc<S>>>,
+    /// The identity-conflict count already reported, so a cloned wallet
+    /// is announced when the count changes rather than on every tick.
+    pub reported_identity_conflicts: std::cell::Cell<u64>,
     pub reputation: ReputationView<Rc<S>>,
     pub governance: Rc<GovernanceRegistry<Rc<S>>>,
     pub services: Rc<ServiceRegistry<Rc<S>>>,
@@ -376,6 +379,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             identity,
             attachments,
             held_content,
+            reported_identity_conflicts: std::cell::Cell::new(0),
             reputation,
             governance,
             services,

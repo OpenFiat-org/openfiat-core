@@ -10,6 +10,14 @@ pub enum GossipError {
     UnauthorizedOrigination,
     ProtocolVersionMismatch,
     MalformedPayload,
+    /// An event signed by *this node's own key* that this node did not
+    /// emit — proof that another process holds the same identity.
+    ///
+    /// Rejected rather than stored: acting on an instruction issued under
+    /// our name by someone else is the one thing a node must never do,
+    /// and a duplicated identity is a compromised or copied `wallet.json`
+    /// either way.
+    IdentityInUseElsewhere,
 }
 
 impl GossipError {
@@ -21,6 +29,10 @@ impl GossipError {
             Self::UnauthorizedOrigination => ErrorCode::InvalidRequest,
             Self::ProtocolVersionMismatch => ErrorCode::ProtocolVersionMismatch,
             Self::MalformedPayload => ErrorCode::DeserializationError,
+            // The closest existing code: an event whose origin cannot be
+            // what it claims is exactly a signature that does not
+            // establish what it appears to.
+            Self::IdentityInUseElsewhere => ErrorCode::InvalidSignature,
         }
     }
 }
