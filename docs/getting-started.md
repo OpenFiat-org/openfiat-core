@@ -219,8 +219,37 @@ can be asked by declaring a smaller window.
 
 ## 6. Joining the devnet cluster
 
-Peer discovery does not run yet ([#146]), so a node finds only the peers
-it is given. The public devnet entrypoint is:
+A node joins by dialing an entrypoint, and finds the rest of the network
+itself. Peer discovery (OFS-1100) exchanges known peers over the same
+connection gossip uses, so a node learns peers it was never given and
+announces the addresses it is reachable at. `--entrypoint` is still how
+the *first* connection happens — nothing can find a network from nothing.
+
+Check what your node knows and what it says about itself:
+
+```bash
+curl -s -X POST http://localhost:7080/rpc -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getPeers","params":{}}' | jq
+```
+
+`self_peer_id` is the `12D3Koo…` that goes in the entrypoint you publish;
+`announced_addresses` is what you are telling peers to dial.
+
+**Behind NAT, in a container, or on a cloud host with a mapped IP**, the
+address your node binds is not the address peers can reach it at, and it
+cannot work the public one out — by construction only something on the far
+side of the NAT can observe it. Declare it:
+
+```bash
+--external-addr /ip4/203.0.113.7/udp/4001/quic-v1
+```
+
+Declared addresses are announced ahead of bound ones, so a peer trying
+them in order connects on the first attempt instead of timing out on
+`172.17.0.2`. Bound addresses are still announced — a peer on the same
+LAN or docker network can only reach you that way.
+
+### The public devnet entrypoint
 
 ```
 /dns4/openfiat.allenhark.com/udp/4001/quic-v1/p2p/12D3KooWK9hQ7TwbfvFiaAxUbRFCkdhS7iEpAJDnewNL1anyREQ1
@@ -250,7 +279,6 @@ Repeat `--entrypoint` for several. Your own node logs the addresses it is
 reachable at once it is listening — see §3 — and those are what you give
 another operator.
 
-[#146]: https://github.com/OpenFiat-org/openfiat-core/issues/146
 
 ## 7. Make the node reachable from the web (TLS + a hostname)
 
@@ -439,6 +467,7 @@ discovering which flags to leave out.
 | To disable | Do this | What you lose |
 |---|---|---|
 | Solana connectivity | omit `--solana-rpc-url` | Node runs `GossipOnly`: on-chain answers come second-hand from peers and can lag. It still serves the marketplace and relays transactions to an RPC-connected peer. Earns the reduced connectivity share. |
+| Peer discovery | nothing — it is not optional | A node that announced no address and learned no peer is how this network spent its first months, and it looked healthy the whole time. |
 | Content serving | `--no-content-serving` | Node stores no attachment content and cannot answer a retrievability challenge, so it earns the reduced share (0.7x). It still challenges its peers. |
 | Keeping old content | `--retention 30` (the default) | Nothing, unless you were relying on this node to serve older-than-30-day content. Use `--retention archival` if you intend to run an archive. |
 | Producing snapshots | omit `--snapshot-public-url` | Node produces no snapshots for others to bootstrap from. It still *consumes* them, which needs no configuration. |

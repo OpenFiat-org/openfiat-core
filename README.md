@@ -297,7 +297,6 @@ curl -s -X POST http://127.0.0.1:7080/rpc -H 'content-type: application/json' \
 For a local multi-node cluster and the on-chain programs, see the
 [**Getting started guide**](docs/getting-started.md).
 
-[#146]: https://github.com/OpenFiat-org/openfiat-core/issues/146
 
 
 ## Development
