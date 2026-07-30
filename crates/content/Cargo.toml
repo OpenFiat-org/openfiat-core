@@ -15,6 +15,10 @@ openfiat-settlement = { path = "../settlement", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
+async-trait = "0.1.91"
+# Only for `kubo`: talking to an operator's own IPFS daemon. Matches the
+# feature set `openfiat-chain` already pins, so no second TLS stack.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }

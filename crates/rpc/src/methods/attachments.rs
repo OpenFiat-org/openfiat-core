@@ -11,13 +11,50 @@
 use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, method_fn};
 use crate::error::RpcError;
 use crate::state::NodeState;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use openfiat_content::{Attachment, SignedAttachmentPublish, protocol};
 use openfiat_serialization::{json, wire};
 use openfiat_settlement::SettlementId;
 use openfiat_storage::KvStore;
 use openfiat_types::Priority;
 
+/// A caller naming the content it wants. Not an attachment id: a
+/// challenger picks a CID from records it already holds and asks whether
+/// this node can serve *that content*, which is the question the reward
+/// premium turns on.
+#[derive(serde::Deserialize)]
+pub struct CidParams {
+    pub cid: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct HeldContentResponse {
+    /// Base64. Absent when this node does not hold the content, which is
+    /// an ordinary answer — most nodes hold nothing — and not an error.
+    pub content: Option<String>,
+}
+
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
+    table.register(
+        "getHeldContent",
+        method_fn(
+            |state: &NodeState<S>, params: CidParams| -> Result<HeldContentResponse, RpcError> {
+                // Parsed, not trusted. The string arrives from anyone, and
+                // it is about to become a store key; `Cid::parse` is what
+                // stops a caller probing this node's storage with a
+                // crafted key instead of a content address.
+                let cid = openfiat_crypto::Cid::parse(&params.cid)
+                    .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                Ok(HeldContentResponse {
+                    content: state
+                        .held_content
+                        .get(&cid)
+                        .map(|bytes| BASE64.encode(bytes)),
+                })
+            },
+        ),
+    );
     table.register(
         "getSettlementAttachments",
         method_fn(

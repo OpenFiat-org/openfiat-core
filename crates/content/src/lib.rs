@@ -21,8 +21,12 @@
 //!   be storing whatever anyone chose to point it at. Retrieval is the
 //!   viewer's, against a gateway, checked with [`Cid::matches`].
 
+pub mod challenge;
 pub mod error;
 pub mod events;
+pub mod held;
+pub mod kubo;
+pub mod pinning;
 pub mod protocol;
 pub mod record;
 pub mod service;
@@ -31,9 +35,13 @@ pub mod store;
 #[cfg(test)]
 mod fixtures;
 
+pub use challenge::{ChallengeOutcome, challengeable, judge};
 pub use error::ContentError;
 pub use events::SignedAttachmentPublish;
+pub use held::{HeldContent, MAX_HELD_BYTES};
+pub use kubo::KuboClient;
 pub use openfiat_crypto::Cid;
+pub use pinning::{PinError, PinningClient};
 pub use record::{
     Attachment, AttachmentId, AttachmentSubject, MAX_ATTACHMENT_BYTES, MAX_CAPTION_CHARS, MediaType,
 };

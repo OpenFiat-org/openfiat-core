@@ -65,8 +65,12 @@ use std::sync::Arc;
 /// the single definition of what makes up this node's worldview) plus the
 /// three that are deliberately node-local and so are not snapshotted:
 /// the gossip event log and the two snapshot bookkeeping families.
-const NODE_LOCAL_COLUMN_FAMILIES: &[&str] =
-    &["gossip_events", "snapshot_metadata", "snapshot_checkpoint"];
+const NODE_LOCAL_COLUMN_FAMILIES: &[&str] = &[
+    "gossip_events",
+    "snapshot_metadata",
+    "snapshot_checkpoint",
+    "pinned_content",
+];
 
 fn column_families() -> Vec<&'static str> {
     openfiat_rpc::SNAPSHOT_COLUMN_FAMILIES
@@ -151,6 +155,19 @@ pub struct Args {
     /// since an interval alone would produce snapshots nobody can fetch.
     #[arg(long, value_name = "SECS")]
     pub snapshot_interval_secs: Option<u64>,
+
+    /// IPFS daemon this node pins protocol content through, e.g.
+    /// `http://127.0.0.1:5001`.
+    ///
+    /// Opt-in, and it is what earns the content-retrievability share of
+    /// the reward (OFS-4100 §9.2). Without it the node stores no
+    /// attachment content, cannot answer a retrievability challenge, and
+    /// earns the reduced multiplier — which is the honest outcome, since
+    /// it is doing less for the network. It still challenges its peers
+    /// either way: measuring who serves content is a service a node
+    /// performs whether or not it stores any itself.
+    #[arg(long, value_name = "URL")]
+    pub ipfs_api_url: Option<String>,
 
     /// Log verbosity: `error`, `warn`, `info`, `debug` or `trace`.
     ///
@@ -376,6 +393,7 @@ async fn main() {
             bootstrap_peers,
             chain_mode,
             snapshot,
+            ipfs_api_url: args.ipfs_api_url.clone(),
         },
     );
     let metrics = Arc::new(openfiat_metrics::MetricsRegistry::new());

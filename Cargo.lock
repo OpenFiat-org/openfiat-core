@@ -3388,6 +3388,7 @@ dependencies = [
 name = "openfiat-content"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "futures",
  "libp2p",
  "openfiat-crypto",
@@ -3397,6 +3398,7 @@ dependencies = [
  "openfiat-settlement",
  "openfiat-storage",
  "openfiat-types",
+ "reqwest",
  "serde",
  "tokio",
 ]

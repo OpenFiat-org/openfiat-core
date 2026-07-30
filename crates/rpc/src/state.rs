@@ -17,7 +17,7 @@
 use openfiat_advertisements::AdvertisementRegistry;
 use openfiat_chain::events::BlockhashAnnounced;
 use openfiat_chain::{ChainBridge, ChainState, NodeChainMode};
-use openfiat_content::AttachmentRegistry;
+use openfiat_content::{AttachmentRegistry, HeldContent};
 use openfiat_crypto::Keypair;
 use openfiat_crypto::challenge::ChallengeLedger;
 use openfiat_disputes::DisputeRegistry;
@@ -81,6 +81,12 @@ pub struct PendingVoteVerification {
 /// - `snapshot_metadata` and `snapshot_checkpoint` — node-local snapshot
 ///   bookkeeping, which `openfiat_snapshot::store::RESERVED_COLUMN_FAMILIES`
 ///   also refuses to let an import overwrite.
+/// - `pinned_content` — the file bytes an opted-in node keeps so it can
+///   answer a retrievability challenge. Deliberately excluded: it is the
+///   one column family holding bulk data rather than records, a node that
+///   did not opt in has none of it, and a node that did can re-fetch any
+///   of it from IPFS. Shipping it would make a snapshot larger than the
+///   state it describes, to save a peer a fetch it can do itself.
 pub const SNAPSHOT_COLUMN_FAMILIES: &[&str] = &[
     "advertisements",
     "reservations",
@@ -127,6 +133,11 @@ pub struct NodeState<S> {
     /// file, and why reading a settlement's attachments requires being
     /// told who its parties are.
     pub attachments: Rc<AttachmentRegistry<Rc<S>>>,
+    /// Content this node keeps a local copy of so it can answer a
+    /// retrievability challenge synchronously. Empty unless the operator
+    /// opted in with `--ipfs-api-url`; see `openfiat_content::held` for
+    /// why the copy exists and why it is bounded at 256 KiB an item.
+    pub held_content: Rc<HeldContent<Rc<S>>>,
     pub reputation: ReputationView<Rc<S>>,
     pub governance: Rc<GovernanceRegistry<Rc<S>>>,
     pub services: Rc<ServiceRegistry<Rc<S>>>,
@@ -221,6 +232,7 @@ impl<S: KvStore + 'static> NodeState<S> {
         );
         let identity = Rc::new(IdentityRegistry::new(Rc::clone(&store)));
         let attachments = Rc::new(AttachmentRegistry::new(Rc::clone(&store)));
+        let held_content = Rc::new(HeldContent::new(Rc::clone(&store)));
         let governance = Rc::new(GovernanceRegistry::new(Rc::clone(&store)));
         let notifications = Rc::new(NotificationRegistry::new(
             Rc::clone(&store),
@@ -363,6 +375,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             disputes,
             identity,
             attachments,
+            held_content,
             reputation,
             governance,
             services,

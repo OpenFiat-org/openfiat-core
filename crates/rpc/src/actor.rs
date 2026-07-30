@@ -19,6 +19,8 @@ use crate::dispatch::MethodTable;
 use crate::error::RpcError;
 use crate::onchain_stake;
 use crate::state::NodeState;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use openfiat_chain::{ChainClient, NodeChainMode, RpcChainClient, SignatureStatus};
 use openfiat_crypto::Keypair;
 use openfiat_governance::events::SignedVoteCast;
@@ -145,6 +147,13 @@ pub struct NetworkConfig {
     /// public URL it announces them under (OFS-1300). Defaults to
     /// producing nothing — see [`SnapshotConfig::produces`].
     pub snapshot: SnapshotConfig,
+    /// An IPFS daemon this node pins protocol content through, from
+    /// `--ipfs-api-url`. `None` means the operator did not opt in: the
+    /// node stores no content, answers no challenge, and earns the
+    /// reduced `pinning_absent_bps` share. Opting in is what earns the
+    /// premium, and it is a real cost to the operator, so it is never
+    /// assumed.
+    pub ipfs_api_url: Option<String>,
 }
 
 impl NetworkConfig {
@@ -159,6 +168,7 @@ impl NetworkConfig {
             listen_addr: "/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap(),
             bootstrap_peers: Vec::new(),
             chain_mode: NodeChainMode::GossipOnly,
+            ipfs_api_url: None,
             snapshot: SnapshotConfig::default(),
         }
     }
@@ -310,6 +320,160 @@ async fn poll_chain<S: KvStore + 'static>(state: &NodeState<S>, client: &dyn Cha
                 // `awaiting_confirmation` for the next tick.
             }
         }
+    }
+}
+
+/// How often an opted-in node pins content it has learned about, and
+/// how often it challenges a peer.
+///
+/// `[PROPOSED — NEEDS SIGN-OFF]` ten minutes. Both are background chores
+/// against a reward epoch measured in days, so the cadence only bounds
+/// how promptly a new attachment becomes pinned and how many samples a
+/// peer's score rests on. Faster would add load to every operator's IPFS
+/// daemon and to every peer's RPC for no better measurement.
+const PINNING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// One tick of pinning: hold the content this node has learned about.
+///
+/// Only the challengeable subset is kept locally — see
+/// `openfiat_content::held` for why that bound falls out of what a
+/// challenge can decide rather than being a separate policy. Everything
+/// else is still pinned through the daemon, where it stays available to
+/// IPFS without this node holding a copy.
+///
+/// A node with no `--ipfs-api-url` never reaches here at all.
+async fn poll_pinning<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    client: &dyn openfiat_content::PinningClient,
+) {
+    let attachments = state.attachments.all();
+    let wanted = openfiat_content::challengeable(&attachments);
+    let mut kept = 0usize;
+
+    for cid in wanted {
+        if state.held_content.holds(&cid) {
+            continue;
+        }
+        // Pin first: the point of opting in is that the content survives
+        // the original uploader unpinning it, and that depends on the
+        // daemon, not on the copy kept here.
+        if let Err(err) = client.pin(&cid).await {
+            tracing::warn!(%err, cid = %cid, "could not pin content");
+            continue;
+        }
+        match client.fetch(&cid).await {
+            Ok(bytes) => {
+                if state.held_content.keep(&cid, &bytes) {
+                    kept += 1;
+                }
+            }
+            // Pinned but not yet retrievable is ordinary right after a
+            // pin, so this is not a warning: the next tick tries again.
+            Err(err) => tracing::debug!(%err, cid = %cid, "pinned but not yet readable"),
+        }
+    }
+
+    if kept > 0 {
+        tracing::info!(
+            kept,
+            held = state.held_content.count(),
+            "pinned new content"
+        );
+    }
+}
+
+/// One tick of challenging: ask a peer to prove it holds something.
+///
+/// The result feeds `LivenessLedger::observe_content_served`, which is
+/// what the reward premium reads. Only a verified answer counts — see
+/// `openfiat_content::challenge` for why "failed" and "could not be
+/// decided" have to stay distinct, and why a node is never penalised for
+/// the second.
+async fn poll_content_challenges<S: KvStore + 'static>(state: &NodeState<S>) {
+    let attachments = state.attachments.all();
+    let pool = openfiat_content::challengeable(&attachments);
+    if pool.is_empty() {
+        return;
+    }
+
+    let now = openfiat_types::Timestamp::now();
+    // Seeded by the clock so a peer cannot hold one lucky file and pass
+    // for ever, and so two nodes challenging the same peer do not both
+    // ask about the same content.
+    let seed = now.as_millis();
+    let Some(cid) = openfiat_content::challenge::select(&pool, seed) else {
+        return;
+    };
+
+    // Peers are reachable because they registered an endpoint (OFS-1500).
+    // No new discovery mechanism is needed for this, and a node that
+    // registered nothing is simply not challenged — it also cannot be
+    // paid, since `compute` requires `registered`.
+    let services = state.services.all();
+    if services.is_empty() {
+        return;
+    }
+    let service = &services[(seed as usize) % services.len()];
+    let Some(endpoint) = service.endpoints.first() else {
+        return;
+    };
+
+    let outcome = challenge_peer(endpoint, cid).await;
+    match outcome {
+        openfiat_content::ChallengeOutcome::Served => {
+            state
+                .reward_observations
+                .borrow_mut()
+                .observe_content_served(&state.reward_params, &service.provider, now);
+            tracing::debug!(cid = %cid, endpoint, "peer proved it holds content");
+        }
+        openfiat_content::ChallengeOutcome::Failed => {
+            tracing::debug!(cid = %cid, endpoint, "peer did not serve content");
+        }
+        // Never recorded either way. Scoring this as a failure would
+        // penalise a peer for a limit in our own verification.
+        openfiat_content::ChallengeOutcome::Undecidable => {}
+    }
+}
+
+/// Issues one challenge over a peer's public JSON-RPC endpoint.
+pub(crate) async fn challenge_peer(
+    endpoint: &str,
+    cid: &openfiat_crypto::Cid,
+) -> openfiat_content::ChallengeOutcome {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getHeldContent",
+        "params": { "cid": cid.as_str() },
+    });
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/rpc", endpoint.trim_end_matches('/')))
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await;
+
+    let Ok(response) = response else {
+        return openfiat_content::judge(cid, None);
+    };
+    let Ok(parsed) = response.json::<Value>().await else {
+        return openfiat_content::judge(cid, None);
+    };
+    let encoded = parsed
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.as_str());
+    let Some(encoded) = encoded else {
+        return openfiat_content::judge(cid, None);
+    };
+    // A peer choosing what to return is exactly the case this is built
+    // for, so a malformed answer is a failure rather than an error worth
+    // reporting separately.
+    match BASE64.decode(encoded) {
+        Ok(bytes) => openfiat_content::judge(cid, Some(&bytes)),
+        Err(_) => openfiat_content::judge(cid, None),
     }
 }
 
@@ -667,12 +831,17 @@ where
             // gymnastics `tokio::select!` would otherwise need, and the
             // interval is an hour by default.
             let snapshot_config = network.snapshot;
+            let pinning_client = network
+                .ipfs_api_url
+                .as_deref()
+                .map(openfiat_content::KuboClient::new);
             let mut snapshot_produce = tokio::time::interval(
                 snapshot_config
                     .interval
                     .unwrap_or(openfiat_snapshot::config::DEFAULT_INTERVAL),
             );
             let mut snapshot_bootstrap = tokio::time::interval(SNAPSHOT_BOOTSTRAP_INTERVAL);
+            let mut pinning = tokio::time::interval(PINNING_INTERVAL);
             let snapshot_client = reqwest::Client::new();
 
             loop {
@@ -715,6 +884,16 @@ where
                     }
                     _ = snapshot_bootstrap.tick() => {
                         poll_snapshot_bootstrap(&state, &snapshot_client).await;
+                    }
+                    _ = pinning.tick() => {
+                        // Challenging runs whether or not this node pins:
+                        // measuring peers is a service to the network, and
+                        // a node that stores nothing can still check who
+                        // does.
+                        if let Some(client) = pinning_client.as_ref() {
+                            poll_pinning(&state, client).await;
+                        }
+                        poll_content_challenges(&state).await;
                     }
                 }
             }
@@ -1413,5 +1592,100 @@ mod tests {
         // worse than dropping it.
         poll_notifications(&state, &provider).await;
         assert_eq!(provider.sent.lock().unwrap().len(), 1);
+    }
+
+    /// The whole retrievability loop, over a real HTTP server speaking
+    /// the real wire format.
+    ///
+    /// This is what makes the reward premium more than a constant: a
+    /// node's `pinning_bps` is decided by whether an exchange like this
+    /// one succeeded, so if this path is wrong every operator is scored
+    /// identically and the multiplier means nothing.
+    mod content_challenges {
+        use super::*;
+        use axum::Json;
+        use axum::routing::post;
+        use openfiat_content::ChallengeOutcome;
+        use serde_json::json;
+
+        /// The bytes `PROBE_CID` names — uploaded to Filebase, fetched
+        /// back from ipfs.io, and reproduced by an independent CID
+        /// implementation.
+        const PROBE_CID: &str = "bafkreibdmq27skp3wnycoyoqcei47etyaulerpsegivlkfvyhjkw7ufjva";
+        const PROBE_CONTENT: &[u8] = b"openfiat ipfs probe 1785426891\n";
+
+        /// Stands up a node-shaped `/rpc` endpoint returning `body` as
+        /// `getHeldContent`'s result. Returns its base URL.
+        async fn peer_serving(body: serde_json::Value) -> String {
+            let app = axum::Router::new().route(
+                "/rpc",
+                post(move || {
+                    let body = body.clone();
+                    async move { Json(json!({ "jsonrpc": "2.0", "id": 1, "result": body })) }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            format!("http://{addr}")
+        }
+
+        fn probe_cid() -> openfiat_crypto::Cid {
+            openfiat_crypto::Cid::parse(PROBE_CID).unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_peer_returning_the_named_content_passes() {
+            let endpoint = peer_serving(json!({ "content": BASE64.encode(PROBE_CONTENT) })).await;
+            assert_eq!(
+                challenge_peer(&endpoint, &probe_cid()).await,
+                ChallengeOutcome::Served
+            );
+        }
+
+        #[tokio::test]
+        async fn a_peer_returning_different_bytes_fails() {
+            // The case the whole mechanism exists for: a node that wants
+            // the premium without doing the storage. It cannot produce
+            // the preimage of a hash, so anything it invents fails here.
+            let endpoint =
+                peer_serving(json!({ "content": BASE64.encode(b"invented content") })).await;
+            assert_eq!(
+                challenge_peer(&endpoint, &probe_cid()).await,
+                ChallengeOutcome::Failed
+            );
+        }
+
+        #[tokio::test]
+        async fn a_peer_holding_nothing_fails_rather_than_erroring() {
+            // `content: null` is the honest answer from a node that did
+            // not opt in, and it must score as "did not serve" — not as
+            // a protocol error that stops the challenger's loop.
+            let endpoint = peer_serving(json!({ "content": null })).await;
+            assert_eq!(
+                challenge_peer(&endpoint, &probe_cid()).await,
+                ChallengeOutcome::Failed
+            );
+        }
+
+        #[tokio::test]
+        async fn malformed_base64_is_a_failure_not_a_panic() {
+            let endpoint = peer_serving(json!({ "content": "!!!! not base64 !!!!" })).await;
+            assert_eq!(
+                challenge_peer(&endpoint, &probe_cid()).await,
+                ChallengeOutcome::Failed
+            );
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_peer_fails_without_hanging_the_loop() {
+            // Port 1 is reserved and nothing listens there.
+            assert_eq!(
+                challenge_peer("http://127.0.0.1:1", &probe_cid()).await,
+                ChallengeOutcome::Failed
+            );
+        }
     }
 }

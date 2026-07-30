@@ -203,6 +203,8 @@ INFO openfiat_node: peers can reach this node at this address …
 | `--snapshot-dir <DIR>` | `<ledger>/snapshots` | Where produced snapshots are written and served from |
 | `--snapshot-public-url <URL>` | none | Repeatable. **Omitting it disables snapshot production** |
 | `--snapshot-interval-secs <SECS>` | 3600 | Ignored without `--snapshot-public-url` |
+| `--ipfs-api-url <URL>` | none | IPFS daemon to pin attachment content through; earns the retrievability share of rewards |
+| `--log <FILTER>` | `info` | Per-module directives accepted, e.g. `info,openfiat_rpc::actor=debug` |
 
 Two behaviours worth knowing before you deploy:
 
@@ -213,6 +215,14 @@ Two behaviours worth knowing before you deploy:
 - **Peer discovery does not run yet** ([#146]). A node finds only the peers
   given with `--entrypoint`, and announces no addresses of its own, so
   nothing will discover it either.
+- **Pinning is opt-in and affects what you earn.** With `--ipfs-api-url`
+  the node pins the content protocol records reference, keeps a local copy
+  of the part small enough to be verified, and can answer a peer's
+  retrievability challenge — which is what earns the full reward share.
+  Without it the node stores nothing and earns a reduced share (0.7x,
+  `[PROPOSED — NEEDS SIGN-OFF]`), because it is doing less for the
+  network. Either way it still challenges its peers: measuring who serves
+  content costs nothing and is a service in itself.
 
 ### Running under systemd
 
