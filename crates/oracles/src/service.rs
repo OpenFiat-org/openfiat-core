@@ -48,6 +48,13 @@ impl<S: KvStore + 'static> OracleService<S> {
             .median_exchange_rate(base, quote, Timestamp::now())
     }
 
+    /// [`OracleIndex::exchange_rate`] against this node's clock — what
+    /// anything pricing a trade should read, rather than the `Option`
+    /// above, so a lapsed feed is distinguishable from an unknown pair.
+    pub fn exchange_rate(&self, base: &str, quote: &str) -> crate::store::ExchangeRateLookup {
+        self.registry.exchange_rate(base, quote, Timestamp::now())
+    }
+
     /// §8: publish a new or updated record under this node's own
     /// identity, `version` strictly greater than whatever's already on
     /// file (see `OracleIndex::apply_publish`).

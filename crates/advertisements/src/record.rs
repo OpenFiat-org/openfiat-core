@@ -25,9 +25,15 @@ pub enum Direction {
     Buy,
 }
 
-/// §11. Floating pricing's actual price resolution (oracle mid-price +
-/// premium) is Oracle Provider integration (OFS-7000, a later phase) —
-/// this only carries the configuration, not a live price.
+/// §11. How an advertisement's fiat-per-asset price is arrived at.
+///
+/// Both variants carry only configuration — no resolved number is stored
+/// on the advertisement itself, including for `Floating`. Writing a
+/// periodically-refreshed price back onto the record would make it both
+/// stale (between refreshes) and divergent (each node refreshing on its
+/// own clock, from its own oracle view, into a record that replicates by
+/// gossip). See [`crate::pricing`] for where the number is produced
+/// instead, and when.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PricingModel {
     Fixed {
@@ -35,7 +41,23 @@ pub enum PricingModel {
     },
     Floating {
         oracle_provider: String,
+        /// Basis points over the oracle mid-price. Signed: a merchant may
+        /// legitimately quote *below* mid (a Buy ad competing for flow),
+        /// so this is not a `u32`. `-10_000` is exactly zero; anything
+        /// below that is a negative price and resolves as unpriceable
+        /// rather than wrapping.
         premium_bps: i32,
+        /// The decimal precision the resolved price is quoted in — the
+        /// fiat currency's, e.g. 2 for KES/NGN/USD, 0 for JPY.
+        ///
+        /// Declared by the merchant because nothing else on the record
+        /// carries it: `min_trade`, `max_trade` and `available_liquidity`
+        /// are all denominated in the *asset*, and a `Floating` ad has no
+        /// `Fixed` price to borrow the precision from. Inferring it from
+        /// `fiat_currency` would mean a hardcoded currency table in the
+        /// protocol crate that silently mis-rounds every currency missing
+        /// from it.
+        price_decimals: u8,
     },
 }
 
