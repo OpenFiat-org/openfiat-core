@@ -23,6 +23,7 @@ members = [
     "crates/advertisements",
     "crates/reservations",
     "crates/settlement",
+    "crates/content",
     "crates/disputes",
     "crates/governance",
     "crates/notifications",

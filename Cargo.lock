@@ -3385,6 +3385,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "openfiat-content"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "libp2p",
+ "openfiat-crypto",
+ "openfiat-gossip",
+ "openfiat-network",
+ "openfiat-serialization",
+ "openfiat-settlement",
+ "openfiat-storage",
+ "openfiat-types",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "openfiat-crypto"
 version = "0.1.0"
 dependencies = [
@@ -3632,6 +3649,7 @@ dependencies = [
  "http-body-util",
  "openfiat-advertisements",
  "openfiat-chain",
+ "openfiat-content",
  "openfiat-crypto",
  "openfiat-disputes",
  "openfiat-gossip",

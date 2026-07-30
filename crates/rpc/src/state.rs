@@ -17,6 +17,7 @@
 use openfiat_advertisements::AdvertisementRegistry;
 use openfiat_chain::events::BlockhashAnnounced;
 use openfiat_chain::{ChainBridge, ChainState, NodeChainMode};
+use openfiat_content::AttachmentRegistry;
 use openfiat_crypto::Keypair;
 use openfiat_crypto::challenge::ChallengeLedger;
 use openfiat_disputes::DisputeRegistry;
@@ -86,6 +87,7 @@ pub const SNAPSHOT_COLUMN_FAMILIES: &[&str] = &[
     "settlements",
     "disputes",
     "identity_claims",
+    "attachments",
     "governance_proposals",
     "registry_services",
     "notification_subscriptions",
@@ -120,6 +122,11 @@ pub struct NodeState<S> {
     pub counterparty_challenges: Rc<RefCell<ChallengeLedger>>,
     pub disputes: Rc<DisputeRegistry<Rc<S>>>,
     pub identity: Rc<IdentityRegistry<Rc<S>>>,
+    /// Trade evidence, addressed by IPFS CID. Never the bytes — see
+    /// `openfiat_content` for why a node stores the reference and not the
+    /// file, and why reading a settlement's attachments requires being
+    /// told who its parties are.
+    pub attachments: Rc<AttachmentRegistry<Rc<S>>>,
     pub reputation: ReputationView<Rc<S>>,
     pub governance: Rc<GovernanceRegistry<Rc<S>>>,
     pub services: Rc<ServiceRegistry<Rc<S>>>,
@@ -213,6 +220,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             Rc::clone(&disputes),
         );
         let identity = Rc::new(IdentityRegistry::new(Rc::clone(&store)));
+        let attachments = Rc::new(AttachmentRegistry::new(Rc::clone(&store)));
         let governance = Rc::new(GovernanceRegistry::new(Rc::clone(&store)));
         let notifications = Rc::new(NotificationRegistry::new(
             Rc::clone(&store),
@@ -292,6 +300,7 @@ impl<S: KvStore + 'static> NodeState<S> {
         attach!(snapshots);
         attach!(sessions);
         attach!(identity);
+        attach!(attachments);
 
         // Governance's `VoteCast` is the one event type this node never
         // applies straight off the wire (self-reported or gossiped
@@ -353,6 +362,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             counterparty_challenges: Rc::new(RefCell::new(ChallengeLedger::new())),
             disputes,
             identity,
+            attachments,
             reputation,
             governance,
             services,

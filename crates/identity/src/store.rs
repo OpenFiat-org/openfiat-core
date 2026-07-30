@@ -63,6 +63,12 @@ impl<S: KvStore> IdentityRegistry<S> {
         if self.get(&id).is_some() {
             return Err(IdentityError::DuplicateClaimId);
         }
+        // Applies to a gossiped claim exactly as to a locally submitted
+        // one: a peer must not be able to introduce a claim this node
+        // would have refused from its own user.
+        if !signed.publish.claim_type.accepts(&signed.publish.value) {
+            return Err(IdentityError::MalformedClaim);
+        }
         let publish = signed.publish;
         self.put(&Claim {
             id: id.clone(),
@@ -292,5 +298,94 @@ mod tests {
 
         let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
         assert_eq!(registry.find_by_wallet(&wallet).len(), 2);
+    }
+
+    /// The real CID this workspace uploaded to Filebase; see
+    /// `openfiat_crypto::cid` for how it was obtained.
+    const AVATAR_CID: &str = "bafkreibdmq27skp3wnycoyoqcei47etyaulerpsegivlkfvyhjkw7ufjva";
+
+    fn avatar_claim(keypair: &Keypair, id: &str, value: &str) -> crate::events::ClaimPublish {
+        crate::events::ClaimPublish {
+            claim_type: ClaimType::Avatar,
+            value: value.to_string(),
+            ..publish_claim(keypair, id, false)
+        }
+    }
+
+    #[test]
+    fn an_avatar_naming_a_real_cid_is_stored() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        let id = registry
+            .apply_publish(SignedClaimPublish::sign(
+                avatar_claim(&keypair, "avatar-1", AVATAR_CID),
+                &keypair,
+            ))
+            .unwrap();
+        assert_eq!(registry.get(&id).unwrap().value, AVATAR_CID);
+    }
+
+    #[test]
+    fn an_avatar_that_is_a_url_or_a_path_is_refused() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        for hostile in [
+            "https://tracker.example/pixel.png",
+            "../../../etc/passwd",
+            "javascript:alert(1)",
+            "",
+        ] {
+            // Signed by the genuine owner of the wallet — the signature
+            // was never what stopped this.
+            let signed =
+                SignedClaimPublish::sign(avatar_claim(&keypair, "avatar-x", hostile), &keypair);
+            assert_eq!(
+                registry.apply_publish(signed),
+                Err(IdentityError::MalformedClaim),
+                "{hostile:?} must not become an avatar"
+            );
+            assert!(registry.get(&ClaimId::new("avatar-x")).is_none());
+        }
+    }
+
+    #[test]
+    fn a_peer_cannot_gossip_in_an_avatar_this_node_would_have_refused() {
+        // The check has to be in the registry, not in the RPC handler:
+        // this path never touches one.
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        let signed = SignedClaimPublish::sign(
+            avatar_claim(&keypair, "avatar-1", "https://tracker.example/pixel.png"),
+            &keypair,
+        );
+        let envelope = openfiat_types::EventEnvelope {
+            id: openfiat_types::EventId::from_bytes([3; 32]),
+            event_type: openfiat_types::EventType::new(protocol::EVENT_CREATED).unwrap(),
+            ofs_spec: protocol::OFS_SPEC,
+            version: 1,
+            origin: peer_id_from_public_key(&keypair.public_key()).unwrap(),
+            timestamp: Timestamp::now(),
+            ttl: 8,
+            priority: openfiat_types::Priority::Reputation,
+            signature: openfiat_types::Signature::from_bytes([0u8; 64]),
+            payload: openfiat_serialization::wire::to_bytes(&signed).unwrap(),
+        };
+        registry.apply_event(&envelope);
+        assert!(registry.get(&ClaimId::new("avatar-1")).is_none());
+    }
+
+    #[test]
+    fn a_contact_claim_is_still_unconstrained() {
+        // OFS-5000 does not constrain these, and inventing a format here
+        // would reject claims the specification allows.
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        let mut claim = publish_claim(&keypair, "claim-1", false);
+        claim.value = "anything at all".to_string();
+        assert!(
+            registry
+                .apply_publish(SignedClaimPublish::sign(claim, &keypair))
+                .is_ok()
+        );
     }
 }

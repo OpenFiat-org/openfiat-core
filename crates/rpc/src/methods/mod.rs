@@ -3,6 +3,7 @@
 //! [`MethodTable`] — see `dispatch` for the `getX`/`sendX` shape itself.
 
 pub mod advertisements;
+pub mod attachments;
 pub mod chain;
 pub mod counterparties;
 pub mod disputes;
@@ -34,6 +35,7 @@ pub fn build_table<S: KvStore + 'static>() -> MethodTable<S> {
     counterparties::register(&mut table);
     disputes::register(&mut table);
     identity::register(&mut table);
+    attachments::register(&mut table);
     reputation::register(&mut table);
     rewards::register(&mut table);
     governance::register(&mut table);

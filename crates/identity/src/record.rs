@@ -39,7 +39,44 @@ pub enum ClaimType {
     Twitter,
     MerchantName,
     BusinessName,
+    /// A profile picture, whose `value` is an IPFS CID rather than an
+    /// image or a URL.
+    ///
+    /// A CID because the alternatives are worse in specific ways. Image
+    /// bytes in the claim would put an avatar into every node's gossip
+    /// log and replay it forever. A URL would let the owner change what
+    /// the picture is after publication, silently, for everyone — an
+    /// immutable claim pointing at mutable content is not immutable, and
+    /// it would also let an avatar be a tracking beacon that reports
+    /// every viewer to a server the owner controls. A CID names one
+    /// specific image; changing it means publishing a new claim with
+    /// `supersedes` set, which is exactly the visible history §11 asks
+    /// for.
+    Avatar,
     Custom(String),
+}
+
+impl ClaimType {
+    /// Whether `value` is acceptable for this claim type.
+    ///
+    /// Only [`ClaimType::Avatar`] constrains its value today, because it
+    /// is the only type whose value a viewer resolves into a network
+    /// request. The contact types are self-asserted strings that OFS-5000
+    /// deliberately does not constrain, and inventing a format for them
+    /// here would reject claims the specification allows.
+    pub fn accepts(&self, value: &str) -> bool {
+        match self {
+            // Validated at publication rather than at render time so a
+            // string that is not a CID never reaches storage, never
+            // reaches gossip, and never reaches a viewer that might
+            // concatenate it into a gateway URL. Checking only in the
+            // interface would leave every other consumer — the explorer,
+            // an SDK user, a future client — to rediscover the same
+            // requirement or omit it.
+            Self::Avatar => openfiat_crypto::Cid::parse(value).is_ok(),
+            _ => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
