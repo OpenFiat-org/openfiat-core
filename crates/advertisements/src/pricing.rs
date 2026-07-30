@@ -136,6 +136,76 @@ impl PricingModel {
             None => unpriceable(UnpriceableReason::PriceOutOfRange),
         }
     }
+
+    /// Whether `agreed_price` is what this advertisement's terms produce from
+    /// `mid`.
+    ///
+    /// # Why a reservation has to pin a number at all
+    ///
+    /// A floating advertisement publishes a *formula*, and a formula is not a
+    /// price. Two nodes reading the same advertisement at the same instant can
+    /// legitimately return different numbers, because each resolves against
+    /// the oracle records it has — that divergence is inherent and is why
+    /// [`PriceQuote::Floating`] carries `mid_expires_at` rather than pretending
+    /// to be durable. So the number a taker actually agreed to has to be
+    /// recorded by the thing that *is* the agreement, which is the
+    /// reservation.
+    ///
+    /// # Why this checks arithmetic and not the oracle
+    ///
+    /// It would be wrong to check the taker's mid against this node's own.
+    /// Two honest nodes differ, so a node doing that would reject perfectly
+    /// good reservations depending on which oracle records had reached it
+    /// first — the network would behave differently for the same user
+    /// depending on which access node they happened to pick.
+    ///
+    /// What every node *can* agree on is that the price follows from the mid
+    /// the taker recorded and the premium the merchant signed. That catches a
+    /// miscomputing client, and it catches a party later claiming the formula
+    /// produced something else, without requiring anyone to agree about the
+    /// oracle. Whether the recorded mid was itself honest is a dispute
+    /// question — an arbitrator can compare it against the oracle records,
+    /// which are replicated and timestamped.
+    pub fn agrees_with(&self, agreed_price: Amount, agreed_mid: Option<f64>) -> bool {
+        match self {
+            // A merchant signed this number. There is nothing to derive and
+            // nothing to tolerate: it either matches or the taker agreed to
+            // something the merchant did not offer.
+            Self::Fixed { price } => {
+                agreed_mid.is_none()
+                    && agreed_price.base_units() == price.base_units()
+                    && agreed_price.decimals() == price.decimals()
+            }
+            Self::Floating {
+                premium_bps,
+                price_decimals,
+                ..
+            } => {
+                let Some(mid) = agreed_mid else {
+                    return false;
+                };
+                // Recomputed through the same path `quote` uses, so the check
+                // and the display can never disagree about rounding — which
+                // matters, because `to_amount` rounds half-to-even and a
+                // separately-written check would drift on exactly the boundary
+                // cases the rounding rule exists to settle.
+                match Self::quote_floating(
+                    *premium_bps,
+                    *price_decimals,
+                    MidPrice::Available {
+                        rate: mid,
+                        expires_at: Timestamp::from_millis(0),
+                    },
+                ) {
+                    PriceQuote::Floating { price, .. } => {
+                        agreed_price.base_units() == price.base_units()
+                            && agreed_price.decimals() == price.decimals()
+                    }
+                    _ => false,
+                }
+            }
+        }
+    }
 }
 
 /// A float price onto the fixed-point [`Amount`] everything else uses.
@@ -177,6 +247,67 @@ fn to_amount(value: f64, decimals: u8) -> Option<Amount> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A floating advertisement's agreed price is checkable without any
+    /// node agreeing about the oracle.
+    #[test]
+    fn a_floating_price_is_accepted_when_it_follows_from_the_recorded_mid() {
+        let pricing = PricingModel::Floating {
+            oracle_provider: "any".to_string(),
+            premium_bps: 200,
+            price_decimals: 2,
+        };
+        // 129.4649 * 1.02 = 132.054… → 132.05 at two decimals.
+        assert!(pricing.agrees_with(Amount::new(13_205, 2), Some(129.4649)));
+    }
+
+    #[test]
+    fn a_floating_price_that_does_not_follow_from_its_mid_is_refused() {
+        let pricing = PricingModel::Floating {
+            oracle_provider: "any".to_string(),
+            premium_bps: 200,
+            price_decimals: 2,
+        };
+        // The right mid, the wrong arithmetic — a merchant quoting a
+        // premium they did not publish, or a client that miscomputed.
+        assert!(!pricing.agrees_with(Amount::new(20_000, 2), Some(129.4649)));
+    }
+
+    #[test]
+    fn a_floating_price_without_a_mid_is_refused() {
+        // Otherwise a taker could sign any number at all and claim it was
+        // floating, which is the free-text asset field's failure wearing
+        // a different name.
+        let pricing = PricingModel::Floating {
+            oracle_provider: "any".to_string(),
+            premium_bps: 0,
+            price_decimals: 2,
+        };
+        assert!(!pricing.agrees_with(Amount::new(13_205, 2), None));
+    }
+
+    #[test]
+    fn a_fixed_price_carrying_a_mid_is_refused() {
+        // A fixed advertisement derives from nothing, so a mid alongside
+        // one is a claim about a computation that never happened. Refusing
+        // it keeps `agreed_mid` meaning exactly one thing.
+        let pricing = PricingModel::Fixed {
+            price: Amount::new(12_900, 2),
+        };
+        assert!(pricing.agrees_with(Amount::new(12_900, 2), None));
+        assert!(!pricing.agrees_with(Amount::new(12_900, 2), Some(129.0)));
+    }
+
+    #[test]
+    fn a_price_with_the_right_units_but_the_wrong_scale_is_refused() {
+        // 129.00 and 12900.0 have the same base units at different
+        // decimals. Comparing only `base_units` would call them equal, and
+        // a taker would be bound to a price a hundred times off.
+        let pricing = PricingModel::Fixed {
+            price: Amount::new(12_900, 2),
+        };
+        assert!(!pricing.agrees_with(Amount::new(12_900, 1), None));
+    }
     use super::*;
 
     fn floating(premium_bps: i32) -> PricingModel {

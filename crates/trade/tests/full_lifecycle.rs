@@ -60,6 +60,8 @@ fn a_trade_progresses_through_the_expected_aggregate_statuses() {
         requester: peer_id_from_public_key(&buyer.public_key()).unwrap(),
         requester_public_key: buyer.public_key(),
         amount: Amount::new(2_000_000, 6),
+        agreed_price: Amount::new(129_000_000, 6),
+        agreed_mid: None,
         timestamp: Timestamp::now(),
     };
     let reservation_id = reservations

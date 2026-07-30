@@ -58,11 +58,21 @@ impl<S: KvStore + 'static> ReservationService<S> {
         self.registry.expire_stale(protocol::VALIDATION_WINDOW)
     }
 
+    /// `agreed_price` is the fiat-per-asset number the caller accepted,
+    /// and `agreed_mid` the oracle mid it came from for a floating
+    /// advertisement. Both are taken as parameters rather than resolved
+    /// here on purpose: this node's own quote is what it would *show*, and
+    /// the thing that binds is what the requester actually saw and agreed
+    /// to. Resolving it here would sign the caller up to a number they may
+    /// never have been shown, which is the failure the field exists to
+    /// prevent.
     pub fn request(
         &mut self,
         id: impl Into<String>,
         advertisement_id: AdvertisementId,
         amount: Amount,
+        agreed_price: Amount,
+        agreed_mid: Option<f64>,
     ) -> Result<ReservationId, ReservationError> {
         let request = ReservationRequest {
             id: ReservationId::new(id),
@@ -70,6 +80,8 @@ impl<S: KvStore + 'static> ReservationService<S> {
             requester: self.gossip.node.local_peer_id(),
             requester_public_key: self.gossip.public_key(),
             amount,
+            agreed_price,
+            agreed_mid,
             timestamp: Timestamp::now(),
         };
         let bytes = json::to_bytes(&request).expect("ReservationRequest always serializes");

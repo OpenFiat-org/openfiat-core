@@ -20,6 +20,30 @@ pub struct ReservationRequest {
     pub requester: PeerId,
     pub requester_public_key: PublicKey,
     pub amount: Amount,
+    /// Fiat per unit of asset, as the requester understood it when they
+    /// signed.
+    ///
+    /// A floating advertisement publishes a *formula*, not a price, and
+    /// two nodes resolving it at the same instant can legitimately return
+    /// different numbers. Before this field existed, a taker agreed to a
+    /// number the protocol recorded nowhere: a merchant could later assert
+    /// a different rate and there was nothing to hold them to, because
+    /// nothing had ever been written down.
+    ///
+    /// The reservation is where the agreement happens, so this is where
+    /// the number belongs — signed by the requester, so it is their claim
+    /// about what they accepted rather than anyone's later reconstruction.
+    pub agreed_price: Amount,
+    /// The oracle mid this price was derived from, for a floating
+    /// advertisement. `None` for a fixed one, where there is nothing to
+    /// derive and the merchant's own signed price is the whole story.
+    ///
+    /// Recorded so the arithmetic is checkable by every node without any
+    /// of them having to agree about the oracle — see
+    /// `PricingModel::agrees_with`. Whether the mid itself was honest is a
+    /// dispute question, and an arbitrator can answer it against the
+    /// oracle records, which are replicated and timestamped.
+    pub agreed_mid: Option<f64>,
     pub timestamp: Timestamp,
 }
 

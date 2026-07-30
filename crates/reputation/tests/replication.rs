@@ -81,6 +81,8 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
                 requester: buyer_id.clone(),
                 requester_public_key: buyer.public_key(),
                 amount,
+                agreed_price: Amount::new(129_000_000, 6),
+                agreed_mid: None,
                 timestamp: Timestamp::now(),
             };
             reservations
@@ -144,6 +146,8 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
                 requester: buyer3_id.clone(),
                 requester_public_key: buyer3.public_key(),
                 amount: Amount::new(1_000_000, 6),
+                agreed_price: Amount::new(129_000_000, 6),
+                agreed_mid: None,
                 timestamp: Timestamp::now(),
             },
             &buyer3,
@@ -238,6 +242,8 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
                 requester: buyer4_id.clone(),
                 requester_public_key: buyer4.public_key(),
                 amount: Amount::new(1_000_000, 6),
+                agreed_price: Amount::new(129_000_000, 6),
+                agreed_mid: None,
                 timestamp: Timestamp::from_millis(1_000),
             },
             &buyer4,

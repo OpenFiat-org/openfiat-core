@@ -128,7 +128,16 @@ async fn a_reservation_request_replicates_and_locks_liquidity_on_every_node() {
     .await;
 
     let reservation_id = all[0]
-        .request("res-1", ad_id.clone(), Amount::new(2_000_000, 6))
+        .request(
+            "res-1",
+            ad_id.clone(),
+            Amount::new(2_000_000, 6),
+            // The fixed price this advertisement was published at. A
+            // reservation carrying anything else is refused — see
+            // `PricingModel::agrees_with`.
+            Amount::new(129_000_000, 6),
+            None,
+        )
         .unwrap();
 
     drive_until(&mut all, |services| {

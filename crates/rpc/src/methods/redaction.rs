@@ -248,6 +248,8 @@ mod tests {
             requester,
             requester_public_key: requester_key,
             amount: Amount::new(50, 2),
+            agreed_price: Amount::new(12_950, 2),
+            agreed_mid: None,
             state: ReservationState::EscrowLocked,
             requested_at: Timestamp::from_millis(1),
             updated_at: Timestamp::from_millis(2),

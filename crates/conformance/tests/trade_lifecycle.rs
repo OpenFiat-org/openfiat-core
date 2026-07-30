@@ -77,6 +77,8 @@ async fn a_trade_completes_end_to_end_and_converges_across_the_cluster() {
         requester: buyer_peer.clone(),
         requester_public_key: buyer.public_key(),
         amount: Amount::new(50_00, 2),
+        agreed_price: Amount::new(56_50, 2),
+        agreed_mid: None,
         timestamp: Timestamp::now(),
     };
     let signed_request = SignedReservationRequest::sign(request, &buyer);

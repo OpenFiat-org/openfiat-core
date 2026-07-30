@@ -38,6 +38,14 @@ pub struct Reservation {
     pub requester: PeerId,
     pub requester_public_key: PublicKey,
     pub amount: Amount,
+    /// The fiat-per-asset price this reservation was made at, and the
+    /// oracle mid behind it for a floating advertisement.
+    ///
+    /// This is the number the trade is actually for. The advertisement's
+    /// own quote moves with the oracle and is only ever a display; once a
+    /// reservation exists, the price is settled and stops moving.
+    pub agreed_price: Amount,
+    pub agreed_mid: Option<f64>,
     pub state: ReservationState,
     pub requested_at: Timestamp,
     pub updated_at: Timestamp,

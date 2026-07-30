@@ -86,6 +86,23 @@ impl<S: KvStore> ReservationRegistry<S> {
             return Err(ReservationError::InvalidAmount);
         }
 
+        // The price the taker signed must be one this advertisement's own
+        // terms produce. For a fixed ad that is an exact match against the
+        // merchant's signed number; for a floating one it is the formula
+        // applied to the mid the taker recorded.
+        //
+        // Deliberately not compared against this node's own oracle view:
+        // two honest nodes hold different records and would accept
+        // different reservations, so the same user would succeed or fail
+        // depending on which access node they picked. What every node can
+        // check is that the arithmetic follows.
+        if !ad
+            .pricing
+            .agrees_with(signed.request.agreed_price, signed.request.agreed_mid)
+        {
+            return Err(ReservationError::PriceDisagreement);
+        }
+
         self.advertisements
             .reserve_liquidity(&signed.request.advertisement_id, signed.request.amount)
             .map_err(|_| ReservationError::InsufficientLiquidity)?;
@@ -99,6 +116,8 @@ impl<S: KvStore> ReservationRegistry<S> {
             requester: signed.request.requester,
             requester_public_key: signed.request.requester_public_key,
             amount: signed.request.amount,
+            agreed_price: signed.request.agreed_price,
+            agreed_mid: signed.request.agreed_mid,
             state: ReservationState::EscrowLocked,
             requested_at: signed.request.timestamp,
             updated_at: signed.request.timestamp,
@@ -237,8 +256,65 @@ mod tests {
             requester: peer_id_from_public_key(&buyer.public_key()).unwrap(),
             requester_public_key: buyer.public_key(),
             amount: Amount::new(amount, 6),
+            // The advertisement above is fixed-price, so the only price a
+            // reservation against it can carry is the merchant's own.
+            agreed_price: Amount::new(129_000_000, 6),
+            agreed_mid: None,
             timestamp: Timestamp::now(),
         }
+    }
+
+    /// The number a taker signs is the number the trade is for.
+    #[test]
+    fn a_reservation_records_the_price_it_was_made_at() {
+        let (_ads, reservations, _merchant, ad_id) = setup();
+        let buyer = Keypair::generate();
+        let id = reservations
+            .apply_request(SignedReservationRequest::sign(
+                request(&buyer, "res-priced", &ad_id, 2_000_000),
+                &buyer,
+            ))
+            .expect("a request at the advertised price is accepted");
+
+        let stored = reservations.get(&id).unwrap();
+        assert_eq!(stored.agreed_price, Amount::new(129_000_000, 6));
+        assert_eq!(stored.agreed_mid, None, "a fixed ad derives from nothing");
+    }
+
+    /// Before this field existed, a taker agreed to a number the protocol
+    /// recorded nowhere, so a merchant could later assert a different rate
+    /// with nothing to contradict them.
+    #[test]
+    fn a_price_the_merchant_never_offered_is_refused() {
+        let (_ads, reservations, _merchant, ad_id) = setup();
+        let buyer = Keypair::generate();
+        let mut cheeky = request(&buyer, "res-cheap", &ad_id, 2_000_000);
+        cheeky.agreed_price = Amount::new(1_000_000, 6);
+
+        assert_eq!(
+            reservations.apply_request(SignedReservationRequest::sign(cheeky, &buyer)),
+            Err(ReservationError::PriceDisagreement),
+        );
+    }
+
+    /// Refused, not silently corrected. Substituting the node's own idea of
+    /// the price would bind a taker to something they never signed — the
+    /// same failure this field prevents, arrived at from the other side.
+    #[test]
+    fn a_disagreeing_price_leaves_the_liquidity_untouched() {
+        let (advertisements, reservations, _merchant, ad_id) = setup();
+        let before = advertisements.get(&ad_id).unwrap().available_liquidity;
+
+        let buyer = Keypair::generate();
+        let mut wrong = request(&buyer, "res-wrong", &ad_id, 2_000_000);
+        wrong.agreed_price = Amount::new(999, 6);
+        let _ = reservations.apply_request(SignedReservationRequest::sign(wrong, &buyer));
+
+        assert_eq!(
+            advertisements.get(&ad_id).unwrap().available_liquidity,
+            before,
+            "a refused reservation must not have reserved anything"
+        );
     }
 
     #[test]
