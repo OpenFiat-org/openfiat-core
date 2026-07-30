@@ -53,13 +53,13 @@ Every environment variable this binary reads, with its real default:
 
 | Variable | Default if unset | What it controls |
 |---|---|---|
-| `CLI_WALLET_PATH` | `~/.config/solana/id.json` | This node's identity — a Solana CLI-format `wallet.json` (`solana-keygen new` output). Reused as both the node's gossip/P2P keypair and its Solana signing key. Missing/unreadable → a fresh throwaway identity is generated for that run (fine for local testing, **not** for anything you want to persist). |
-| `CLI_DATA_DIR` | `./openfiat-data` | RocksDB data directory — every domain registry's persisted state. |
-| `CLI_HTTP_ADDR` | `0.0.0.0:7080` | Bind address for the JSON-RPC (`POST /rpc`), WebSocket (`GET /ws`), and REST (`crates/api`) surface. |
-| `CLI_LISTEN_ADDR` | `/ip4/0.0.0.0/udp/4001/quic-v1` | libp2p gossip listen multiaddr (QUIC). |
-| `CLI_BOOTSTRAP_PEERS` | *(empty)* | Comma-separated multiaddrs to dial on startup, e.g. `/ip4/203.0.113.10/udp/4001/quic-v1`. Empty means this node is its own bootstrap (fine for a lone node or the first node in a new cluster). |
-| `CLI_SOLANA_RPC_URLS` | *(empty)* | Comma-separated Solana RPC endpoint(s). **Unset is the default and stays `GossipOnly`** — set this to opt into `NodeChainMode::RpcConnected` (§4 below). |
-| `CLI_SOLANA_WS_URL` | *(empty)* | Optional Solana WebSocket endpoint, recorded but not yet used for subscription-based polling. |
+| `--identity <PATH>` | `<ledger>/wallet.json` | This node's identity — a Solana CLI-format `wallet.json` (`solana-keygen new` output). Reused as both the node's gossip/P2P keypair and its Solana signing key. Missing/unreadable → a fresh throwaway identity is generated for that run (fine for local testing, **not** for anything you want to persist). |
+| `--ledger <DIR>` | `./openfiat-data` | RocksDB data directory — every domain registry's persisted state. |
+| `--rpc-bind-address <HOST:PORT>` | `0.0.0.0:7080` | Bind address for the JSON-RPC (`POST /rpc`), WebSocket (`GET /ws`), and REST (`crates/api`) surface. |
+| `--gossip-bind-address <MULTIADDR>` | `/ip4/0.0.0.0/udp/4001/quic-v1` | libp2p gossip listen multiaddr (QUIC). |
+| `--entrypoint <MULTIADDR>` | *(none)* | Peer to dial on startup; repeat the flag for several, e.g. `/ip4/203.0.113.10/udp/4001/quic-v1`. Empty means this node is its own bootstrap (fine for a lone node or the first node in a new cluster). |
+| `--solana-rpc-url` | *(empty)* | Comma-separated Solana RPC endpoint(s). **Unset is the default and stays `GossipOnly`** — set this to opt into `NodeChainMode::RpcConnected` (§4 below). |
+| `--solana-ws-url` | *(empty)* | Optional Solana WebSocket endpoint, recorded but not yet used for subscription-based polling. |
 
 Every variable above is *operational* — it decides how this node reaches
 the network, never what the network's rules are. Program ids, PDA seeds
@@ -69,13 +69,13 @@ be made to count governance votes weighted by stake that does not exist.
 
 ## 4. Run with real Solana devnet connectivity
 
-Set `CLI_SOLANA_RPC_URLS` to put the node in `RpcConnected` mode — it will
+Set `--solana-rpc-url` to put the node in `RpcConnected` mode — it will
 poll for a fresh blockhash, relay signed transactions
 (`sendTransaction`), and answer `getChainStatus`/`getLatestBlockhash` for
 real:
 
 ```bash
-CLI_SOLANA_RPC_URLS=https://api.devnet.solana.com \
+--solana-rpc-url=https://api.devnet.solana.com \
 ./target/release/openfiat-node
 ```
 
@@ -132,7 +132,7 @@ docker compose -f docker-compose.dev.yml up
 
 Node 0 is reachable at `http://localhost:7080`, node 1 at
 `http://localhost:7081`, node 2 at `http://localhost:7082`. Override
-`CLI_SOLANA_RPC_URLS` via a local, untracked `.env` file in that
+`--solana-rpc-url` via a local, untracked `.env` file in that
 directory to use a faster private RPC endpoint than Solana's public
 devnet one.
 

@@ -334,7 +334,7 @@ impl<S: KvStore> DiscoveryService<S> {
 ///
 /// Only the **unspecified** wildcard is excluded (`0.0.0.0`, `::`). It is a
 /// bind directive meaning "every local interface", not a destination, and it
-/// is exactly what `CLI_LISTEN_ADDR` normally contains — so without this
+/// is exactly what `--gossip-bind-address` normally contains — so without this
 /// filter it is precisely what a node announces, and no peer can dial it.
 ///
 /// # Loopback is deliberately NOT filtered
@@ -362,7 +362,7 @@ mod announce_tests {
 
     #[test]
     fn refuses_the_bind_wildcard() {
-        // The default CLI_LISTEN_ADDR. Without this filter it is what every
+        // The default --gossip-bind-address. Without this filter it is what every
         // node announces, and no peer can dial it.
         assert!(!is_announceable("/ip4/0.0.0.0/udp/4001/quic-v1"));
         assert!(!is_announceable("/ip6/::/udp/4001/quic-v1"));

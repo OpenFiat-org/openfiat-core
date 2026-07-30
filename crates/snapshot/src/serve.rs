@@ -8,7 +8,7 @@
 //! operator a second bind address to configure, a second firewall rule to
 //! open, a second thing to reverse-proxy, and a second graceful-shutdown
 //! path. Merging into `openfiat-rpc`'s router instead means a snapshot is
-//! reachable from the same `CLI_HTTP_ADDR` an operator already exposes,
+//! reachable from the same `--rpc-bind-address` an operator already exposes,
 //! under the permissive CORS layer that is already there, so a browser
 //! client can fetch one as easily as it calls `getLatestSnapshot`.
 //!

@@ -74,8 +74,10 @@ implements. `programs/` is a deliberately separate Cargo/Anchor workspace
 git clone git@github.com:OpenFiat-org/openfiat-core.git
 cd openfiat-core
 cargo check --workspace
-cargo run --bin openfiat-node
+cargo run --bin openfiat-node -- --help
 ```
+
+See [**Running a node**](#running-a-node) below for a real invocation.
 
 ## Guides
 
@@ -93,20 +95,120 @@ cargo run --bin openfiat-node
 
 ## Running a node
 
-`openfiat-node` is a real, standalone binary, configured entirely by
-environment variables (no config file, no CLI flags) — see
-[**Getting started §3**](docs/getting-started.md#3-run-standalone-gossip-only)
-for the full list and their defaults:
+`openfiat-node` is a single standalone binary. **Every setting is a
+command-line flag** — there is no config file and no environment-variable
+fallback, deliberately: with two sources, a node's real configuration
+becomes a function of the invocation *and* the ambient environment, and
+"why does this node behave differently from the identical one beside it"
+turns into archaeology across shell profiles and unit files.
+
+`openfiat-node --help` is the complete surface.
+
+### 1. Build
 
 ```bash
 cargo build --release --bin openfiat-node
-./target/release/openfiat-node
 ```
 
-For real Solana devnet connectivity, a local multi-node cluster, or
-production deployment (systemd/Windows Service), see the
-[**Getting started guide**](docs/getting-started.md) in full — it covers
-every step, not just the summary here.
+### 2. Create an identity
+
+The node's wallet is its protocol identity **and the owner of its stake**.
+
+```bash
+solana-keygen new -o ~/openfiat/wallet.json
+```
+
+If the file is missing the node generates a throwaway key and says so
+loudly, but does not save it — so its identity, and any stake bound to it,
+would change on the next start. Back this file up somewhere off the
+machine: **lose it and staked OPEN cannot be unbonded by anyone.**
+
+### 3. Run
+
+The smallest useful invocation — a gossip-only node, which learns on-chain
+facts second-hand from peers:
+
+```bash
+./target/release/openfiat-node \
+    --ledger ~/openfiat \
+    --identity ~/openfiat/wallet.json
+```
+
+A **full node**, reading Solana directly and relaying other peers'
+transactions:
+
+```bash
+./target/release/openfiat-node \
+    --ledger ~/openfiat \
+    --identity ~/openfiat/wallet.json \
+    --solana-rpc-url https://api.devnet.solana.com \
+    --entrypoint /ip4/<peer-host>/udp/4001/quic-v1
+```
+
+Check it:
+
+```bash
+curl -s -X POST http://127.0.0.1:7080/rpc \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":{}}'
+```
+
+### Flags
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--ledger <DIR>` | `./openfiat-data` | RocksDB state and, by default, the identity keypair |
+| `--identity <PATH>` | `<ledger>/wallet.json` | Solana CLI-format wallet.json; owns the node's stake |
+| `--rpc-bind-address <HOST:PORT>` | `0.0.0.0:7080` | JSON-RPC and HTTP API (OFS-8200) |
+| `--gossip-bind-address <MULTIADDR>` | `/ip4/0.0.0.0/udp/4001/quic-v1` | libp2p transport |
+| `--entrypoint <MULTIADDR>` | none | Peer to dial at startup; repeatable |
+| `--solana-rpc-url <URL>` | none | Repeatable. Any value puts the node in `RpcConnected` mode |
+| `--solana-ws-url <URL>` | none | Recorded on the chain mode; nothing subscribes yet |
+| `--snapshot-dir <DIR>` | `<ledger>/snapshots` | Where produced snapshots are written and served from |
+| `--snapshot-public-url <URL>` | none | Repeatable. **Omitting it disables snapshot production** |
+| `--snapshot-interval-secs <SECS>` | 3600 | Ignored without `--snapshot-public-url` |
+
+Two behaviours worth knowing before you deploy:
+
+- **No `--solana-rpc-url` means `GossipOnly`.** That is the safe default,
+  not a broken state: the node still serves the marketplace and relays
+  transactions to an RPC-connected peer. Its chain answers are second-hand
+  and can lag.
+- **Peer discovery does not run yet** ([#146]). A node finds only the peers
+  given with `--entrypoint`, and announces no addresses of its own, so
+  nothing will discover it either.
+
+### Running under systemd
+
+A production unit — dedicated user, hardening, restart-on-failure — is in
+[`openfiat-infra/systemd/openfiat-node.service`](https://github.com/OpenFiat-org/openfiat-infra/blob/main/systemd/openfiat-node.service).
+
+```bash
+sudo useradd --system --home /var/lib/openfiat --shell /usr/sbin/nologin openfiat
+sudo install -m 0755 target/release/openfiat-node /usr/local/bin/openfiat-node
+sudo mkdir -p /var/lib/openfiat
+sudo install -o openfiat -g openfiat -m 0600 wallet.json /var/lib/openfiat/wallet.json
+sudo cp openfiat-node.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now openfiat-node
+```
+
+**`RestrictAddressFamilies` must include `AF_NETLINK`.** Binding a wildcard
+address makes libp2p enumerate the host's interfaces, which on Linux goes
+over a netlink socket; denied, the QUIC listener fails and the gossip actor
+panics — while the HTTP thread survives, so `systemctl status` still reports
+`active` and the node looks healthy while serving nothing. Always confirm
+with a real request, not with the unit's status:
+
+```bash
+curl -s -X POST http://127.0.0.1:7080/rpc -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":{}}'
+```
+
+For a local multi-node cluster and the on-chain programs, see the
+[**Getting started guide**](docs/getting-started.md).
+
+[#146]: https://github.com/OpenFiat-org/openfiat-core/issues/146
 
 
 ## Development

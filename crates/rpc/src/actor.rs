@@ -400,7 +400,7 @@ fn discard_unverifiable_votes<S: KvStore + 'static>(state: &NodeState<S>) {
         eprintln!(
             "openfiat-rpc: discarded {discarded} governance vote(s) — this node is GossipOnly and \
              cannot read on-chain stake, so it can never verify a vote's weight. Set \
-             CLI_SOLANA_RPC_URLS to take part in governance tallying."
+             --solana-rpc-url to take part in governance tallying."
         );
     }
 }

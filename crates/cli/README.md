@@ -1,12 +1,18 @@
 # openfiat-cli
 
 The `openfiat-node` binary — the composition root wiring every crate above
-into one running node: a real RocksDB-backed store (`CLI_DATA_DIR`), a
-Solana wallet.json node identity (`CLI_WALLET_PATH`), and the merged
-`rpc`+`api` axum server bound to a real HTTP port (`CLI_HTTP_ADDR`).
+into one running node: a real RocksDB-backed store (`--ledger`), a
+Solana wallet.json node identity (`--identity`), and the merged
+`rpc`+`api` axum server bound to a real HTTP port
+(`--rpc-bind-address`).
+
+Every setting is a flag; there is no environment-variable fallback and no
+config file. Run `openfiat-node --help` for the full list, and see the
+[repository README](../../README.md#running-a-node) for a real invocation
+and a systemd unit.
 
 ```sh
-CLI_DATA_DIR=./data CLI_HTTP_ADDR=127.0.0.1:7080 cargo run -p openfiat-cli
+cargo run -p openfiat-cli -- --ledger ./data --rpc-bind-address 127.0.0.1:7080
 ```
 
 serves `POST /rpc`, `GET /ws`, `GET /health`, `GET /metrics` (from

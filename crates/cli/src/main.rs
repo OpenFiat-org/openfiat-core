@@ -23,10 +23,19 @@
 //! remains, verified by each domain's own `apply_*` before origination
 //! is ever attempted.
 //!
-//! Every `CLI_*` variable this module reads is **operational** — where
-//! this node listens, where it keeps its data, which peers and RPC
-//! endpoints it talks to. None of them can change what this node
-//! believes. Protocol identity (program ids, the OPEN mint, PDA seeds,
+//! Every flag this module accepts is **operational** — where this node
+//! listens, where it keeps its data, which peers and RPC endpoints it
+//! talks to. None of them can change what this node believes.
+//!
+//! Configuration is command-line arguments and nothing else. There is no
+//! environment-variable fallback and no config file, deliberately: with
+//! two sources a node's actual settings become a function of the
+//! invocation AND the ambient environment, and "why is this node behaving
+//! differently from the identical one beside it" turns into an
+//! archaeology exercise across shell profiles, unit files and container
+//! environments. `openfiat-node --help` is the whole surface, and
+//! `systemctl cat openfiat-node` shows exactly what a running node was
+//! given. Protocol identity (program ids, the OPEN mint, PDA seeds,
 //! account discriminators) is pinned at compile time in
 //! `openfiat_chain::programs` and is deliberately unreachable from the
 //! environment; protocol parameters (fees, stake minimums, quorum) live
@@ -34,6 +43,7 @@
 //! if two honest nodes running the same release could disagree because of
 //! a value, that value is not configuration.
 
+use clap::Parser;
 use openfiat_chain::NodeChainMode;
 use openfiat_crypto::Keypair;
 use openfiat_database::Database;
@@ -65,24 +75,102 @@ fn column_families() -> Vec<&'static str> {
         .collect()
 }
 
-/// This node's identity: a Solana CLI-format wallet.json at
-/// `CLI_WALLET_PATH` (defaulting to Solana CLI's own convention,
-/// `~/.config/solana/id.json`), so an operator authenticates this node
-/// with the same wallet they already use for Solana tooling.
-fn load_or_generate_wallet() -> Wallet {
-    let path = std::env::var("CLI_WALLET_PATH").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{home}/.config/solana/id.json")
-    });
+/// `openfiat-node` — a node in the OpenFiat network.
+///
+/// Every setting is a flag. See the module doc for why there is no
+/// environment-variable fallback and no config file.
+#[derive(Debug, Parser)]
+#[command(name = "openfiat-node", version, about = "Run an OpenFiat node")]
+pub struct Args {
+    /// Directory for this node's RocksDB state and its identity keypair.
+    #[arg(long, value_name = "DIR", default_value = "./openfiat-data")]
+    pub ledger: String,
 
-    match openfiat_wallet::solana_keyfile::load(&path) {
+    /// Solana CLI-format wallet.json used as this node's identity.
+    ///
+    /// This key owns the node's stake. Defaults to `<ledger>/wallet.json`;
+    /// a fresh one is generated there if absent, and losing it strands any
+    /// staked OPEN with no way to unbond.
+    #[arg(long, value_name = "PATH")]
+    pub identity: Option<String>,
+
+    /// Address for the JSON-RPC and HTTP API (OFS-8200).
+    ///
+    /// 7080 rather than 8080: that port is crowded on a typical server, and
+    /// a node silently losing the bind race is a bad first five minutes.
+    #[arg(long, value_name = "HOST:PORT", default_value = "0.0.0.0:7080")]
+    pub rpc_bind_address: String,
+
+    /// Multiaddr the libp2p transport binds.
+    #[arg(
+        long,
+        value_name = "MULTIADDR",
+        default_value = "/ip4/0.0.0.0/udp/4001/quic-v1"
+    )]
+    pub gossip_bind_address: Multiaddr,
+
+    /// Peer to dial on startup. Repeat for several.
+    ///
+    /// A lone node has nothing to dial. Peer discovery does not yet run, so
+    /// a node currently finds only the peers named here.
+    #[arg(long = "entrypoint", value_name = "MULTIADDR")]
+    pub entrypoints: Vec<Multiaddr>,
+
+    /// Solana RPC endpoint. Repeat for several; relayed transactions go to
+    /// all of them in parallel (OFS-4300 §7).
+    ///
+    /// Supplying at least one puts this node in `RpcConnected` mode. With
+    /// none it is `GossipOnly` — the safe, zero-config default, where
+    /// on-chain facts are learned second-hand over gossip. An operator opts
+    /// into a real chain connection explicitly.
+    #[arg(long = "solana-rpc-url", value_name = "URL")]
+    pub solana_rpc_urls: Vec<String>,
+
+    /// Solana websocket endpoint. Recorded on the chain mode; no
+    /// subscription-based polling reads it yet.
+    #[arg(long, value_name = "URL")]
+    pub solana_ws_url: Option<String>,
+
+    /// Where snapshots this node produces are written, and the only
+    /// directory `GET /snapshot/{id}` serves. Defaults to
+    /// `<ledger>/snapshots`.
+    #[arg(long, value_name = "DIR")]
+    pub snapshot_dir: Option<String>,
+
+    /// Public URL other nodes should fetch this node's snapshots from.
+    /// Repeat for several.
+    ///
+    /// A node cannot work this out for itself — it sees a bind address, not
+    /// what a proxy or NAT makes of it — so omitting this disables snapshot
+    /// PRODUCTION entirely. Consuming snapshots needs no configuration.
+    #[arg(long = "snapshot-public-url", value_name = "URL")]
+    pub snapshot_public_urls: Vec<String>,
+
+    /// Seconds between snapshots. Ignored without --snapshot-public-url,
+    /// since an interval alone would produce snapshots nobody can fetch.
+    #[arg(long, value_name = "SECS")]
+    pub snapshot_interval_secs: Option<u64>,
+}
+
+/// This node's identity: a Solana CLI-format wallet.json (the same file
+/// `solana-keygen new` produces) at `--identity`, defaulting to
+/// `<ledger>/wallet.json`.
+///
+/// Generating one when the file is absent is deliberate — a first run
+/// should work — but it is loud, because a node that quietly invents a
+/// new identity on every boot cannot hold stake: the bond binds to the
+/// key, and a key that changes is a bond that vanishes.
+fn load_or_generate_wallet(path: &str) -> Wallet {
+    match openfiat_wallet::solana_keyfile::load(path) {
         Ok(wallet) => {
             println!("openfiat-node: loaded node identity from {path}");
             wallet
         }
         Err(err) => {
             eprintln!(
-                "openfiat-node: no usable wallet at {path} ({err}), generating a fresh identity for this run"
+                "openfiat-node: no usable wallet at {path} ({err}), generating a fresh identity \
+                 for this run — it is NOT saved, so this node's identity (and any stake bound \
+                 to it) will differ on the next start. Create one with `solana-keygen new -o {path}`."
             );
             Wallet::generate()
         }
@@ -100,95 +188,52 @@ fn gateway_roles() -> Vec<NodeRole> {
     ]
 }
 
-/// `CLI_BOOTSTRAP_PEERS`: a comma-separated multiaddr list of peers to
-/// dial on startup, e.g. `/ip4/10.0.0.2/udp/4001/quic-v1`. Empty by
-/// default — a lone bootstrap node has nothing to dial.
-fn bootstrap_peers() -> Vec<Multiaddr> {
-    std::env::var("CLI_BOOTSTRAP_PEERS")
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| {
-            s.parse()
-                .unwrap_or_else(|e| panic!("invalid CLI_BOOTSTRAP_PEERS entry {s:?}: {e}"))
-        })
-        .collect()
-}
-
-/// `CLI_SOLANA_RPC_URLS` (comma-separated, e.g.
-/// `https://api.devnet.solana.com,https://your-provider/?api-key=...`)
-/// puts this node in `NodeChainMode::RpcConnected` (OFS-4300 §4),
-/// submitting relayed transactions to every configured endpoint in
-/// parallel (§7). Unset (the default) is `GossipOnly` — the safe,
-/// zero-config choice; an operator opts into a real RPC connection
-/// explicitly. `CLI_SOLANA_WS_URL` is optional and only recorded on the
-/// mode today — no subscription-based polling reads it yet.
-fn chain_mode() -> NodeChainMode {
-    let rpc_urls: Vec<String> = std::env::var("CLI_SOLANA_RPC_URLS")
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-
-    if rpc_urls.is_empty() {
+/// `--solana-rpc-url` (repeatable) puts this node in
+/// `NodeChainMode::RpcConnected` (OFS-4300 §4), submitting relayed
+/// transactions to every endpoint in parallel (§7). With none given it is
+/// `GossipOnly` — the safe, zero-config default; an operator opts into a
+/// real RPC connection explicitly.
+fn chain_mode(args: &Args) -> NodeChainMode {
+    if args.solana_rpc_urls.is_empty() {
         NodeChainMode::GossipOnly
     } else {
         NodeChainMode::RpcConnected {
-            rpc_urls,
-            ws_url: std::env::var("CLI_SOLANA_WS_URL").ok(),
+            rpc_urls: args.solana_rpc_urls.clone(),
+            ws_url: args.solana_ws_url.clone(),
         }
     }
 }
 
-/// `CLI_SNAPSHOT_DIR` (default `{CLI_DATA_DIR}/snapshots`) is where this
-/// node writes the snapshots it produces and the only directory it serves
-/// `GET /snapshot/{id}` from.
+/// Snapshot production settings.
 ///
-/// `CLI_SNAPSHOT_PUBLIC_URLS` (comma-separated, e.g.
-/// `https://archive.example`) is what this node tells the cluster to
-/// fetch those snapshots from. A node cannot work this out for itself —
-/// it sees a bind address, not what a proxy or NAT makes of it — so
-/// leaving it unset disables snapshot *production* entirely. Consuming
-/// snapshots needs no configuration at all: a node with no checkpoint
-/// bootstraps from whatever the cluster has announced.
+/// `--snapshot-public-url` is what an operator opts in with, not the
+/// interval: an interval without a URL would produce snapshots nobody can
+/// fetch. See `SnapshotConfig::produces`.
 ///
-/// `CLI_SNAPSHOT_INTERVAL_SECS` overrides the production cadence.
-///
-/// All three are operational under this module's own rule: they change
+/// All of these are operational under this module's own rule — they change
 /// what this node offers others, never what it believes. The state root
 /// decides that, whichever mirror the bytes came from.
-fn snapshot_config(data_dir: &str) -> openfiat_snapshot::SnapshotConfig {
-    let directory = std::env::var("CLI_SNAPSHOT_DIR")
-        .unwrap_or_else(|_| format!("{data_dir}/snapshots"))
+fn snapshot_config(args: &Args, ledger: &str) -> openfiat_snapshot::SnapshotConfig {
+    let directory = args
+        .snapshot_dir
+        .clone()
+        .unwrap_or_else(|| format!("{ledger}/snapshots"))
         .into();
-    let public_urls: Vec<openfiat_snapshot::SnapshotLocation> =
-        std::env::var("CLI_SNAPSHOT_PUBLIC_URLS")
-            .unwrap_or_default()
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| {
-                openfiat_snapshot::SnapshotLocation::parse(s)
-                    .unwrap_or_else(|e| panic!("invalid CLI_SNAPSHOT_PUBLIC_URLS entry {s:?}: {e}"))
-            })
-            .collect();
-    let interval = std::env::var("CLI_SNAPSHOT_INTERVAL_SECS")
-        .ok()
-        .map(|raw| {
-            raw.parse()
-                .unwrap_or_else(|e| panic!("invalid CLI_SNAPSHOT_INTERVAL_SECS {raw:?}: {e}"))
+    let public_urls: Vec<openfiat_snapshot::SnapshotLocation> = args
+        .snapshot_public_urls
+        .iter()
+        .map(|s| {
+            openfiat_snapshot::SnapshotLocation::parse(s)
+                .unwrap_or_else(|e| panic!("invalid --snapshot-public-url {s:?}: {e}"))
         })
+        .collect();
+    let interval = args
+        .snapshot_interval_secs
         .map(std::time::Duration::from_secs)
         .unwrap_or(openfiat_snapshot::config::DEFAULT_INTERVAL);
 
     openfiat_snapshot::SnapshotConfig {
         directory,
-        // The URL, not the interval, is what an operator opts in with:
-        // an interval without one would produce snapshots nobody can
-        // fetch. See `SnapshotConfig::produces`.
         interval: (!public_urls.is_empty()).then_some(interval),
         public_urls,
         retain: openfiat_snapshot::config::DEFAULT_RETAIN,
@@ -197,7 +242,13 @@ fn snapshot_config(data_dir: &str) -> openfiat_snapshot::SnapshotConfig {
 
 #[tokio::main]
 async fn main() {
-    let wallet = load_or_generate_wallet();
+    let args = Args::parse();
+
+    let identity_path = args
+        .identity
+        .clone()
+        .unwrap_or_else(|| format!("{}/wallet.json", args.ledger.trim_end_matches('/')));
+    let wallet = load_or_generate_wallet(&identity_path);
     // Reusing the wallet's own seed keeps one operator identity across
     // Solana tooling and this node's gossip/network keypair (see module
     // doc) — `openfiat_crypto::Keypair` and `openfiat_wallet::Wallet`
@@ -206,19 +257,12 @@ async fn main() {
     // stay a signing primitive, not a network identity).
     let network_keypair = Keypair::from_seed(wallet.seed());
 
-    let data_dir = std::env::var("CLI_DATA_DIR").unwrap_or_else(|_| "./openfiat-data".to_string());
-    // 7080 rather than the more obvious 8080: that port is crowded on a
-    // typical server (proxies, app servers, other containers all default
-    // to it), and a node silently failing to bind because something else
-    // got there first is a bad first five minutes.
-    let http_addr = std::env::var("CLI_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:7080".to_string());
-    let listen_addr: Multiaddr = std::env::var("CLI_LISTEN_ADDR")
-        .unwrap_or_else(|_| "/ip4/0.0.0.0/udp/4001/quic-v1".to_string())
-        .parse()
-        .expect("CLI_LISTEN_ADDR must be a valid multiaddr");
-    let bootstrap_peers = bootstrap_peers();
-    let chain_mode = chain_mode();
-    let snapshot = snapshot_config(&data_dir);
+    let data_dir = args.ledger.clone();
+    let http_addr = args.rpc_bind_address.clone();
+    let listen_addr = args.gossip_bind_address.clone();
+    let bootstrap_peers = args.entrypoints.clone();
+    let chain_mode = chain_mode(&args);
+    let snapshot = snapshot_config(&args, &data_dir);
     let snapshot_directory = snapshot.directory.clone();
 
     println!(
