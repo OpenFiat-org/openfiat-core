@@ -19,13 +19,21 @@ use crate::{constants::*, error::ErrorCode, state::*};
 /// arbitration deposit from. Nothing in the type system distinguishes the
 /// two; the mint is the only difference.
 ///
-/// `[PROPOSED — NEEDS SIGN-OFF]` — the carve-out below, not the allowlist
-/// itself. The steward's directive fixes which mints may be *settled* in; it
-/// says nothing about vault creation, because the directive was written
-/// without the knowledge that one instruction builds both kinds of vault.
-/// Applying the allowlist here unconditionally is the reading that follows
-/// the directive's letter, and it is the reading this code does NOT take —
-/// so the deviation is recorded here rather than left to be discovered.
+/// `[CONFIRMED — protocol steward]` for the carve-out below, not for the
+/// allowlist itself, which the directive already fixed.
+///
+/// The directive fixes which mints may be *settled* in and says nothing about
+/// vault creation, because it was written without the knowledge that one
+/// instruction builds both kinds of vault. Applying the allowlist here
+/// unconditionally is the reading that follows the directive's letter, and it
+/// is the reading this code deliberately does NOT take. The deviation was put
+/// to the steward with its consequences — ad listing uncallable, arbitration
+/// deposits silently zero — and ratified.
+///
+/// Recorded as a decision rather than deleted as resolved: the next reader to
+/// notice an arbitration account inside a vault-creation instruction will
+/// assume it is a mistake, and the reasoning is the only thing that stops
+/// them "fixing" it.
 ///
 /// That is why the settlement allowlist is not applied here unconditionally.
 /// The protocol steward's directive puts wSOL, USDC and USDT on the list and
