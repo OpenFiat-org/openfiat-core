@@ -77,7 +77,7 @@ impl<S: KvStore> SnapshotIndex<S> {
     /// registration has since lapsed or been replaced is no longer
     /// someone this node hands its entire worldview to, however good the
     /// signature on the announcement still is.
-    fn is_registered_provider(&self, producer: &openfiat_types::PeerId) -> bool {
+    pub fn is_registered_provider(&self, producer: &openfiat_types::PeerId) -> bool {
         self.services.all().into_iter().any(|service| {
             &service.provider == producer
                 && matches!(

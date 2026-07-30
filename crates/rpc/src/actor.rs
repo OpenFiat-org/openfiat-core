@@ -437,6 +437,21 @@ fn poll_snapshot_production<S: KvStore + 'static>(state: &NodeState<S>, config: 
         (gossip.node.local_peer_id(), gossip.public_key())
     };
 
+    // Checked before serializing anything, not after: an unregistered
+    // node's announcement is rejected by its own index and by every peer,
+    // so producing first would write a file every interval that nothing
+    // can ever fetch — filling the disk with snapshots whose only reader
+    // would have to have heard an announcement that was never made.
+    if !state.snapshots.is_registered_provider(&producer) {
+        eprintln!(
+            "openfiat-node: snapshot production is configured, but this node is not registered \
+             as an Infrastructure/SnapshotProvider service, so its announcements would be \
+             rejected by every peer. Register the service (sendServiceRegistration) to start \
+             producing; nothing is being written until then."
+        );
+        return;
+    }
+
     let produced = match openfiat_snapshot::producer::produce(
         &store,
         crate::state::SNAPSHOT_COLUMN_FAMILIES,
