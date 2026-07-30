@@ -18,6 +18,11 @@ const SNAPSHOTS_COLUMN_FAMILY: &str = "snapshot_metadata";
 const CHECKPOINT_COLUMN_FAMILY: &str = "snapshot_checkpoint";
 const CHECKPOINT_KEY: &[u8] = b"local";
 
+/// The column families an imported snapshot may never write — this
+/// node's own snapshot bookkeeping. See `crate::state::restore` for the
+/// lockout this prevents.
+pub const RESERVED_COLUMN_FAMILIES: &[&str] = &[SNAPSHOTS_COLUMN_FAMILY, CHECKPOINT_COLUMN_FAMILY];
+
 pub struct SnapshotIndex<S> {
     store: S,
     services: Rc<Registry<S>>,
@@ -64,6 +69,24 @@ impl<S: KvStore> SnapshotIndex<S> {
             .max_by_key(|metadata| metadata.height)
     }
 
+    /// §5/§24: whether `producer` is on file *right now* as a snapshot
+    /// provider.
+    ///
+    /// Checked at announce time and again at import time rather than
+    /// once, because the two can be far apart: a provider whose
+    /// registration has since lapsed or been replaced is no longer
+    /// someone this node hands its entire worldview to, however good the
+    /// signature on the announcement still is.
+    pub fn is_registered_provider(&self, producer: &openfiat_types::PeerId) -> bool {
+        self.services.all().into_iter().any(|service| {
+            &service.provider == producer
+                && matches!(
+                    service.service_type,
+                    ServiceType::Infrastructure(InfrastructureService::SnapshotProvider)
+                )
+        })
+    }
+
     /// §5/§12/§24: only a registered snapshot provider may announce one,
     /// and every Snapshot ID is permanent.
     pub fn apply_announce(
@@ -72,13 +95,7 @@ impl<S: KvStore> SnapshotIndex<S> {
     ) -> Result<SnapshotId, SnapshotError> {
         signed.verify()?;
         let metadata = signed.metadata;
-        if !self.services.all().into_iter().any(|service| {
-            service.provider == metadata.producer
-                && matches!(
-                    service.service_type,
-                    ServiceType::Infrastructure(InfrastructureService::SnapshotProvider)
-                )
-        }) {
+        if !self.is_registered_provider(&metadata.producer) {
             return Err(SnapshotError::Unauthorized);
         }
         if self.get(&metadata.id).is_some() {
@@ -89,19 +106,48 @@ impl<S: KvStore> SnapshotIndex<S> {
         Ok(metadata.id)
     }
 
-    /// §16-17's import pipeline, from "Verify" onward — download and
-    /// decompression-transport are the caller's concern (§14); this
-    /// checks protocol compatibility, size, and the State Root, then
-    /// activates the snapshot by advancing this node's local checkpoint
-    /// (§18: "Snapshot Imported → Request Missing Events → ..."), never
-    /// regressing it if a lower/equal-height snapshot is imported later.
-    pub fn import(
-        &self,
-        metadata: &SnapshotMetadata,
-        compressed_bytes: &[u8],
-    ) -> Result<Vec<u8>, SnapshotError> {
+    /// §16-17's import pipeline: verify `compressed_bytes` against the
+    /// announcement this node already holds for `id`, write the state
+    /// they decode to, and advance this node's local checkpoint (§18:
+    /// "Snapshot Imported → Request Missing Events → ..."). Returns how
+    /// many state entries were restored.
+    ///
+    /// A snapshot is the importing node's entire worldview, so accepting
+    /// a bad one is strictly worse than failing to start. Every check
+    /// below therefore fails closed, and the order is deliberate:
+    ///
+    /// 1. **`id` must already be announced here.** The metadata comes
+    ///    from this node's own index, never from the caller — so it has
+    ///    been signature-verified and registry-authorized by
+    ///    `apply_announce`. This is what stops a caller handing over
+    ///    self-made metadata whose `state_root` merely matches the bytes
+    ///    it also supplied; that pairing verifies perfectly and means
+    ///    nothing.
+    /// 2. **The producer must still be a registered provider** — see
+    ///    `is_registered_provider`.
+    /// 3. **The snapshot must be newer than what this node already has.**
+    ///    Unlike the earlier read-only version of this method, importing
+    ///    now *writes state*, so replaying an old snapshot would silently
+    ///    roll the node backwards.
+    /// 4. **Size, then digest, then write.** Nothing reaches the store
+    ///    until the decompressed bytes hash to the announced `state_root`.
+    pub fn import(&self, id: &SnapshotId, compressed_bytes: &[u8]) -> Result<usize, SnapshotError> {
+        let metadata = self.get(id).ok_or(SnapshotError::UnknownSnapshot)?;
         if metadata.protocol_version != protocol::SUPPORTED_PROTOCOL_VERSION {
             return Err(SnapshotError::UnsupportedProtocolVersion);
+        }
+        if !self.is_registered_provider(&metadata.producer) {
+            return Err(SnapshotError::Unauthorized);
+        }
+        // Only a node that has already imported something can be rolled
+        // backwards. A node with no checkpoint has no state to lose and
+        // must be able to import *any* height — including 0, which is
+        // what a brand-new cluster's first snapshot legitimately carries.
+        if self
+            .checkpoint_height()
+            .is_some_and(|current| metadata.height <= current)
+        {
+            return Err(SnapshotError::StaleSnapshot);
         }
         if compressed_bytes.len() as u64 != metadata.size_bytes {
             return Err(SnapshotError::SizeMismatch);
@@ -111,14 +157,19 @@ impl<S: KvStore> SnapshotIndex<S> {
             return Err(SnapshotError::StateRootMismatch);
         }
 
-        if metadata.height > self.checkpoint_height().unwrap_or(0) {
-            let _ = self.store.put(
+        let restored = crate::state::restore(&self.store, &state_bytes, RESERVED_COLUMN_FAMILIES)?;
+        // Last, and only once the state it describes is actually on disk:
+        // a checkpoint advanced ahead of the state would tell this node's
+        // gossip catch-up to resume from a height whose state it does not
+        // have.
+        self.store
+            .put(
                 CHECKPOINT_COLUMN_FAMILY,
                 CHECKPOINT_KEY,
                 &metadata.height.to_le_bytes(),
-            );
-        }
-        Ok(state_bytes)
+            )
+            .map_err(|_| SnapshotError::StateUnwritable)?;
+        Ok(restored)
     }
 
     /// §9/§18: the height of the most recent snapshot this node has
@@ -148,16 +199,23 @@ impl<S: KvStore> SnapshotIndex<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::location::SnapshotLocation;
     use crate::record::CompressionMethod;
+    use crate::state;
     use openfiat_crypto::Keypair;
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_registry::{Registration, SignedRegistration};
     use openfiat_storage::mem::MemoryStore;
     use openfiat_types::{ServiceId, Timestamp};
 
-    fn registered_provider(seed: u8) -> (Keypair, Rc<Registry<MemoryStore>>) {
+    /// The tests share one physical store between the index and their own
+    /// assertions the way a real node does — `Rc<MemoryStore>`, matching
+    /// `NodeState`'s single-store composition.
+    type TestStore = Rc<MemoryStore>;
+
+    fn registered_provider(seed: u8) -> (Keypair, Rc<Registry<TestStore>>) {
         let keypair = Keypair::from_seed([seed; 32]);
-        let services = Rc::new(Registry::new(MemoryStore::new()));
+        let services = Rc::new(Registry::new(Rc::new(MemoryStore::new())));
         let registration = Registration {
             service_id: ServiceId::new(format!("snapshot-svc-{seed}")),
             service_type: ServiceType::Infrastructure(InfrastructureService::SnapshotProvider),
@@ -177,6 +235,16 @@ mod tests {
         (keypair, services)
     }
 
+    /// A one-entry state blob, so a test can name the state it expects a
+    /// store to hold afterwards rather than an opaque byte string.
+    fn state_blob(key: &str, value: &str) -> Vec<u8> {
+        let source = MemoryStore::new();
+        source
+            .put("advertisements", key.as_bytes(), value.as_bytes())
+            .unwrap();
+        state::serialize(&source, &["advertisements"]).unwrap()
+    }
+
     fn announce(provider: &Keypair, id: &str, height: u64, state_bytes: &[u8]) -> SnapshotMetadata {
         SnapshotMetadata {
             id: SnapshotId::new(id),
@@ -187,15 +255,27 @@ mod tests {
             state_root: codec::state_root(state_bytes),
             size_bytes: state_bytes.len() as u64,
             compression: CompressionMethod::None,
+            locations: vec![
+                SnapshotLocation::parse(format!("http://archive.example:7080/snapshot/{id}"))
+                    .unwrap(),
+            ],
             producer: peer_id_from_public_key(&provider.public_key()).unwrap(),
             producer_public_key: provider.public_key(),
         }
     }
 
+    /// Announces `metadata` through the real signed path, so no test
+    /// reaches `import` with an announcement the index never verified.
+    fn seed(index: &SnapshotIndex<TestStore>, provider: &Keypair, metadata: &SnapshotMetadata) {
+        index
+            .apply_announce(SignedSnapshotAnnounce::sign(metadata.clone(), provider))
+            .unwrap();
+    }
+
     #[test]
     fn an_unregistered_announcer_is_rejected() {
-        let services = Rc::new(Registry::new(MemoryStore::new()));
-        let index = SnapshotIndex::new(MemoryStore::new(), services);
+        let services = Rc::new(Registry::new(Rc::new(MemoryStore::new())));
+        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), services);
         let stranger = Keypair::generate();
         let result = index.apply_announce(SignedSnapshotAnnounce::sign(
             announce(&stranger, "snap-1", 100, b"state"),
@@ -207,7 +287,7 @@ mod tests {
     #[test]
     fn a_registered_provider_can_announce_and_it_is_queryable() {
         let (provider, services) = registered_provider(1);
-        let index = SnapshotIndex::new(MemoryStore::new(), services);
+        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), services);
         let id = index
             .apply_announce(SignedSnapshotAnnounce::sign(
                 announce(&provider, "snap-1", 100, b"state"),
@@ -220,7 +300,7 @@ mod tests {
     #[test]
     fn latest_picks_the_highest_height() {
         let (provider, services) = registered_provider(1);
-        let index = SnapshotIndex::new(MemoryStore::new(), services);
+        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), services);
         index
             .apply_announce(SignedSnapshotAnnounce::sign(
                 announce(&provider, "snap-1", 100, b"state-1"),
@@ -237,49 +317,143 @@ mod tests {
     }
 
     #[test]
-    fn importing_a_valid_snapshot_returns_the_state_and_advances_the_checkpoint() {
+    fn importing_a_valid_snapshot_writes_the_state_and_advances_the_checkpoint() {
         let (provider, services) = registered_provider(1);
-        let index = SnapshotIndex::new(MemoryStore::new(), services);
-        let metadata = announce(&provider, "snap-1", 4217, b"the full marketplace state");
-        index
-            .apply_announce(SignedSnapshotAnnounce::sign(metadata.clone(), &provider))
-            .unwrap();
+        let store = Rc::new(MemoryStore::new());
+        let index = SnapshotIndex::new(Rc::clone(&store), services);
+        let blob = state_blob("ad-1", "the full marketplace state");
+        let metadata = announce(&provider, "snap-1", 4217, &blob);
+        seed(&index, &provider, &metadata);
 
-        let state = index
-            .import(&metadata, b"the full marketplace state")
-            .unwrap();
-        assert_eq!(state, b"the full marketplace state");
+        assert_eq!(index.import(&metadata.id, &blob).unwrap(), 1);
+        assert_eq!(
+            store.get("advertisements", b"ad-1").unwrap(),
+            Some(b"the full marketplace state".to_vec()),
+            "import must land the state, not merely return it"
+        );
         assert_eq!(index.checkpoint_height(), Some(4217));
     }
 
     #[test]
     fn a_tampered_state_blob_fails_state_root_verification() {
         let (provider, services) = registered_provider(1);
-        let index = SnapshotIndex::new(MemoryStore::new(), services);
-        let metadata = announce(&provider, "snap-1", 100, b"the real state");
-        let result = index.import(&metadata, b"the real statE");
-        assert_eq!(result, Err(SnapshotError::StateRootMismatch));
+        let store = Rc::new(MemoryStore::new());
+        let index = SnapshotIndex::new(Rc::clone(&store), services);
+        let blob = state_blob("ad-1", "the real state");
+        let metadata = announce(&provider, "snap-1", 100, &blob);
+        seed(&index, &provider, &metadata);
+
+        // One flipped bit, same length — so this reaches the digest check
+        // rather than being caught by the size check first.
+        let mut corrupted = blob.clone();
+        let last = corrupted.len() - 1;
+        corrupted[last] ^= 0x01;
+
+        assert_eq!(
+            index.import(&metadata.id, &corrupted),
+            Err(SnapshotError::StateRootMismatch)
+        );
         assert_eq!(index.checkpoint_height(), None);
+        assert_eq!(
+            store.get("advertisements", b"ad-1").unwrap(),
+            None,
+            "a rejected snapshot must leave no trace in the store"
+        );
     }
 
     #[test]
     fn a_truncated_download_fails_the_size_check() {
         let (provider, services) = registered_provider(1);
-        let index = SnapshotIndex::new(MemoryStore::new(), services);
-        let metadata = announce(&provider, "snap-1", 100, b"the full state");
-        let result = index.import(&metadata, b"the full sta");
-        assert_eq!(result, Err(SnapshotError::SizeMismatch));
+        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), services);
+        let blob = state_blob("ad-1", "the full state");
+        let metadata = announce(&provider, "snap-1", 100, &blob);
+        seed(&index, &provider, &metadata);
+
+        assert_eq!(
+            index.import(&metadata.id, &blob[..blob.len() - 2]),
+            Err(SnapshotError::SizeMismatch)
+        );
     }
 
+    /// The vector this closes: metadata the caller made up, whose
+    /// `state_root` matches bytes the same caller supplied. It verifies
+    /// perfectly and proves nothing, so `import` refuses to look at any
+    /// announcement it did not itself verify.
     #[test]
-    fn importing_an_older_snapshot_does_not_regress_the_checkpoint() {
-        let (provider, services) = registered_provider(1);
-        let index = SnapshotIndex::new(MemoryStore::new(), services);
-        let newer = announce(&provider, "snap-2", 500, b"newer state");
-        index.import(&newer, b"newer state").unwrap();
+    fn importing_a_snapshot_this_node_never_verified_is_refused() {
+        let (_, services) = registered_provider(1);
+        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), services);
+        let stranger = Keypair::generate();
+        let blob = state_blob("ad-1", "fabricated state");
+        let metadata = announce(&stranger, "snap-forged", 9_000, &blob);
 
-        let older = announce(&provider, "snap-1", 100, b"older state");
-        index.import(&older, b"older state").unwrap();
+        assert_eq!(
+            index.import(&metadata.id, &blob),
+            Err(SnapshotError::UnknownSnapshot)
+        );
+        assert_eq!(index.checkpoint_height(), None);
+    }
+
+    /// A registration can lapse between announcing and importing, and by
+    /// then the announcement's signature says nothing about whether the
+    /// cluster still vouches for its producer.
+    #[test]
+    fn a_producer_deregistered_since_announcing_can_no_longer_be_imported_from() {
+        let (provider, services) = registered_provider(1);
+        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), Rc::clone(&services));
+        let blob = state_blob("ad-1", "state");
+        let metadata = announce(&provider, "snap-1", 100, &blob);
+        seed(&index, &provider, &metadata);
+
+        services.expire_stale(std::time::Duration::ZERO);
+        assert_eq!(
+            index.import(&metadata.id, &blob),
+            Err(SnapshotError::Unauthorized)
+        );
+    }
+
+    /// A brand-new cluster's first snapshot is taken at gossip event
+    /// count zero, and a joining node with nothing to lose must still be
+    /// able to import it.
+    #[test]
+    fn a_fresh_node_can_import_a_height_zero_snapshot() {
+        let (provider, services) = registered_provider(1);
+        let store = Rc::new(MemoryStore::new());
+        let index = SnapshotIndex::new(Rc::clone(&store), services);
+        let blob = state_blob("ad-1", "genesis state");
+        let metadata = announce(&provider, "snap-genesis", 0, &blob);
+        seed(&index, &provider, &metadata);
+
+        assert_eq!(index.import(&metadata.id, &blob).unwrap(), 1);
+        assert_eq!(index.checkpoint_height(), Some(0));
+    }
+
+    /// Import now *writes* state, so replaying an older snapshot would
+    /// roll this node backwards rather than merely leaving the checkpoint
+    /// alone.
+    #[test]
+    fn importing_an_older_snapshot_is_refused_outright() {
+        let (provider, services) = registered_provider(1);
+        let store = Rc::new(MemoryStore::new());
+        let index = SnapshotIndex::new(Rc::clone(&store), services);
+
+        let newer_blob = state_blob("ad-1", "newer state");
+        let newer = announce(&provider, "snap-2", 500, &newer_blob);
+        seed(&index, &provider, &newer);
+        index.import(&newer.id, &newer_blob).unwrap();
+
+        let older_blob = state_blob("ad-1", "older state");
+        let older = announce(&provider, "snap-1", 100, &older_blob);
+        seed(&index, &provider, &older);
+
+        assert_eq!(
+            index.import(&older.id, &older_blob),
+            Err(SnapshotError::StaleSnapshot)
+        );
         assert_eq!(index.checkpoint_height(), Some(500));
+        assert_eq!(
+            store.get("advertisements", b"ad-1").unwrap(),
+            Some(b"newer state".to_vec())
+        );
     }
 }

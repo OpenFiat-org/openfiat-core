@@ -46,24 +46,24 @@ use std::sync::Arc;
 /// Every column family a domain registry composed into `NodeState`
 /// opens — see each crate's `store.rs` for its own `COLUMN_FAMILY`
 /// constant. `openfiat_database::Database::open` requires the full set
-/// up front, unlike `MemoryStore`, which opens column families lazily.
-const COLUMN_FAMILIES: &[&str] = &[
-    "advertisements",
-    "reservations",
-    "settlements",
-    "disputes",
-    "identity_claims",
-    "governance_proposals",
-    "registry_services",
-    "notification_subscriptions",
-    "notification_receipts",
-    "notification_dispatches",
-    "oracle_records",
-    "risk_records",
-    "snapshot_metadata",
-    "snapshot_checkpoint",
-    "sessions",
-];
+/// up front, unlike `MemoryStore`, which opens column families lazily,
+/// and a `put` to one that was never opened fails silently at every
+/// call site in this workspace (they all discard the result).
+///
+/// This is the snapshotted set (`openfiat_rpc::SNAPSHOT_COLUMN_FAMILIES`,
+/// the single definition of what makes up this node's worldview) plus the
+/// three that are deliberately node-local and so are not snapshotted:
+/// the gossip event log and the two snapshot bookkeeping families.
+const NODE_LOCAL_COLUMN_FAMILIES: &[&str] =
+    &["gossip_events", "snapshot_metadata", "snapshot_checkpoint"];
+
+fn column_families() -> Vec<&'static str> {
+    openfiat_rpc::SNAPSHOT_COLUMN_FAMILIES
+        .iter()
+        .chain(NODE_LOCAL_COLUMN_FAMILIES)
+        .copied()
+        .collect()
+}
 
 /// This node's identity: a Solana CLI-format wallet.json at
 /// `CLI_WALLET_PATH` (defaulting to Solana CLI's own convention,
@@ -143,6 +143,58 @@ fn chain_mode() -> NodeChainMode {
     }
 }
 
+/// `CLI_SNAPSHOT_DIR` (default `{CLI_DATA_DIR}/snapshots`) is where this
+/// node writes the snapshots it produces and the only directory it serves
+/// `GET /snapshot/{id}` from.
+///
+/// `CLI_SNAPSHOT_PUBLIC_URLS` (comma-separated, e.g.
+/// `https://archive.example`) is what this node tells the cluster to
+/// fetch those snapshots from. A node cannot work this out for itself —
+/// it sees a bind address, not what a proxy or NAT makes of it — so
+/// leaving it unset disables snapshot *production* entirely. Consuming
+/// snapshots needs no configuration at all: a node with no checkpoint
+/// bootstraps from whatever the cluster has announced.
+///
+/// `CLI_SNAPSHOT_INTERVAL_SECS` overrides the production cadence.
+///
+/// All three are operational under this module's own rule: they change
+/// what this node offers others, never what it believes. The state root
+/// decides that, whichever mirror the bytes came from.
+fn snapshot_config(data_dir: &str) -> openfiat_snapshot::SnapshotConfig {
+    let directory = std::env::var("CLI_SNAPSHOT_DIR")
+        .unwrap_or_else(|_| format!("{data_dir}/snapshots"))
+        .into();
+    let public_urls: Vec<openfiat_snapshot::SnapshotLocation> =
+        std::env::var("CLI_SNAPSHOT_PUBLIC_URLS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                openfiat_snapshot::SnapshotLocation::parse(s)
+                    .unwrap_or_else(|e| panic!("invalid CLI_SNAPSHOT_PUBLIC_URLS entry {s:?}: {e}"))
+            })
+            .collect();
+    let interval = std::env::var("CLI_SNAPSHOT_INTERVAL_SECS")
+        .ok()
+        .map(|raw| {
+            raw.parse()
+                .unwrap_or_else(|e| panic!("invalid CLI_SNAPSHOT_INTERVAL_SECS {raw:?}: {e}"))
+        })
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(openfiat_snapshot::config::DEFAULT_INTERVAL);
+
+    openfiat_snapshot::SnapshotConfig {
+        directory,
+        // The URL, not the interval, is what an operator opts in with:
+        // an interval without one would produce snapshots nobody can
+        // fetch. See `SnapshotConfig::produces`.
+        interval: (!public_urls.is_empty()).then_some(interval),
+        public_urls,
+        retain: openfiat_snapshot::config::DEFAULT_RETAIN,
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let wallet = load_or_generate_wallet();
@@ -166,6 +218,8 @@ async fn main() {
         .expect("CLI_LISTEN_ADDR must be a valid multiaddr");
     let bootstrap_peers = bootstrap_peers();
     let chain_mode = chain_mode();
+    let snapshot = snapshot_config(&data_dir);
+    let snapshot_directory = snapshot.directory.clone();
 
     println!(
         "openfiat-node {} — data dir: {data_dir}, gossip identity: {:?}, chain mode: {}, \
@@ -186,7 +240,7 @@ async fn main() {
 
     let rpc_handle = openfiat_rpc::spawn_actor(
         move || {
-            Database::open(&data_dir, COLUMN_FAMILIES)
+            Database::open(&data_dir, &column_families())
                 .expect("failed to open the node's RocksDB data directory")
         },
         NetworkConfig {
@@ -195,10 +249,12 @@ async fn main() {
             listen_addr,
             bootstrap_peers,
             chain_mode,
+            snapshot,
         },
     );
     let metrics = Arc::new(openfiat_metrics::MetricsRegistry::new());
-    let router = openfiat_rpc::router(rpc_handle, metrics).merge(openfiat_api::router());
+    let router =
+        openfiat_rpc::router(rpc_handle, metrics, snapshot_directory).merge(openfiat_api::router());
 
     let listener = tokio::net::TcpListener::bind(&http_addr)
         .await

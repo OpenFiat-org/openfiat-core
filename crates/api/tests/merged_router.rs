@@ -11,7 +11,12 @@ fn merged_router() -> axum::Router {
     let rpc_handle =
         openfiat_rpc::spawn_actor(MemoryStore::new, openfiat_rpc::NetworkConfig::for_test());
     let metrics = std::sync::Arc::new(openfiat_metrics::MetricsRegistry::new());
-    openfiat_rpc::router(rpc_handle, metrics).merge(openfiat_api::router())
+    openfiat_rpc::router(
+        rpc_handle,
+        metrics,
+        std::env::temp_dir().join("openfiat-merged-router-test-snapshots"),
+    )
+    .merge(openfiat_api::router())
 }
 
 #[tokio::test]

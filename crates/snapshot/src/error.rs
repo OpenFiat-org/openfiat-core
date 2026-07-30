@@ -24,6 +24,32 @@ pub enum SnapshotError {
     SizeMismatch,
     /// §10/§16: the decompressed state's digest doesn't match `state_root`.
     StateRootMismatch,
+    /// A location that isn't an absolute `http`/`https` URL — see
+    /// `crate::location` for why nothing else is entertained.
+    InvalidLocation,
+    /// This node was asked to produce a snapshot but has no publicly
+    /// reachable URL configured, so it has nowhere to tell peers to fetch
+    /// one from.
+    NoLocationConfigured,
+    /// §8: the announcement carries no location at all. Only reachable
+    /// for records produced by an older or foreign implementation.
+    NoLocationAdvertised,
+    /// §13: this node has no verified announcement for that Snapshot ID,
+    /// so there is nothing it is willing to fetch or import.
+    UnknownSnapshot,
+    /// §14: no announced location produced usable bytes.
+    DownloadFailed,
+    /// §18: the snapshot is at or below the height this node already
+    /// holds. Importing it would overwrite newer state with older.
+    StaleSnapshot,
+    /// The snapshot tried to write a column family that is this node's
+    /// own snapshot bookkeeping — see `crate::state::restore`.
+    ReservedColumnFamily,
+    /// A column family could not be read while assembling a snapshot —
+    /// an incomplete snapshot is never produced in its place.
+    StateUnreadable,
+    /// Imported state, or a produced snapshot file, could not be written.
+    StateUnwritable,
 }
 
 impl SnapshotError {
@@ -37,6 +63,15 @@ impl SnapshotError {
             Self::UnsupportedProtocolVersion => ErrorCode::ProtocolVersionMismatch,
             Self::SizeMismatch => ErrorCode::SnapshotVerificationFailed,
             Self::StateRootMismatch => ErrorCode::SnapshotVerificationFailed,
+            Self::InvalidLocation => ErrorCode::InvalidParameter,
+            Self::NoLocationConfigured => ErrorCode::InvalidRequest,
+            Self::NoLocationAdvertised => ErrorCode::ResourceNotFound,
+            Self::UnknownSnapshot => ErrorCode::ResourceNotFound,
+            Self::DownloadFailed => ErrorCode::NetworkError,
+            Self::StaleSnapshot => ErrorCode::InvalidRequest,
+            Self::ReservedColumnFamily => ErrorCode::SnapshotVerificationFailed,
+            Self::StateUnreadable => ErrorCode::DatabaseError,
+            Self::StateUnwritable => ErrorCode::DatabaseError,
         }
     }
 }

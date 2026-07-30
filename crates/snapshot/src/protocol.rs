@@ -13,4 +13,13 @@ pub const EVENT_ANNOUNCED: &str = "CheckpointCreated";
 
 /// `[PROPOSED — NEEDS SIGN-OFF]`: the protocol/schema version this
 /// implementation's snapshots are produced under and can import.
-pub const SUPPORTED_PROTOCOL_VERSION: u32 = 1;
+///
+/// Bumped 1 → 2 when `SnapshotMetadata::locations` entered the signed
+/// announcement payload. Version 1 announcements can no longer verify
+/// (see `crate::events`' module doc for that decision), and this bump is
+/// what makes `import` reject them as `UnsupportedProtocolVersion` — a
+/// mismatch an operator can act on — rather than as `InvalidSignature`,
+/// which would send them looking for an attacker. A version 1 snapshot
+/// carried no location and so was never fetchable in the first place;
+/// nothing importable is lost.
+pub const SUPPORTED_PROTOCOL_VERSION: u32 = 2;

@@ -20,6 +20,7 @@ async fn a_websocket_client_receives_a_notification_for_a_real_mutation() {
     let app = router(
         handle.clone(),
         Arc::new(openfiat_metrics::MetricsRegistry::new()),
+        std::env::temp_dir().join("openfiat-websocket-test-snapshots"),
     );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
