@@ -1,9 +1,18 @@
 //! The combined libp2p behaviour a node runs.
 //!
-//! Three protocols share the one multiplexed connection (OFNP §20):
+//! Four protocols share the one multiplexed connection (OFNP §20):
 //! `identify` (peer capability/version advertisement, §11), `ping`
-//! (session liveness, §18 — see [`crate::heartbeat`]), and our own
-//! envelope request-response protocol (§13-16).
+//! (session liveness, §18 — see [`crate::heartbeat`]), our own envelope
+//! request-response protocol (§13-16), and `content` — raw streams, used
+//! to speak bitswap so this node serves IPFS content itself rather than
+//! through a separate daemon with a separate identity.
+//!
+//! `content` is a stream behaviour rather than another request-response
+//! one because bitswap is not request/response: a peer writes a message
+//! and closes, and the answer comes back over a fresh stream in the other
+//! direction. Nothing here knows what bitswap is — the behaviour opens
+//! and accepts streams on a named protocol, and `openfiat_content` says
+//! what travels over them.
 
 use crate::envelope::{EnvelopeCodec, PROTOCOL};
 use crate::heartbeat;
@@ -20,6 +29,7 @@ pub struct OpenFiatBehaviour {
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
     pub envelope: request_response::Behaviour<EnvelopeCodec>,
+    pub content: libp2p_stream::Behaviour,
 }
 
 impl OpenFiatBehaviour {
@@ -44,6 +54,7 @@ impl OpenFiatBehaviour {
             identify,
             ping,
             envelope,
+            content: libp2p_stream::Behaviour::new(),
         }
     }
 }

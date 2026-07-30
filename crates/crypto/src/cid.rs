@@ -156,6 +156,46 @@ impl Cid {
         digest
     }
 
+    /// The CID's binary form: version | codec | hash | length | digest.
+    ///
+    /// The string spelling is canonical for storage and display, but every
+    /// IPFS wire protocol — bitswap wantlists, DHT provider keys, block
+    /// prefixes — carries the bytes. This is that same identifier with the
+    /// multibase layer stripped, not a different one.
+    pub fn to_binary(&self) -> Vec<u8> {
+        // Cannot fail: the only constructor validated it.
+        base32_lower_decode(&self.0[1..]).expect("a Cid was validated at parse time")
+    }
+
+    /// Everything in the binary form except the digest.
+    ///
+    /// Bitswap sends a block as `prefix + data` rather than as a full CID,
+    /// so the receiver hashes the data itself and rebuilds the identifier —
+    /// which is precisely why a sender cannot label arbitrary bytes with a
+    /// CID people trust. Reconstructing here rather than trusting a
+    /// received prefix keeps that property on our side too.
+    pub fn prefix(&self) -> Vec<u8> {
+        let mut binary = self.to_binary();
+        binary.truncate(binary.len() - SHA2_256_LEN);
+        binary
+    }
+
+    /// Parses a CID from its binary form, as it arrives on the wire.
+    ///
+    /// Routed through [`Cid::parse`] rather than validated separately.
+    /// A second validator would be a second door into the type, and the
+    /// two would drift; encoding to the canonical string and handing it to
+    /// the one parser means binary input is held to exactly the rules the
+    /// module documents, including the single-spelling rule — bytes that
+    /// decode fine but describe a codec or hash this protocol does not
+    /// accept are rejected here just as their string form would be.
+    pub fn from_binary(bytes: &[u8]) -> Result<Self, CidError> {
+        let mut spelling = String::with_capacity(1 + bytes.len() * 8 / 5 + 1);
+        spelling.push(MULTIBASE_BASE32_LOWER);
+        base32_lower_encode(bytes, &mut spelling);
+        Self::parse(&spelling)
+    }
+
     /// Whether `content` is the data this CID names.
     ///
     /// This is what makes a public gateway an untrusted transport rather
@@ -225,6 +265,29 @@ fn base32_lower_decode(input: &str) -> Result<Vec<u8>, CidError> {
     }
 
     Ok(out)
+}
+
+/// RFC 4648 base32 lowercase, no padding — the inverse of
+/// [`base32_lower_decode`], appended to `out`.
+fn base32_lower_encode(bytes: &[u8], out: &mut String) {
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let mut buffer: u16 = 0;
+    let mut bits: u8 = 0;
+
+    for &byte in bytes {
+        buffer = (buffer << 8) | u16::from(byte);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(ALPHABET[((buffer >> bits) & 0x1f) as usize] as char);
+        }
+    }
+    // The trailing partial group is zero-padded up to five bits, which is
+    // what `base32_lower_decode` requires to see: any other padding would
+    // give the same bytes a second legal spelling.
+    if bits > 0 {
+        out.push(ALPHABET[((buffer << (5 - bits)) & 0x1f) as usize] as char);
+    }
 }
 
 /// Unsigned LEB128, as multiformats uses. Bounded at 9 bytes so a
@@ -378,6 +441,61 @@ mod tests {
             "a peer's gossip must not be able to introduce a Cid that \
              never passed the parser"
         );
+    }
+
+    #[test]
+    fn the_binary_form_round_trips_through_the_canonical_spelling() {
+        for spelling in [REAL_CID, REAL_DAG_PB_CID] {
+            let cid = Cid::parse(spelling).unwrap();
+            assert_eq!(Cid::from_binary(&cid.to_binary()), Ok(cid.clone()));
+            assert_eq!(cid.as_str(), spelling);
+        }
+    }
+
+    #[test]
+    fn the_binary_form_is_the_header_followed_by_the_digest() {
+        // Checked against the real CID's own bytes rather than against
+        // this encoder's output: 0x01 CIDv1, 0x55 raw, 0x12 sha2-256,
+        // 0x20 thirty-two bytes — the multiformats header every IPFS
+        // implementation writes.
+        let cid = Cid::parse(REAL_CID).unwrap();
+        let binary = cid.to_binary();
+        assert_eq!(&binary[..4], &[0x01, 0x55, 0x12, 0x20]);
+        assert_eq!(&binary[4..], &crate::hash::sha256(REAL_CONTENT));
+        assert_eq!(cid.prefix(), vec![0x01, 0x55, 0x12, 0x20]);
+    }
+
+    #[test]
+    fn a_block_can_be_readdressed_from_its_prefix_and_its_data() {
+        // This is what bitswap does on receipt, and the reason a sender
+        // cannot label arbitrary bytes with a CID people trust: the
+        // identifier is rebuilt from the data, never taken on trust.
+        let cid = Cid::parse(REAL_CID).unwrap();
+        let mut rebuilt = cid.prefix();
+        rebuilt.extend_from_slice(&crate::hash::sha256(REAL_CONTENT));
+        assert_eq!(Cid::from_binary(&rebuilt), Ok(cid));
+
+        let mut forged = Cid::parse(REAL_CID).unwrap().prefix();
+        forged.extend_from_slice(&crate::hash::sha256(b"substituted bytes"));
+        assert_ne!(Cid::from_binary(&forged).unwrap().as_str(), REAL_CID);
+    }
+
+    #[test]
+    fn binary_input_is_held_to_the_same_rules_as_a_string() {
+        // A CIDv1 with the blake3 multihash: structurally a fine CID, and
+        // one a bitswap peer can legitimately put in a wantlist. It is
+        // still not one this protocol can verify, so the binary door must
+        // refuse it exactly as the string door does.
+        let mut blake3 = vec![0x01, 0x55, 0x1e, 0x20];
+        blake3.extend_from_slice(&[0u8; 32]);
+        assert_eq!(Cid::from_binary(&blake3), Err(CidError::Malformed));
+
+        // Truncated, empty, and a digest longer than the header declares.
+        assert_eq!(Cid::from_binary(&[0x01, 0x55]), Err(CidError::Malformed));
+        assert_eq!(Cid::from_binary(&[]), Err(CidError::Malformed));
+        let mut overlong = vec![0x01, 0x55, 0x12, 0x20];
+        overlong.extend_from_slice(&[0u8; 33]);
+        assert_eq!(Cid::from_binary(&overlong), Err(CidError::Malformed));
     }
 
     #[test]

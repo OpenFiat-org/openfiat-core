@@ -63,6 +63,17 @@ impl Node {
         *self.swarm.local_peer_id()
     }
 
+    /// A handle for opening and accepting raw streams — how this node
+    /// speaks bitswap without a second process holding a second identity.
+    ///
+    /// Cloneable and independent of `&mut self`, so the code that serves
+    /// content does not have to reach through the swarm. `openfiat_content`
+    /// names the protocol and decides what travels over it; the transport
+    /// layer's only job is to carry it.
+    pub fn content_control(&self) -> libp2p_stream::Control {
+        self.swarm.behaviour().content.new_control()
+    }
+
     pub fn listen_on(&mut self, addr: Multiaddr) -> Result<(), NetworkError> {
         self.swarm
             .listen_on(addr)

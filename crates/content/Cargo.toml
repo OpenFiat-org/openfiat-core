@@ -19,8 +19,11 @@ async-trait = "0.1.91"
 # Only for `kubo`: talking to an operator's own IPFS daemon. Matches the
 # feature set `openfiat-chain` already pins, so no second TLS stack.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+libp2p-swarm = "0.47"
+futures = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
 libp2p = { version = "0.56.0", features = ["request-response"] }
+libp2p-stream = "0.4.0-alpha"

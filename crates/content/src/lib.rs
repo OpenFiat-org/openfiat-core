@@ -21,6 +21,7 @@
 //!   be storing whatever anyone chose to point it at. Retrieval is the
 //!   viewer's, against a gateway, checked with [`Cid::matches`].
 
+pub mod bitswap;
 pub mod challenge;
 pub mod error;
 pub mod events;
