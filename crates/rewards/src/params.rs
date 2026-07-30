@@ -1,10 +1,16 @@
 //! The tunable half of OFS-4100 §9.2.
 //!
-//! Every value here is `[PROPOSED — NEEDS SIGN-OFF]` in the specification
-//! and a governance parameter rather than a constant, so none of them is
-//! baked into the arithmetic — [`RewardParams`] is threaded through every
-//! computation and [`RewardParams::default`] merely reproduces the
-//! specification's current starting point.
+//! Every value here is a governance parameter rather than a constant, so
+//! none of them is baked into the arithmetic — [`RewardParams`] is
+//! threaded through every computation and [`RewardParams::default`]
+//! merely reproduces the specification's current values.
+//!
+//! Sign-off status is per field and tracked in OFS-4100 §9.2, not here in
+//! bulk. Most of these are `[CONFIRMED]`; the two content-retrievability
+//! multipliers are not, because they were added after that section's
+//! sign-off round and §2 reserves the proposed tag for exactly that.
+//! Governance-updatability is required either way — it is what stops a
+//! later decision needing a code change.
 
 /// Basis-point denominator, matching the on-chain programs' own
 /// `BPS_DENOMINATOR` so a reader comparing the two sees one convention.
@@ -20,7 +26,7 @@ const OPEN: u64 = 1_000_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RewardParams {
     /// Length of one reward epoch. Also the window liveness is measured
-    /// over. `[PROPOSED — NEEDS SIGN-OFF]` 24 hours.
+    /// over. `[CONFIRMED]` 24 hours.
     pub epoch_millis: u64,
 
     /// How many slices the epoch is divided into for the availability
@@ -31,17 +37,17 @@ pub struct RewardParams {
     pub availability_buckets: u32,
 
     /// Bootstrap emission per epoch, in base units, before the remaining
-    /// bucket caps it. `[PROPOSED — NEEDS SIGN-OFF]` ≈82,192 OPEN, being
+    /// bucket caps it. `[CONFIRMED]` ≈82,192 OPEN, being
     /// the 120,000,000 OPEN Infrastructure bucket spread linearly across
     /// four years.
     pub per_epoch_emission: u64,
 
     /// Multiplier for a node observed bridging to Solana.
-    /// `[PROPOSED — NEEDS SIGN-OFF]` 1.0.
+    /// `[CONFIRMED]` 1.0.
     pub connectivity_rpc_bps: u64,
 
     /// Multiplier for a node observed only gossiping.
-    /// `[PROPOSED — NEEDS SIGN-OFF]` 0.4.
+    /// `[CONFIRMED]` 0.4.
     pub connectivity_gossip_bps: u64,
 
     /// Multiplier for a node that answered a retrievability challenge —
@@ -80,8 +86,8 @@ pub struct RewardParams {
     /// mirrors the on-chain `min_stake_by_role[NodeOperator]` rather than
     /// replacing it: the program is what actually enforces the floor at
     /// stake time, and this is the paying side declining to pay someone
-    /// who has since fallen below it. `[PROPOSED — NEEDS SIGN-OFF]`
-    /// 1,000 OPEN, the deployed value.
+    /// who has since fallen below it. `[CONFIRMED]` 1,000 OPEN, the
+    /// deployed value.
     pub min_stake: u64,
 }
 
