@@ -97,6 +97,18 @@ pub struct PublicReservation {
     /// not disclose is the other end, which is what makes it an edge.
     pub advertisement_id: openfiat_advertisements::AdvertisementId,
     pub amount: Amount,
+    /// The price this reservation was struck at, and the oracle mid
+    /// behind it.
+    ///
+    /// Kept, and it was an oversight that the first version of this
+    /// dropped them. The rule this module states is that a field belongs
+    /// in a public view if it says something about the *trade* rather
+    /// than the *people*, and a price is the most trade-like fact there
+    /// is — it is what an explorer showing the market needs, and it
+    /// discloses nothing about who agreed to it. Caught by an SDK author
+    /// reading the rule and noticing the code did not follow it.
+    pub agreed_price: Amount,
+    pub agreed_mid: Option<f64>,
     pub state: ReservationState,
     pub requested_at: Timestamp,
     pub updated_at: Timestamp,
@@ -109,6 +121,8 @@ impl From<Reservation> for PublicReservation {
             id: r.id,
             advertisement_id: r.advertisement_id,
             amount: r.amount,
+            agreed_price: r.agreed_price,
+            agreed_mid: r.agreed_mid,
             state: r.state,
             requested_at: r.requested_at,
             updated_at: r.updated_at,

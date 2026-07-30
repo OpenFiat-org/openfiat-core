@@ -22,6 +22,7 @@ pub mod sessions;
 pub mod settlement;
 pub mod snapshot;
 pub mod trade;
+pub mod volume;
 pub mod wallet_auth;
 
 use crate::dispatch::MethodTable;
@@ -49,6 +50,7 @@ pub fn build_table<S: KvStore + 'static>() -> MethodTable<S> {
     snapshot::register(&mut table);
     sessions::register(&mut table);
     chain::register(&mut table);
+    volume::register(&mut table);
     table
 }
 

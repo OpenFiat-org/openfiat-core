@@ -65,6 +65,7 @@ const NO_PARAM_METHODS: &[&str] = &[
     "getChainStatus",
     "getLatestBlockhash",
     "getPeers",
+    "getSettledVolume",
 ];
 
 fn params_schema_for(method: &str) -> Value {
