@@ -47,10 +47,15 @@ use openfiat_crypto::Cid;
 /// from the same list — a challenger that picked from an arbitrarily
 /// ordered set would produce results that varied by iteration order
 /// rather than by what the challenged node holds.
-pub fn challengeable(attachments: &[Attachment]) -> Vec<Cid> {
+pub fn challengeable(attachments: &[Attachment], now: openfiat_types::Timestamp) -> Vec<Cid> {
     let mut cids: Vec<Cid> = attachments
         .iter()
-        .filter(|a| a.cid.is_verifiable())
+        // Inside the protocol's retention floor, not the caller's own
+        // window. A node that correctly evicted year-old content under a
+        // rolling policy must not be challenged about it — see
+        // `crate::retention` for why the floor is what both sides agree
+        // on, and why it is not something either can configure away.
+        .filter(|a| a.cid.is_verifiable() && crate::Retention::challenge_window(a.created_at, now))
         .map(|a| a.cid.clone())
         .collect();
     cids.sort();
@@ -140,9 +145,14 @@ mod tests {
             media_type: MediaType::Png,
             size_bytes: 31,
             caption: String::new(),
-            created_at: Timestamp::from_millis(1),
+            created_at: NOW,
         }
     }
+
+    /// Fixture attachments are stamped "now", so they sit inside the
+    /// retention floor and the tests below isolate the property they are
+    /// actually about.
+    const NOW: Timestamp = Timestamp::from_millis(20_000 * 24 * 60 * 60 * 1_000);
 
     #[test]
     fn returning_the_named_content_is_a_proof() {
@@ -188,11 +198,14 @@ mod tests {
     #[test]
     fn only_decidable_cids_are_offered_for_challenge() {
         let chunked = openfiat_crypto::Cid::parse(CHUNKED_CID).unwrap();
-        let pool = challengeable(&[
-            attachment("a", fixtures::probe_cid()),
-            attachment("b", chunked),
-            attachment("c", fixtures::other_cid()),
-        ]);
+        let pool = challengeable(
+            &[
+                attachment("a", fixtures::probe_cid()),
+                attachment("b", chunked),
+                attachment("c", fixtures::other_cid()),
+            ],
+            NOW,
+        );
         assert_eq!(pool.len(), 2, "the dag-pb CID must not be offered");
         assert!(pool.iter().all(|c| c.is_verifiable()));
     }
@@ -202,32 +215,44 @@ mod tests {
         // Two nodes challenging from differently-ordered inputs must draw
         // from the same list, or a result depends on iteration order
         // rather than on what the peer holds.
-        let forward = challengeable(&[
-            attachment("a", fixtures::probe_cid()),
-            attachment("b", fixtures::other_cid()),
-        ]);
-        let backward = challengeable(&[
-            attachment("b", fixtures::other_cid()),
-            attachment("a", fixtures::probe_cid()),
-        ]);
+        let forward = challengeable(
+            &[
+                attachment("a", fixtures::probe_cid()),
+                attachment("b", fixtures::other_cid()),
+            ],
+            NOW,
+        );
+        let backward = challengeable(
+            &[
+                attachment("b", fixtures::other_cid()),
+                attachment("a", fixtures::probe_cid()),
+            ],
+            NOW,
+        );
         assert_eq!(forward, backward);
     }
 
     #[test]
     fn one_cid_referenced_twice_is_offered_once() {
-        let pool = challengeable(&[
-            attachment("a", fixtures::probe_cid()),
-            attachment("b", fixtures::probe_cid()),
-        ]);
+        let pool = challengeable(
+            &[
+                attachment("a", fixtures::probe_cid()),
+                attachment("b", fixtures::probe_cid()),
+            ],
+            NOW,
+        );
         assert_eq!(pool.len(), 1);
     }
 
     #[test]
     fn selection_moves_with_the_seed_and_stays_in_range() {
-        let pool = challengeable(&[
-            attachment("a", fixtures::probe_cid()),
-            attachment("b", fixtures::other_cid()),
-        ]);
+        let pool = challengeable(
+            &[
+                attachment("a", fixtures::probe_cid()),
+                attachment("b", fixtures::other_cid()),
+            ],
+            NOW,
+        );
         let picks: Vec<_> = (0..8).map(|seed| select(&pool, seed).unwrap()).collect();
         assert!(
             picks.iter().any(|c| *c != picks[0]),
@@ -237,10 +262,25 @@ mod tests {
     }
 
     #[test]
+    fn content_older_than_the_retention_floor_is_never_challenged() {
+        // The property that stops eviction and rewards contradicting each
+        // other. A rolling node that dropped this content did what it was
+        // configured to do, and must not be scored as if it refused.
+        const DAY: u64 = 24 * 60 * 60 * 1_000;
+        let mut old = attachment("ancient", fixtures::probe_cid());
+        old.created_at = Timestamp::from_millis(NOW.as_millis() - 31 * DAY);
+        let mut recent = attachment("recent", fixtures::other_cid());
+        recent.created_at = Timestamp::from_millis(NOW.as_millis() - 29 * DAY);
+
+        let pool = challengeable(&[old, recent], NOW);
+        assert_eq!(pool, vec![fixtures::other_cid()]);
+    }
+
+    #[test]
     fn an_empty_pool_selects_nothing_rather_than_panicking() {
         // A young network has no attachments at all. That is not a peer
         // failing a challenge, and it must not be reachable as one.
         assert!(select(&[], 7).is_none());
-        assert!(select(&challengeable(&[]), 0).is_none());
+        assert!(select(&challengeable(&[], NOW), 0).is_none());
     }
 }

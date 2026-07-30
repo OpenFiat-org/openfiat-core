@@ -151,6 +151,30 @@ a settlement needs a real reservation against real escrow — so the ceiling
 on what your disk is asked for is the network's actual trading volume, not
 a stranger's patience.
 
+### How long content is kept
+
+Not every node should carry the whole history. `--retention` defaults to
+**30 days**, so running a node is a bounded storage commitment rather than
+an open-ended one; content older than the window is evicted on the next
+pinning sweep.
+
+```bash
+--retention 30          # the default: a rolling 30-day window
+--retention 365         # a longer window, still rolling
+--retention archival    # keep everything, forever — an explicit choice
+```
+
+30 days is also the **floor every node owes the network**, so shorter
+values are refused rather than quietly raised — a node configured for
+seven days that silently ran for thirty would be doing something other
+than what its operator asked.
+
+That floor is what lets eviction and rewards coexist. Challenges are only
+ever drawn from content inside it, so a rolling node that correctly
+evicted last year's evidence is never asked about it and never loses its
+share for having done the right thing. Equally, no node can shrink what it
+can be asked by declaring a smaller window.
+
 [OFS-4100 §9.2]: https://github.com/OpenFiat-org/openfiat-specs
 
 ## 6. The on-chain programs this node talks to
@@ -199,7 +223,29 @@ Node 0 is reachable at `http://localhost:7080`, node 1 at
 directory to use a faster private RPC endpoint than Solana's public
 devnet one.
 
-## 8. Production deployment
+## 8. Turning things off
+
+Most of what a node does is not optional — it gossips, validates and
+serves whatever it has replicated. What *is* optional is listed here, so
+you can run the smallest useful node deliberately rather than by
+discovering which flags to leave out.
+
+| To disable | Do this | What you lose |
+|---|---|---|
+| Solana connectivity | omit `--solana-rpc-url` | Node runs `GossipOnly`: on-chain answers come second-hand from peers and can lag. It still serves the marketplace and relays transactions to an RPC-connected peer. Earns the reduced connectivity share. |
+| Content pinning | omit `--ipfs-api-url` | Node stores no attachment content and cannot answer a retrievability challenge, so it earns the reduced share (0.7x). It still challenges its peers. |
+| Keeping old content | `--retention 30` (the default) | Nothing, unless you were relying on this node to serve older-than-30-day content. Use `--retention archival` if you intend to run an archive. |
+| Producing snapshots | omit `--snapshot-public-url` | Node produces no snapshots for others to bootstrap from. It still *consumes* them, which needs no configuration. |
+| Log volume | `--log warn` | Routine INFO lines, including the addresses the node is reachable at. Errors and warnings still appear. |
+
+Two things you cannot turn off, and should not want to: signature
+verification on every event, and the compile-time program IDs. See
+`crates/chain/src/programs.rs` for why the second is not configuration.
+
+Nothing here is an environment variable. `openfiat-node --help` is the
+whole surface.
+
+## 9. Production deployment
 
 - **Linux (systemd)** — [`packaging/systemd/README.md`](../packaging/systemd/README.md):
   a real unit file with auto-restart and graceful `SIGTERM` shutdown,
@@ -214,7 +260,7 @@ is configured. There is no environment-variable fallback and no config
 file: `openfiat-node --help` is the entire surface, deliberately, so a
 node's behaviour is a function of its invocation and nothing ambient.
 
-## 9. Next steps
+## 10. Next steps
 
 - [`architecture.md`](architecture.md) — crate dependency graph, wire
   format, transport, and canonical protocol parameters.

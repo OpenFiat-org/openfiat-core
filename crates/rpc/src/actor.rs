@@ -154,6 +154,10 @@ pub struct NetworkConfig {
     /// premium, and it is a real cost to the operator, so it is never
     /// assumed.
     pub ipfs_api_url: Option<String>,
+    /// How long this node keeps the content it pins. Defaults to a
+    /// bounded rolling window — running a node should not be an
+    /// open-ended storage commitment.
+    pub retention: openfiat_content::Retention,
 }
 
 impl NetworkConfig {
@@ -169,6 +173,7 @@ impl NetworkConfig {
             bootstrap_peers: Vec::new(),
             chain_mode: NodeChainMode::GossipOnly,
             ipfs_api_url: None,
+            retention: openfiat_content::Retention::default(),
             snapshot: SnapshotConfig::default(),
         }
     }
@@ -364,9 +369,32 @@ const PINNING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 
 async fn poll_pinning<S: KvStore + 'static>(
     state: &NodeState<S>,
     client: &dyn openfiat_content::PinningClient,
+    retention: openfiat_content::Retention,
 ) {
+    let now = openfiat_types::Timestamp::now();
     let attachments = state.attachments.all();
-    let wanted = openfiat_content::challengeable(&attachments);
+
+    // What this node is committed to holding: verifiable content inside
+    // its own retention window, which for an archival node is everything
+    // and for a rolling node is its recent slice.
+    let wanted: Vec<openfiat_crypto::Cid> = attachments
+        .iter()
+        .filter(|a| a.cid.is_verifiable() && retention.keeps(a.created_at, now))
+        .map(|a| a.cid.clone())
+        .collect();
+
+    // Release what fell out of the window first, so a node that shrank
+    // its retention frees disk on the next tick rather than only after it
+    // has finished pinning everything new.
+    let dropped = state.held_content.evict_outside(&wanted);
+    if dropped > 0 {
+        tracing::info!(
+            dropped,
+            retention = %retention.describe(),
+            "evicted content outside the retention window"
+        );
+    }
+
     let mut kept = 0usize;
 
     for cid in wanted {
@@ -409,13 +437,13 @@ async fn poll_pinning<S: KvStore + 'static>(
 /// decided" have to stay distinct, and why a node is never penalised for
 /// the second.
 async fn poll_content_challenges<S: KvStore + 'static>(state: &NodeState<S>) {
+    let now = openfiat_types::Timestamp::now();
     let attachments = state.attachments.all();
-    let pool = openfiat_content::challengeable(&attachments);
+    let pool = openfiat_content::challengeable(&attachments, now);
     if pool.is_empty() {
         return;
     }
 
-    let now = openfiat_types::Timestamp::now();
     // Seeded by the clock so a peer cannot hold one lucky file and pass
     // for ever, and so two nodes challenging the same peer do not both
     // ask about the same content.
@@ -854,6 +882,7 @@ where
                 .ipfs_api_url
                 .as_deref()
                 .map(openfiat_content::KuboClient::new);
+            let retention = network.retention;
             let mut snapshot_produce = tokio::time::interval(
                 snapshot_config
                     .interval
@@ -910,7 +939,7 @@ where
                         // a node that stores nothing can still check who
                         // does.
                         if let Some(client) = pinning_client.as_ref() {
-                            poll_pinning(&state, client).await;
+                            poll_pinning(&state, client, retention).await;
                         }
                         poll_content_challenges(&state).await;
                     }

@@ -45,6 +45,7 @@
 
 use clap::Parser;
 use openfiat_chain::NodeChainMode;
+use openfiat_content::Retention;
 use openfiat_crypto::Keypair;
 use openfiat_database::Database;
 use openfiat_network::Multiaddr;
@@ -168,6 +169,19 @@ pub struct Args {
     /// performs whether or not it stores any itself.
     #[arg(long, value_name = "URL")]
     pub ipfs_api_url: Option<String>,
+
+    /// How long to keep pinned content: a number of days, or `archival`.
+    ///
+    /// Defaults to 30 days. Not every node should store the whole history
+    /// — that would make running one an open-ended commitment — so the
+    /// default is a bounded window and keeping everything is a choice.
+    ///
+    /// 30 days is also the floor every node owes the network, so shorter
+    /// values are refused rather than quietly raised. Challenges are only
+    /// ever drawn from inside that floor, which is what lets a rolling
+    /// node evict correctly without losing its reward share.
+    #[arg(long, value_name = "DAYS|archival", default_value = "30", value_parser = Retention::parse)]
+    pub retention: Retention,
 
     /// Log verbosity: `error`, `warn`, `info`, `debug` or `trace`.
     ///
@@ -367,6 +381,8 @@ async fn main() {
         network = openfiat_chain::PROGRAM_IDS.network,
         staking_program = openfiat_chain::PROGRAM_IDS.staking,
         entrypoints = args.entrypoints.len(),
+        retention = %args.retention.describe(),
+        pinning = if args.ipfs_api_url.is_some() { "on" } else { "off" },
         "starting"
     );
 
@@ -394,6 +410,7 @@ async fn main() {
             chain_mode,
             snapshot,
             ipfs_api_url: args.ipfs_api_url.clone(),
+            retention: args.retention,
         },
     );
     let metrics = Arc::new(openfiat_metrics::MetricsRegistry::new());

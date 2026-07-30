@@ -204,6 +204,7 @@ INFO openfiat_node: peers can reach this node at this address …
 | `--snapshot-public-url <URL>` | none | Repeatable. **Omitting it disables snapshot production** |
 | `--snapshot-interval-secs <SECS>` | 3600 | Ignored without `--snapshot-public-url` |
 | `--ipfs-api-url <URL>` | none | IPFS daemon to pin attachment content through; earns the retrievability share of rewards |
+| `--retention <DAYS\|archival>` | `30` | How long pinned content is kept. 30 days is the floor every node owes the network; shorter is refused |
 | `--log <FILTER>` | `info` | Per-module directives accepted, e.g. `info,openfiat_rpc::actor=debug` |
 
 Two behaviours worth knowing before you deploy:
@@ -215,6 +216,11 @@ Two behaviours worth knowing before you deploy:
 - **Peer discovery does not run yet** ([#146]). A node finds only the peers
   given with `--entrypoint`, and announces no addresses of its own, so
   nothing will discover it either.
+- **A node is a bounded storage commitment by default.** `--retention`
+  keeps a rolling 30-day window and evicts past it; `--retention archival`
+  keeps everything and is a deliberate choice. Not every node should carry
+  the whole history. Challenges are only ever drawn from inside the 30-day
+  floor, so evicting correctly never costs a node its reward share.
 - **Pinning is opt-in and affects what you earn.** With `--ipfs-api-url`
   the node pins the content protocol records reference, keeps a local copy
   of the part small enough to be verified, and can answer a peer's

@@ -19,6 +19,7 @@ openfiat-database = { path = "../database", version = "0.1.0" }
 openfiat-wallet = { path = "../wallet", version = "0.1.0" }
 openfiat-crypto = { path = "../crypto", version = "0.1.0" }
 openfiat-chain = { path = "../chain", version = "0.1.0" }
+openfiat-content = { path = "../content", version = "0.1.0" }
 openfiat-network = { path = "../network", version = "0.1.0" }
 openfiat-types = { path = "../types", version = "0.1.0" }
 axum = "0.8.9"

@@ -79,6 +79,34 @@ impl<S: KvStore> HeldContent<S> {
         self.get(cid).is_some()
     }
 
+    /// Drops content this node is no longer committed to keeping.
+    ///
+    /// `keep_cids` is what the caller's retention window still covers;
+    /// everything else goes. Passing the survivors rather than the
+    /// casualties is deliberate — the caller derives them from the
+    /// attachment records it holds, and a node whose records have not
+    /// replicated yet would otherwise evict content it should keep.
+    ///
+    /// Returns how many were dropped.
+    pub fn evict_outside(&self, keep_cids: &[Cid]) -> usize {
+        let keep: std::collections::HashSet<&str> =
+            keep_cids.iter().map(|cid| cid.as_str()).collect();
+        let mut dropped = 0;
+        for (key, _) in self
+            .store
+            .iter_prefix(COLUMN_FAMILY, &[])
+            .unwrap_or_default()
+        {
+            let Ok(held) = std::str::from_utf8(&key) else {
+                continue;
+            };
+            if !keep.contains(held) && self.store.delete(COLUMN_FAMILY, &key).is_ok() {
+                dropped += 1;
+            }
+        }
+        dropped
+    }
+
     /// How many items are held — for `getNodeInfo`-style reporting, so an
     /// operator can see their node is actually doing the thing it is
     /// being paid a premium for.
@@ -138,6 +166,38 @@ mod tests {
         let store = held();
         assert!(!store.keep(&chunked, b"anything"));
         assert!(!store.holds(&chunked));
+    }
+
+    #[test]
+    fn eviction_drops_what_is_no_longer_covered_and_keeps_what_is() {
+        let store = held();
+        let kept = fixtures::probe_cid();
+        let stale = fixtures::other_cid();
+        assert!(store.keep(&kept, PROBE_CONTENT));
+        assert!(store.keep(&stale, b"a second attachment"));
+        assert_eq!(store.count(), 2);
+
+        assert_eq!(store.evict_outside(std::slice::from_ref(&kept)), 1);
+        assert!(store.holds(&kept));
+        assert!(!store.holds(&stale));
+    }
+
+    #[test]
+    fn evicting_against_an_empty_window_drops_everything() {
+        // A node reconfigured to keep nothing it still has records for
+        // must actually release the disk, not quietly hold on.
+        let store = held();
+        assert!(store.keep(&fixtures::probe_cid(), PROBE_CONTENT));
+        assert_eq!(store.evict_outside(&[]), 1);
+        assert_eq!(store.count(), 0);
+    }
+
+    #[test]
+    fn eviction_is_idempotent() {
+        let store = held();
+        assert!(store.keep(&fixtures::probe_cid(), PROBE_CONTENT));
+        assert_eq!(store.evict_outside(&[]), 1);
+        assert_eq!(store.evict_outside(&[]), 0, "a second sweep drops nothing");
     }
 
     #[test]

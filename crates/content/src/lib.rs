@@ -29,6 +29,7 @@ pub mod kubo;
 pub mod pinning;
 pub mod protocol;
 pub mod record;
+pub mod retention;
 pub mod service;
 pub mod store;
 
@@ -45,6 +46,7 @@ pub use pinning::{PinError, PinningClient};
 pub use record::{
     Attachment, AttachmentId, AttachmentSubject, MAX_ATTACHMENT_BYTES, MAX_CAPTION_CHARS, MediaType,
 };
+pub use retention::{MINIMUM_DAYS, Retention};
 pub use service::AttachmentService;
 pub use store::AttachmentRegistry;
 

@@ -3333,6 +3333,7 @@ dependencies = [
  "clap",
  "openfiat-api",
  "openfiat-chain",
+ "openfiat-content",
  "openfiat-crypto",
  "openfiat-database",
  "openfiat-metrics",
