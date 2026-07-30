@@ -41,7 +41,7 @@ impl ReservationError {
             Self::ReservationNotFound => ErrorCode::ReservationNotFound,
             Self::AdvertisementNotFound => ErrorCode::AdvertisementNotFound,
             Self::InvalidAmount => ErrorCode::InvalidRequest,
-            Self::PriceDisagreement => ErrorCode::InvalidRequest,
+            Self::PriceDisagreement => ErrorCode::PriceDisagreement,
             Self::InsufficientLiquidity => ErrorCode::InsufficientAvailableLiquidity,
             Self::InvalidReservationState => ErrorCode::InvalidReservationState,
         }

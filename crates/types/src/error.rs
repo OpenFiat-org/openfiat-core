@@ -101,6 +101,15 @@ error_registry! {
         InsufficientAvailableLiquidity = 4004, "INSUFFICIENT_AVAILABLE_LIQUIDITY", true;
         MerchantOffline = 4005, "MERCHANT_OFFLINE", true;
         InvalidReservationState = 4006, "INVALID_RESERVATION_STATE", false;
+        // The price the requester signed is not one the advertisement's own
+        // terms produce. Its own code rather than the generic
+        // `InvalidRequest` it used to share with every other malformed
+        // field: a taker whose price disagreed could not tell that from a
+        // typo in their amount, and the two call for opposite responses —
+        // re-read the book and sign again, versus fix the request.
+        // Retryable, because the honest cause is a quote that moved
+        // between reading it and signing it.
+        PriceDisagreement = 4007, "PRICE_DISAGREEMENT", true;
     }
     range "Settlement & Liquidity (5000-5999)" {
         SettlementFailed = 5000, "SETTLEMENT_FAILED", true;

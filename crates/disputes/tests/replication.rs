@@ -170,7 +170,7 @@ async fn a_full_commit_reveal_cycle_reaches_a_consistent_resolution_across_the_c
     drive_until(&mut all, |services| {
         services
             .iter()
-            .all(|s| s.get(&dispute_id).unwrap().status == DisputeStatus::AwaitingChainVerdict)
+            .all(|s| s.get(&dispute_id).unwrap().status == DisputeStatus::AwaitingChainExecution)
     })
     .await;
 

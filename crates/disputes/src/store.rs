@@ -208,9 +208,9 @@ impl<S: KvStore> DisputeRegistry<S> {
         });
         if dispute.reveals.len() == dispute.required_arbitrators as usize {
             // Reveals are recorded, never tallied. See
-            // `DisputeStatus::AwaitingChainVerdict` for why this node does
+            // `DisputeStatus::AwaitingChainExecution` for why this node does
             // not decide the case it just finished collecting votes for.
-            dispute.status = DisputeStatus::AwaitingChainVerdict;
+            dispute.status = DisputeStatus::AwaitingChainExecution;
         }
         dispute.updated_at = signed.reveal.timestamp;
         self.put(&dispute);
@@ -244,8 +244,21 @@ impl<S: KvStore> DisputeRegistry<S> {
         }
 
         if dispute.buyer_agreed_mutual_settlement && dispute.seller_agreed_mutual_settlement {
-            dispute.resolution = Some(Resolution::MutualSettlement);
-            dispute.status = DisputeStatus::Resolved;
+            // Both flags are the agreement, and they are already recorded
+            // above. What is *not* recorded here is a resolution.
+            //
+            // This path used to set one and mark the case `Resolved`,
+            // which survived the change that stopped the arbitrated path
+            // doing the same, and it was the one remaining place an
+            // outcome was declared off-chain. Two signatures do establish
+            // what the parties agreed — there is no tally to get wrong —
+            // but they do not move the escrow, and a record saying
+            // `Resolved` while the funds are still locked is the same
+            // overstatement in a quieter form. The chain can also execute
+            // an arbitrated outcome on a case whose parties agreed but
+            // never relayed it, and then the two would disagree about one
+            // dispute again.
+            dispute.status = DisputeStatus::AwaitingChainExecution;
         }
         dispute.updated_at = signed.agree.timestamp;
         self.put(&dispute);
@@ -297,7 +310,7 @@ impl<S: KvStore> DisputeRegistry<S> {
         // that transaction confirm. The verdict is recorded only when the
         // node could actually read it from the case account. A node that
         // saw an execution land but could not read the outcome stays in
-        // `AwaitingChainVerdict`, which is the truth: something happened
+        // `AwaitingChainExecution`, which is the truth: something happened
         // on chain and this node does not yet know what. Inventing a
         // verdict to fill the gap is the exact failure this change
         // removes.
@@ -506,7 +519,7 @@ mod tests {
 
         let dispute = disputes.get(&dispute_id).unwrap();
         assert_eq!(dispute.reveals.len(), 3, "every vote is recorded");
-        assert_eq!(dispute.status, DisputeStatus::AwaitingChainVerdict);
+        assert_eq!(dispute.status, DisputeStatus::AwaitingChainExecution);
         // Two of three revealed BuyerWins. This node used to call that
         // the answer, and the chain would then re-arbitrate the same case
         // stake-weighted, with a quorum floor, re-opening the round on a
@@ -580,7 +593,7 @@ mod tests {
         // Every reveal is in, and this node still has no verdict. It
         // collected the votes; the chain decides what they add up to.
         let awaiting = disputes.get(&dispute_id).unwrap();
-        assert_eq!(awaiting.status, DisputeStatus::AwaitingChainVerdict);
+        assert_eq!(awaiting.status, DisputeStatus::AwaitingChainExecution);
         assert_eq!(
             awaiting.resolution, None,
             "the off-chain layer must not tally — the chain re-arbitrates \
@@ -678,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn mutual_settlement_resolves_once_both_parties_agree() {
+    fn mutual_settlement_records_the_agreement_and_waits_for_the_escrow_to_move() {
         let (_settlements, disputes, buyer, seller, settlement_id) = setup();
         let dispute_id = open_dispute(&disputes, &buyer, &settlement_id);
 
@@ -704,8 +717,27 @@ mod tests {
             .apply_mutual_settlement_agree(SignedMutualSettlementAgree::sign(seller_agree, &seller))
             .unwrap();
 
-        let dispute = disputes.get(&dispute_id).unwrap();
-        assert_eq!(dispute.status, DisputeStatus::Resolved);
-        assert_eq!(dispute.resolution, Some(Resolution::MutualSettlement));
+        let agreed = disputes.get(&dispute_id).unwrap();
+        assert!(agreed.buyer_agreed_mutual_settlement);
+        assert!(agreed.seller_agreed_mutual_settlement);
+        assert_eq!(agreed.status, DisputeStatus::AwaitingChainExecution);
+        assert_eq!(
+            agreed.resolution, None,
+            "two signatures establish what the parties agreed; they do not \
+             move the escrow, and a resolved case whose funds are still \
+             locked is the same overstatement in a quieter form"
+        );
+
+        // The chain carrying it out is what finishes the case.
+        disputes
+            .apply_onchain_execution(
+                &dispute_id,
+                "mutual-sig",
+                Some(Resolution::MutualSettlement),
+            )
+            .unwrap();
+        let settled = disputes.get(&dispute_id).unwrap();
+        assert_eq!(settled.status, DisputeStatus::Resolved);
+        assert_eq!(settled.resolution, Some(Resolution::MutualSettlement));
     }
 }
