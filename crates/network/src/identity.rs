@@ -154,3 +154,127 @@ mod dialable_tests {
         }
     }
 }
+
+/// Resolves a `/dns4/`, `/dns6/` or `/dns/` multiaddr into one address per
+/// IP the hostname points at, leaving every other component — including
+/// `/p2p/<peer id>` — untouched.
+///
+/// # Why this crate resolves DNS instead of libp2p
+///
+/// libp2p has a `dns` transport feature and this workspace deliberately
+/// does not enable it: it pulls in `hickory-proto`, which has carried
+/// unresolved advisories (see `docs/architecture.md`). The consequence
+/// was that entrypoints had to be raw IP multiaddrs, which is a genuinely
+/// worse operator experience — an IP that changes silently strands
+/// everyone holding it, and `/ip4/84.32.223.111/udp/4001/quic-v1/p2p/12D3…`
+/// is not something anyone can be asked to type or verify.
+///
+/// Resolving here uses the operating system's own resolver through
+/// `std::net`, which every platform already has, so a hostname works
+/// without adding a DNS implementation to the dependency tree.
+///
+/// # The `/p2p/` component is preserved, and that is the security of it
+///
+/// DNS is not authenticated. A hijacked record points a node at an
+/// attacker's host — and because the peer id survives resolution, the
+/// connection to that host fails the libp2p handshake unless the attacker
+/// also holds the entrypoint's private key. Without a `/p2p/` component
+/// there is nothing to check, and the attacker becomes your only peer:
+/// they cannot forge events, since every event carries its origin's own
+/// signature, but they can decide which ones you see. Keep the peer id.
+pub fn resolve_dns_multiaddr(
+    address: &libp2p::Multiaddr,
+) -> Result<Vec<libp2p::Multiaddr>, String> {
+    use libp2p::multiaddr::Protocol;
+
+    let mut components = address.iter().peekable();
+    let Some(first) = components.next() else {
+        return Ok(vec![address.clone()]);
+    };
+
+    let (host, want_v4, want_v6) = match first {
+        Protocol::Dns4(name) => (name.to_string(), true, false),
+        Protocol::Dns6(name) => (name.to_string(), false, true),
+        Protocol::Dns(name) => (name.to_string(), true, true),
+        // Not a hostname: nothing to resolve, hand it back unchanged.
+        _ => return Ok(vec![address.clone()]),
+    };
+
+    // The port is irrelevant to resolution but `to_socket_addrs` demands
+    // one, so a placeholder is used and the real components are re-appended
+    // from the original address below.
+    let resolved: Vec<std::net::IpAddr> =
+        std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), 0u16))
+            .map_err(|e| format!("could not resolve {host}: {e}"))?
+            .map(|socket| socket.ip())
+            .filter(|ip| match ip {
+                std::net::IpAddr::V4(_) => want_v4,
+                std::net::IpAddr::V6(_) => want_v6,
+            })
+            .collect();
+
+    if resolved.is_empty() {
+        return Err(format!("{host} resolved to no usable address"));
+    }
+
+    let rest: Vec<Protocol> = address.iter().skip(1).collect();
+    let mut out = Vec::with_capacity(resolved.len());
+    for ip in resolved {
+        let mut resolved_addr = libp2p::Multiaddr::empty();
+        resolved_addr.push(match ip {
+            std::net::IpAddr::V4(v4) => Protocol::Ip4(v4),
+            std::net::IpAddr::V6(v6) => Protocol::Ip6(v6),
+        });
+        for component in &rest {
+            resolved_addr.push(component.clone());
+        }
+        if !out.contains(&resolved_addr) {
+            out.push(resolved_addr);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod dns_tests {
+    use super::resolve_dns_multiaddr;
+
+    #[test]
+    fn an_ip_multiaddr_is_returned_unchanged() {
+        let addr: libp2p::Multiaddr = "/ip4/84.32.223.111/udp/4001/quic-v1".parse().unwrap();
+        assert_eq!(resolve_dns_multiaddr(&addr).unwrap(), vec![addr]);
+    }
+
+    #[test]
+    fn localhost_resolves_and_keeps_every_other_component() {
+        // `localhost` is the one hostname guaranteed resolvable without a
+        // network, so this asserts the rewriting rather than the DNS.
+        let addr: libp2p::Multiaddr =
+            "/dns4/localhost/udp/4001/quic-v1/p2p/12D3KooWD1Znm1N35pmNRpB5zzToghqTU2yrPzWCDDLVaekg6628"
+                .parse()
+                .unwrap();
+        let resolved = resolve_dns_multiaddr(&addr).unwrap();
+
+        assert!(!resolved.is_empty());
+        for one in &resolved {
+            let text = one.to_string();
+            assert!(text.starts_with("/ip4/"), "{text}");
+            assert!(text.contains("/udp/4001/quic-v1"), "{text}");
+            assert!(
+                text.contains("/p2p/12D3KooWD1Znm1N35pmNRpB5zzToghqTU2yrPzWCDDLVaekg6628"),
+                "the peer id is what stops a hijacked DNS record \
+                 substituting a different node: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hostname_that_does_not_exist_is_an_error_not_a_silent_skip() {
+        // Silently dropping it would leave a node with no entrypoints and
+        // no explanation, looking healthy and talking to nobody.
+        let addr: libp2p::Multiaddr = "/dns4/nonexistent.invalid/udp/4001/quic-v1"
+            .parse()
+            .unwrap();
+        assert!(resolve_dns_multiaddr(&addr).is_err());
+    }
+}

@@ -117,6 +117,12 @@ pub struct Args {
 
     /// Peer to dial on startup. Repeat for several.
     ///
+    /// A hostname works: `/dns4/openfiat.allenhark.com/udp/4001/quic-v1/p2p/<peer id>`
+    /// is resolved at startup through the operating system's own resolver.
+    /// Keep the `/p2p/<peer id>` — DNS is not authenticated, and the peer
+    /// id is what makes a hijacked record fail the handshake instead of
+    /// silently becoming your only peer.
+    ///
     /// A lone node has nothing to dial. Peer discovery does not yet run, so
     /// a node currently finds only the peers named here.
     #[arg(long = "entrypoint", value_name = "MULTIADDR")]
@@ -169,6 +175,23 @@ pub struct Args {
     /// performs whether or not it stores any itself.
     #[arg(long, value_name = "URL")]
     pub ipfs_api_url: Option<String>,
+
+    /// This node's publicly reachable API URL, e.g.
+    /// `https://openfiat.allenhark.com`.
+    ///
+    /// Set it once the node is behind TLS and reachable from the internet,
+    /// and the node advertises itself to the network as a public API node
+    /// so that browsers and other clients can use it. Browsers are the
+    /// reason it must be HTTPS: a page served over HTTPS cannot open a
+    /// plain-HTTP connection, so a node without a certificate is
+    /// unreachable from every web application regardless of how healthy
+    /// it is.
+    ///
+    /// Omitting it is not a fault. The node works exactly as well; it just
+    /// does not tell anyone it can be dialled directly, which is right for
+    /// a node on a laptop or behind a firewall.
+    #[arg(long, value_name = "URL")]
+    pub public_rpc_url: Option<String>,
 
     /// How long to keep pinned content: a number of days, or `archival`.
     ///
@@ -339,7 +362,32 @@ async fn main() {
     let data_dir = args.ledger.clone();
     let http_addr = args.rpc_bind_address.clone();
     let listen_addr = args.gossip_bind_address.clone();
-    let bootstrap_peers = args.entrypoints.clone();
+    // Resolved here rather than by libp2p: the `dns` transport feature is
+    // deliberately not enabled (see `openfiat_network::identity`), so a
+    // hostname entrypoint would otherwise fail to dial with nothing said
+    // about why.
+    let mut bootstrap_peers = Vec::new();
+    for entrypoint in &args.entrypoints {
+        match openfiat_network::identity::resolve_dns_multiaddr(entrypoint) {
+            Ok(resolved) => {
+                if resolved.iter().any(|a| a != entrypoint) {
+                    tracing::info!(
+                        %entrypoint,
+                        resolved = resolved.len(),
+                        "resolved entrypoint hostname"
+                    );
+                }
+                bootstrap_peers.extend(resolved);
+            }
+            // Fatal rather than skipped. A node that quietly dropped an
+            // unresolvable entrypoint would come up with no peers at all
+            // and look perfectly healthy while talking to nobody.
+            Err(err) => {
+                tracing::error!(%entrypoint, %err, "--entrypoint could not be resolved");
+                std::process::exit(1);
+            }
+        }
+    }
     let chain_mode = chain_mode(&args);
 
     // Probe every endpoint before claiming RpcConnected.
@@ -383,6 +431,7 @@ async fn main() {
         entrypoints = args.entrypoints.len(),
         retention = %args.retention.describe(),
         pinning = if args.ipfs_api_url.is_some() { "on" } else { "off" },
+        public_url = args.public_rpc_url.as_deref().unwrap_or("(not advertised)"),
         "starting"
     );
 
@@ -410,6 +459,7 @@ async fn main() {
             chain_mode,
             snapshot,
             ipfs_api_url: args.ipfs_api_url.clone(),
+            public_rpc_url: args.public_rpc_url.clone(),
             retention: args.retention,
         },
     );

@@ -142,12 +142,18 @@ transactions:
     --ledger ~/openfiat \
     --identity ~/openfiat/wallet.json \
     --solana-rpc-url https://api.devnet.solana.com \
-    --entrypoint /ip4/84.32.223.111/udp/4001/quic-v1/p2p/12D3KooWK9hQ7TwbfvFiaAxUbRFCkdhS7iEpAJDnewNL1anyREQ1
+    --entrypoint /dns4/openfiat.allenhark.com/udp/4001/quic-v1/p2p/12D3KooWK9hQ7TwbfvFiaAxUbRFCkdhS7iEpAJDnewNL1anyREQ1
 ```
 
-That entrypoint is the public devnet node — connection to it was verified
-from a clean node, not copied from a config file. Substitute your own if
-you are running a private cluster.
+That entrypoint is the public devnet node. A hostname is resolved at
+startup through the system resolver, so the cluster survives its IP
+changing; keep the `/p2p/<peer id>`, which is what makes a hijacked DNS
+record fail the handshake rather than becoming your only peer. The IP
+form `/ip4/84.32.223.111/...` works too.
+
+To make your own node reachable from a browser it needs TLS — see
+[`docs/getting-started.md`](docs/getting-started.md) §7, which covers
+nginx, certbot, and `--public-rpc-url`.
 
 Check it:
 
@@ -208,6 +214,7 @@ INFO openfiat_node: peers can reach this node at this address …
 | `--snapshot-public-url <URL>` | none | Repeatable. **Omitting it disables snapshot production** |
 | `--snapshot-interval-secs <SECS>` | 3600 | Ignored without `--snapshot-public-url` |
 | `--ipfs-api-url <URL>` | none | IPFS daemon to pin attachment content through; earns the retrievability share of rewards |
+| `--public-rpc-url <URL>` | none | This node's public HTTPS URL. Set it to advertise the node as reachable so browsers can use it |
 | `--retention <DAYS\|archival>` | `30` | How long pinned content is kept. 30 days is the floor every node owes the network; shorter is refused |
 | `--log <FILTER>` | `info` | Per-module directives accepted, e.g. `info,openfiat_rpc::actor=debug` |
 

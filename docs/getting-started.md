@@ -183,6 +183,18 @@ Peer discovery does not run yet ([#146]), so a node finds only the peers
 it is given. The public devnet entrypoint is:
 
 ```
+/dns4/openfiat.allenhark.com/udp/4001/quic-v1/p2p/12D3KooWK9hQ7TwbfvFiaAxUbRFCkdhS7iEpAJDnewNL1anyREQ1
+```
+
+A hostname works and is preferred: the node resolves it at startup
+through the operating system's resolver, so the cluster survives the
+entrypoint's IP changing. Keep the `/p2p/<peer id>` — DNS is not
+authenticated, and the peer id is what makes a hijacked record fail the
+handshake rather than silently becoming your only peer.
+
+The equivalent by IP, if you prefer to pin it:
+
+```
 /ip4/84.32.223.111/udp/4001/quic-v1/p2p/12D3KooWK9hQ7TwbfvFiaAxUbRFCkdhS7iEpAJDnewNL1anyREQ1
 ```
 
@@ -200,7 +212,111 @@ another operator.
 
 [#146]: https://github.com/OpenFiat-org/openfiat-core/issues/146
 
-## 7. The on-chain programs this node talks to
+## 7. Make the node reachable from the web (TLS + a hostname)
+
+Skip this if your node is for your own use. Do it if you want browsers —
+including OpenFiat's own web app — to be able to use your node.
+
+**A browser cannot reach a plain-HTTP node from an HTTPS page.** It is
+blocked as mixed content before the request is sent, so a perfectly
+healthy node on `http://your-ip:7080` is unreachable from every web
+application, and the failure looks identical to the node being down.
+Nothing you change on the node fixes that; it needs a certificate.
+
+### 7.1 Point a hostname at the node
+
+An `A` record for the host, e.g. `openfiat.example.com` → your server's
+public IP. Everything below assumes that resolves before you start, or
+certificate issuance will fail.
+
+### 7.2 Terminate TLS with nginx
+
+```nginx
+# /etc/nginx/sites-available/openfiat-node
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name openfiat.example.com;
+
+    # certbot writes these; see 7.3
+    ssl_certificate     /etc/letsencrypt/live/openfiat.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/openfiat.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:7080;
+        proxy_http_version 1.1;
+
+        # The node serves a WebSocket event stream on the same port as
+        # everything else; without these two headers it downgrades to a
+        # plain request and subscriptions silently never deliver.
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # The node already sets permissive CORS headers. Do NOT add your
+        # own here: two `Access-Control-Allow-Origin` headers on one
+        # response make browsers reject it outright, while curl sees a
+        # clean 200 and everything looks fine from the server side.
+        proxy_read_timeout 300s;
+    }
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name openfiat.example.com;
+    return 301 https://$host$request_uri;
+}
+```
+
+```bash
+ln -s /etc/nginx/sites-available/openfiat-node /etc/nginx/sites-enabled/
+nginx -t && systemctl reload nginx
+```
+
+### 7.3 Get a certificate
+
+```bash
+apt install -y certbot python3-certbot-nginx
+certbot --nginx -d openfiat.example.com   # renews itself via systemd timer
+```
+
+### 7.4 Keep 7080 off the internet
+
+Once nginx is in front, the node's own port should not be reachable
+directly — otherwise the plain-HTTP endpoint stays open beside the
+TLS one.
+
+```bash
+ufw allow 443/tcp
+ufw allow 4001/udp     # gossip; QUIC, and NOT proxied — peers speak to it directly
+ufw delete allow 7080/tcp
+```
+
+### 7.5 Tell the network
+
+```bash
+--public-rpc-url https://openfiat.example.com
+```
+
+The node then advertises itself in the service registry (OFS-1500) as a
+`PublicApiNode`, signed with its own key, and clients discover it there.
+Omitting the flag is not a fault — the node works exactly as well, it
+just does not tell anyone it can be dialled directly, which is right for
+a node on a laptop.
+
+Check it end to end, from outside the host:
+
+```bash
+curl -s https://openfiat.example.com/health
+# ok
+```
+
+## 8. The on-chain programs this node talks to
 
 Three Anchor programs are deployed to devnet today (see
 `programs/README.md` and `programs/devnet-addresses.json` for the full,
@@ -226,7 +342,7 @@ devnet deployment above), see `programs/README.md` in full — it covers
 the Anchor toolchain, `anchor test`, and `anchor deploy
 --provider.cluster devnet`.
 
-## 8. Run a local multi-node cluster
+## 9. Run a local multi-node cluster
 
 A real, persistently-running 3-node cluster (one `RpcConnected` bootstrap
 node plus two `GossipOnly` followers, each a genuine `openfiat-node`
@@ -246,7 +362,7 @@ Node 0 is reachable at `http://localhost:7080`, node 1 at
 directory to use a faster private RPC endpoint than Solana's public
 devnet one.
 
-## 9. Turning things off
+## 10. Turning things off
 
 Most of what a node does is not optional — it gossips, validates and
 serves whatever it has replicated. What *is* optional is listed here, so
@@ -268,7 +384,7 @@ verification on every event, and the compile-time program IDs. See
 Nothing here is an environment variable. `openfiat-node --help` is the
 whole surface.
 
-## 10. Production deployment
+## 11. Production deployment
 
 - **Linux (systemd)** — [`packaging/systemd/README.md`](../packaging/systemd/README.md):
   a real unit file with auto-restart and graceful `SIGTERM` shutdown,
@@ -283,7 +399,7 @@ is configured. There is no environment-variable fallback and no config
 file: `openfiat-node --help` is the entire surface, deliberately, so a
 node's behaviour is a function of its invocation and nothing ambient.
 
-## 11. Next steps
+## 12. Next steps
 
 - [`architecture.md`](architecture.md) — crate dependency graph, wire
   format, transport, and canonical protocol parameters.

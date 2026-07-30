@@ -158,6 +158,14 @@ pub struct NetworkConfig {
     /// bounded rolling window — running a node should not be an
     /// open-ended storage commitment.
     pub retention: openfiat_content::Retention,
+    /// This node's publicly reachable API URL, if it has one.
+    ///
+    /// `Some` means the operator has put the node behind TLS and wants it
+    /// used: the node advertises itself in the service registry
+    /// (OFS-1500) as a `PublicApiNode`, and browsers and other clients
+    /// discover it there. `None` is the ordinary case for a node on a
+    /// laptop or behind a firewall, and advertises nothing.
+    pub public_rpc_url: Option<String>,
 }
 
 impl NetworkConfig {
@@ -174,6 +182,7 @@ impl NetworkConfig {
             chain_mode: NodeChainMode::GossipOnly,
             ipfs_api_url: None,
             retention: openfiat_content::Retention::default(),
+            public_rpc_url: None,
             snapshot: SnapshotConfig::default(),
         }
     }
@@ -382,6 +391,78 @@ const GOSSIP_LOG_RETENTION: std::time::Duration = std::time::Duration::from_secs
 /// the sweep cadence only bounds how far past the window the log drifts,
 /// and a scan of a large column family is not something to do often.
 const GOSSIP_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Advertises this node as publicly reachable, once, at startup.
+///
+/// # Why the node signs this itself
+///
+/// Every other registration in OFS-1500 is signed by whoever provides the
+/// service, and this is no different — the node is the provider. It holds
+/// its own key, so it can make the claim under its own identity rather
+/// than needing an operator to run a separate registration step that they
+/// would forget and that would then silently expire.
+///
+/// # What the claim is and is not
+///
+/// It says "this URL reaches me". It is not a promise of uptime, and a
+/// consumer should treat it as a candidate to try rather than a
+/// guarantee — which is what `openfiat-app`'s node picker already does,
+/// measuring each one with a real request instead of trusting the list.
+fn advertise_public_api<S: KvStore + 'static>(state: &NodeState<S>, keypair: &Keypair, url: &str) {
+    use openfiat_registry::{Registration, SignedRegistration};
+    use openfiat_types::{InfrastructureService, ServiceId, ServiceType};
+
+    let Ok(provider) = openfiat_network::identity::peer_id_from_public_key(&keypair.public_key())
+    else {
+        return;
+    };
+
+    // Derived from the identity, not random: re-registering on every
+    // restart must update the same record rather than accumulating one
+    // dead entry per boot.
+    let service_id = ServiceId::new(format!("node-{}", hex_peer(&provider)));
+
+    let registration = Registration {
+        service_id,
+        service_type: ServiceType::Infrastructure(InfrastructureService::PublicApiNode),
+        provider: provider.clone(),
+        provider_public_key: keypair.public_key(),
+        endpoints: vec![url.to_string()],
+        supported_ofs: vec![8200],
+        region: None,
+        capabilities: Vec::new(),
+        // No pricing: a public API node is not charging for this, and a
+        // price without a payout wallet is refused anyway.
+        pricing: None,
+        payout_wallet: None,
+        timestamp: openfiat_types::Timestamp::now(),
+    };
+
+    let signed = SignedRegistration::sign(registration, keypair);
+    match state.services.apply_registration(signed.clone()) {
+        Ok(_) => {
+            let gossip_bytes =
+                wire::to_bytes(&signed).expect("SignedRegistration always serializes");
+            crate::dispatch::originate(
+                state,
+                openfiat_registry::protocol::EVENT_REGISTERED,
+                openfiat_registry::protocol::OFS_SPEC,
+                openfiat_types::Priority::Reputation,
+                gossip_bytes,
+            );
+            tracing::info!(url, "advertised this node as publicly reachable");
+        }
+        Err(err) => tracing::warn!(?err, url, "could not advertise this node"),
+    }
+}
+
+fn hex_peer(peer: &openfiat_types::PeerId) -> String {
+    peer.as_bytes()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
 
 /// One sweep of the record families that expire.
 ///
@@ -904,6 +985,7 @@ where
         runtime.block_on(async move {
             let node =
                 Node::new(&network.keypair).expect("failed to start this node's libp2p transport");
+            let advertise_keypair = Keypair::from_seed(network.keypair.seed());
             let chain_client: Option<Box<dyn ChainClient>> = match &network.chain_mode {
                 NodeChainMode::RpcConnected { rpc_urls, .. } => {
                     Some(Box::new(RpcChainClient::new(rpc_urls.clone())))
@@ -950,6 +1032,9 @@ where
                 .as_deref()
                 .map(openfiat_content::KuboClient::new);
             let retention = network.retention;
+            if let Some(url) = network.public_rpc_url.as_deref() {
+                advertise_public_api(&state, &advertise_keypair, url);
+            }
             let mut snapshot_produce = tokio::time::interval(
                 snapshot_config
                     .interval
