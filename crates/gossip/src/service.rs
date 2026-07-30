@@ -429,7 +429,7 @@ impl<S: KvStore> GossipService<S> {
                 Message::Request {
                     request, channel, ..
                 } => self.on_request(peer, request, channel),
-                Message::Response { response, .. } => self.on_response(response),
+                Message::Response { response, .. } => self.on_response(peer, response),
             },
             _ => {}
         }
@@ -528,12 +528,22 @@ impl<S: KvStore> GossipService<S> {
             .send_response(channel, ack);
     }
 
-    fn on_response(&mut self, envelope: Envelope) {
+    fn on_response(&mut self, peer: Libp2pPeerId, envelope: Envelope) {
         if envelope.header.message_type == MESSAGE_TYPE_RECOVERY_RESPONSE
             && let Ok(response) = wire::from_bytes::<RecoveryResponse>(&envelope.payload)
         {
             for event in response.events {
-                self.receive_event(None, event);
+                // `Some(peer)`, and that is the whole fix. Passing `None`
+                // here — as this did — excluded nobody from the
+                // re-broadcast, so every recovered event went straight
+                // back to the node that had just supplied it. Both sides
+                // request recovery the moment they connect, so two nodes
+                // meeting handed each other their entire backlogs and
+                // then immediately pushed them back: 174 `Dropping
+                // inbound stream because we are at capacity` warnings in
+                // three minutes, measured on a real pair, and every
+                // dropped stream is an event that has to be fetched again.
+                self.receive_event(Some(peer), event);
             }
         }
     }

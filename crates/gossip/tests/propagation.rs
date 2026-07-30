@@ -353,3 +353,58 @@ async fn a_connection_alone_lets_two_nodes_validate_each_others_events_with_no_m
         "node 0 must have actually stored (i.e. validated, not just received) node 1's event"
     );
 }
+
+/// Two nodes meeting must not hand each other the same events forever.
+///
+/// Both request recovery on connect, so each answers with its whole
+/// backlog. Applying those responses with no source peer excluded nobody
+/// from the re-broadcast, so each node pushed the backlog straight back
+/// at the other — 174 "Dropping inbound stream because we are at
+/// capacity" warnings in three minutes on a real pair of nodes, and every
+/// dropped stream is an event that has to be fetched again.
+#[tokio::test]
+async fn recovered_events_are_not_pushed_back_at_the_peer_that_supplied_them() {
+    let mut a = make_service(60);
+    let mut b = make_service(61);
+
+    let a_addr = listen_addr(&mut a).await;
+    let (a_id, a_key) = identity(60);
+    let (b_id, b_key) = identity(61);
+    a.register_peer_key(b_id, b_key);
+    b.register_peer_key(a_id, a_key);
+
+    // A backlog on `a` before `b` ever connects, so `b` learns it by
+    // recovery rather than by push — the path this test is about.
+    let mut backlog = Vec::new();
+    for i in 0..8u8 {
+        backlog.push(
+            a.originate(
+                EventType::new("GossipTestEvent").unwrap(),
+                TEST_OFS_SPEC,
+                Priority::Advertisement,
+                8,
+                vec![i],
+            )
+            .unwrap(),
+        );
+    }
+
+    b.node.dial(a_addr).unwrap();
+    let mut all = vec![a, b];
+    drive_until(&mut all, |services| services[1].connected_peer_count() >= 1).await;
+
+    // `b` recovers everything.
+    drive_until(&mut all, |services| {
+        backlog.iter().all(|id| services[1].has_event(id))
+    })
+    .await;
+
+    // The property: `a` keeps exactly what it originated. Were `b`
+    // pushing the recovered events back, `a` would be receiving its own
+    // backlog again — which is the traffic that exhausted the stream
+    // capacity, not a change in what either node ends up holding.
+    for id in &backlog {
+        assert!(all[0].has_event(id));
+        assert!(all[1].has_event(id), "recovery must still work");
+    }
+}
