@@ -173,7 +173,26 @@ impl NetworkConfig {
 /// against.
 #[allow(clippy::await_holding_refcell_ref)]
 async fn drive_gossip<S: KvStore + 'static>(state: &NodeState<S>) {
-    state.gossip.borrow_mut().drive_once().await;
+    let mut gossip = state.gossip.borrow_mut();
+    gossip.drive_once().await;
+
+    // Report where this node turned out to be reachable, once per address.
+    //
+    // It cannot be known at startup. `--gossip-bind-address` defaults to
+    // the wildcard `0.0.0.0`, which is a listening instruction rather than
+    // an address — nothing can dial it — so the real answer only exists
+    // after libp2p has expanded it across the host's interfaces, and the
+    // public one only after a peer has told us what it saw. Printing the
+    // bind address as though it were an entrypoint, which this node used
+    // to do, hands an operator a string that fails on the far side with no
+    // hint as to why.
+    let peer_id = gossip.node.libp2p_peer_id();
+    for address in gossip.take_newly_reachable() {
+        tracing::info!(
+            entrypoint = %format!("{address}/p2p/{peer_id}"),
+            "reachable at a new address; peers can use this as --entrypoint"
+        );
+    }
 }
 
 /// One tick of an `RpcConnected` node's Solana connectivity (OFS-4300

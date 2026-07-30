@@ -168,11 +168,26 @@ INFO openfiat_node: peers can reach this node at this address …
 - `address` is the Solana address that holds the node's stake — the string
   to give a faucet, paste into an explorer, or stake against. It is
   identical to `solana-keygen pubkey <your wallet.json>`.
-- `entrypoint` is what another operator puts after their `--entrypoint` to
-  dial you, **with the bind address replaced by a host they can route to**.
-  A node binds `0.0.0.0` and cannot tell what a NAT or firewall makes of
-  it, so substituting your real address is the one part it cannot do for
-  you.
+- `entrypoint` lines appear once the node is listening, one per address
+  it is actually reachable at. They are what another operator puts after
+  their own `--entrypoint`:
+
+  ```
+  INFO openfiat_rpc::actor: reachable at a new address …
+       entrypoint=/ip4/203.0.113.9/udp/4001/quic-v1/p2p/12D3KooWAEgF…
+  ```
+
+  These are learned, not configured. `--gossip-bind-address` defaults to
+  `0.0.0.0`, which means "every interface" to a listening socket and
+  nothing to a dialing peer — so the node reports what libp2p actually
+  bound (one line per interface) and, once a peer connects, the address
+  that peer observed the connection arriving from. The second is the only
+  way to learn a public address behind NAT: no amount of local inspection
+  can produce it, because the translation happens elsewhere.
+
+  Pick the one routable from wherever the other operator is. On a VPS with
+  a public IP that is usually the first line; behind NAT, wait for a peer
+  to report one, or forward a port and use that address.
 
 ### Flags
 

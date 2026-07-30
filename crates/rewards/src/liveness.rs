@@ -48,6 +48,38 @@
 //! honest framing is that connectivity is claimed-and-plausible rather
 //! than proven, and the 0.4 floor for gossip-only nodes limits what the
 //! lie is worth rather than preventing it.
+//!
+//! # Content retrievability is the one signal here that IS proven
+//!
+//! [`PeerLiveness::served_content`] is a different kind of fact from the
+//! two above, and the difference is worth being precise about because it
+//! is the only measurement in this crate that an adversary cannot simply
+//! assert.
+//!
+//! A peer earns it by returning bytes that hash to a CID's own digest.
+//! There is no way to produce those bytes without having the content:
+//! that is what a content address *is*. So unlike connectivity, this is
+//! not a claim the ledger takes on trust — it is a claim the challenger
+//! checked, and a lying node fails it every time.
+//!
+//! Two limits, stated rather than glossed:
+//!
+//! - **It proves retrievability, not storage.** A node that holds nothing
+//!   could fetch the content from a public gateway when challenged and
+//!   pass. That is free-riding, and closing it needs proof-of-replication,
+//!   which is a research problem rather than an oversight here. It is also
+//!   a much smaller gap than it first appears: what the network actually
+//!   wants is that the content is *retrievable through that node*, and a
+//!   node that reliably answers has delivered exactly that, whatever it
+//!   did behind the scenes.
+//! - **It samples the verifiable subset.** Only a raw-codec CID's digest
+//!   is taken over the file itself, and providers switch to a dag-pb root
+//!   above 256 KiB (measured against Filebase, which is the standard
+//!   chunk size rather than a quirk). A dag-pb root hashes the DAG node,
+//!   not the content, so this codebase cannot check it without a UnixFS
+//!   decoder. Challenges therefore only ever use raw CIDs — see
+//!   [`openfiat_content::challenge`], which enforces that rather than
+//!   leaving it to each caller to remember.
 
 use crate::params::RewardParams;
 use openfiat_types::{PeerId, Timestamp};
@@ -62,6 +94,12 @@ pub struct PeerLiveness {
     /// Whether a chain-bridge announcement from this peer was observed.
     /// See the module doc on what this does and does not establish.
     pub announced_blockhash: bool,
+    /// Whether this peer answered a retrievability challenge with the
+    /// bytes a CID names, verified against the CID's own digest.
+    ///
+    /// Unlike [`Self::announced_blockhash`], this one is *proven*: see
+    /// the module doc's section on what a retrieval proof establishes.
+    pub served_content: bool,
 }
 
 impl PeerLiveness {
@@ -79,6 +117,22 @@ impl PeerLiveness {
             params.connectivity_rpc_bps
         } else {
             params.connectivity_gossip_bps
+        }
+    }
+
+    /// The content-retrievability multiplier for this peer, in basis
+    /// points.
+    ///
+    /// Defaults to the *absent* multiplier, which is the conservative
+    /// direction: a node this one never challenged is treated as not
+    /// serving. The opposite default would pay every unchallenged node
+    /// the full share and make the challenge pointless — a node could
+    /// earn the premium by being unreachable.
+    pub fn pinning_bps(&self, params: &RewardParams) -> u64 {
+        if self.served_content {
+            params.pinning_serving_bps
+        } else {
+            params.pinning_absent_bps
         }
     }
 }
@@ -126,6 +180,31 @@ impl LivenessLedger {
             .buckets_seen
             .insert(bucket.min(params.availability_buckets.saturating_sub(1)));
         entry.announced_blockhash |= is_blockhash_announcement;
+    }
+
+    /// Records that `peer` returned the bytes a CID names.
+    ///
+    /// The caller must have verified the response against the CID's own
+    /// digest before calling — this ledger stores conclusions, not
+    /// evidence, and cannot tell a checked proof from an unchecked claim.
+    /// [`openfiat_content::challenge`] is what does the checking.
+    ///
+    /// Answering also counts toward presence, and should: a node that
+    /// served content in this slice was demonstrably up in it.
+    pub fn observe_content_served(
+        &mut self,
+        params: &RewardParams,
+        peer: &PeerId,
+        observed_at: Timestamp,
+    ) {
+        self.observe(params, peer, observed_at, false);
+        if let Some(entry) = self
+            .epochs
+            .get_mut(&params.epoch_index(observed_at))
+            .and_then(|peers| peers.get_mut(peer))
+        {
+            entry.served_content = true;
+        }
     }
 
     /// Observations for `epoch`, empty if nothing was heard.

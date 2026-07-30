@@ -8,7 +8,7 @@
 //! assertion, not a calculation.
 
 use crate::liveness::LivenessLedger;
-use crate::params::{InvalidParams, RewardParams};
+use crate::params::{BPS_DENOMINATOR, InvalidParams, RewardParams};
 use openfiat_types::PeerId;
 use std::collections::HashMap;
 
@@ -35,6 +35,7 @@ pub struct RewardEntry {
     pub effective_stake: u64,
     pub connectivity_bps: u64,
     pub availability_bps: u64,
+    pub pinning_bps: u64,
 }
 
 /// A complete, reproducible answer for one epoch.
@@ -80,7 +81,7 @@ pub fn compute(
     // nothing — the zero-weight participant is exactly the shape of the
     // Sybil problem this protocol has elsewhere, so it must never divide
     // into the pool.
-    let mut weights: Vec<(PeerId, u128, u64, u64, u64)> = Vec::new();
+    let mut weights: Vec<(PeerId, u128, u64, u64, u64, u64)> = Vec::new();
     let mut total_weight: u128 = 0;
 
     for (peer, live) in &observed {
@@ -93,9 +94,27 @@ pub fn compute(
 
         let connectivity_bps = live.connectivity_bps(params);
         let availability_bps = live.availability_bps(params);
-        let weight = u128::from(el.effective_stake)
-            * u128::from(connectivity_bps)
-            * u128::from(availability_bps);
+        let pinning_bps = live.pinning_bps(params);
+        // The three service multipliers collapse to one bps-scaled factor
+        // BEFORE meeting the stake, rather than all four being multiplied
+        // together.
+        //
+        // Not a style choice — the naive product overflows. Each bps term
+        // is up to 1e4 and a stake is up to 1e18 base units, so a raw
+        // four-way product reaches 1e30; multiplying that by emission
+        // (~8.2e13) in the payout below gives ~1e44, past u128's ~3.4e38
+        // ceiling, and Rust panics rather than wrapping. Two factors left
+        // barely enough headroom to hide the problem for realistic stakes;
+        // a third removed it entirely, which is how this surfaced.
+        //
+        // Collapsing first keeps the quality factor in 0..=BPS_DENOMINATOR
+        // and the whole computation four orders of magnitude clear of the
+        // ceiling. The truncation is uniform across every node, so it
+        // shifts no one's share relative to anyone else's.
+        let quality_bps =
+            u128::from(connectivity_bps) * u128::from(availability_bps) * u128::from(pinning_bps)
+                / (u128::from(BPS_DENOMINATOR) * u128::from(BPS_DENOMINATOR));
+        let weight = u128::from(el.effective_stake) * quality_bps;
         if weight == 0 {
             continue;
         }
@@ -107,6 +126,7 @@ pub fn compute(
             el.effective_stake,
             connectivity_bps,
             availability_bps,
+            pinning_bps,
         ));
     }
 
@@ -121,9 +141,10 @@ pub fn compute(
 
     let mut entries = Vec::with_capacity(weights.len());
     let mut assigned: u64 = 0;
-    for (peer, weight, effective_stake, connectivity_bps, availability_bps) in weights {
-        // u128 throughout: emission is up to ~1e17 base units and weight
-        // carries two bps factors, so the product overflows u64 easily.
+    for (peer, weight, effective_stake, connectivity_bps, availability_bps, pinning_bps) in weights
+    {
+        // u128 throughout: emission is ~1e14 base units and weight
+        // carries a stake, so the product overflows u64 easily.
         let amount = (u128::from(emission) * weight / total_weight) as u64;
         if amount == 0 {
             continue;
@@ -135,6 +156,7 @@ pub fn compute(
             effective_stake,
             connectivity_bps,
             availability_bps,
+            pinning_bps,
         });
     }
 
@@ -296,6 +318,138 @@ mod tests {
         );
     }
 
+    /// The whole point of the premium, stated as the ratio it produces.
+    #[test]
+    fn a_pinning_node_out_earns_an_identical_node_that_pins_nothing() {
+        let params = RewardParams::default();
+        let mut ledger = LivenessLedger::new();
+        let (pinner, freeloader) = (peer(1), peer(2));
+        fully_live(&mut ledger, &params, &pinner, 9, true);
+        fully_live(&mut ledger, &params, &freeloader, 9, true);
+
+        // Identical in every other respect: same stake, same uptime, same
+        // chain connectivity. Only the retrieval proof differs.
+        let (start, _) = params.epoch_bounds(9);
+        ledger.observe_content_served(&params, &pinner, Timestamp::from_millis(start));
+
+        let el = HashMap::from([
+            (pinner.clone(), eligible(5_000)),
+            (freeloader.clone(), eligible(5_000)),
+        ]);
+        let s = compute(&params, &ledger, &el, 9, u64::MAX).unwrap();
+
+        let paid = s.entries.iter().find(|e| e.peer == pinner).unwrap().amount;
+        let unpaid = s
+            .entries
+            .iter()
+            .find(|e| e.peer == freeloader)
+            .unwrap()
+            .amount;
+        assert!(paid > unpaid, "pinning must be worth something");
+
+        // 1.0 / 0.7 ≈ 1.4286, within integer-division tolerance.
+        let ratio_bps = (u128::from(paid) * 10_000 / u128::from(unpaid)) as u64;
+        assert!(
+            (14_284..=14_288).contains(&ratio_bps),
+            "expected ~14286 bps, got {ratio_bps}"
+        );
+    }
+
+    #[test]
+    fn an_unchallenged_node_is_treated_as_not_serving() {
+        // The conservative default. Were it the other way round, a node
+        // could earn the premium by being unreachable — nobody could
+        // challenge it, so nobody could catch it storing nothing.
+        let params = RewardParams::default();
+        let mut ledger = LivenessLedger::new();
+        let p = peer(1);
+        fully_live(&mut ledger, &params, &p, 3, true);
+
+        let el = HashMap::from([(p.clone(), eligible(5_000))]);
+        let s = compute(&params, &ledger, &el, 3, u64::MAX).unwrap();
+        assert_eq!(s.entries[0].pinning_bps, params.pinning_absent_bps);
+    }
+
+    #[test]
+    fn serving_content_also_proves_the_node_was_up() {
+        // A node that answered a challenge in a slice was demonstrably
+        // live in it, so the proof must count toward availability too —
+        // otherwise a node heard from ONLY via challenges would score
+        // zero availability and earn nothing at all.
+        let params = RewardParams::default();
+        let mut ledger = LivenessLedger::new();
+        let p = peer(1);
+        let (start, _) = params.epoch_bounds(5);
+        let slice = params.epoch_millis / u64::from(params.availability_buckets);
+        for bucket in 0..params.availability_buckets {
+            ledger.observe_content_served(
+                &params,
+                &p,
+                Timestamp::from_millis(start + u64::from(bucket) * slice),
+            );
+        }
+
+        let live = ledger.epoch(5);
+        let entry = live.get(&p).unwrap();
+        assert_eq!(entry.availability_bps(&params), 10_000);
+        assert!(entry.served_content);
+    }
+
+    #[test]
+    fn the_factors_compose_rather_than_one_masking_another() {
+        // A gossip-only node that pins against an RPC node that does not.
+        // 0.4 x 1.0 = 0.40 versus 1.0 x 0.7 = 0.70, so the RPC node still
+        // wins — pinning is a premium, not a way to out-earn a chain
+        // connection.
+        let params = RewardParams::default();
+        let mut ledger = LivenessLedger::new();
+        let (gossip_pinner, rpc_only) = (peer(1), peer(2));
+        fully_live(&mut ledger, &params, &gossip_pinner, 6, false);
+        fully_live(&mut ledger, &params, &rpc_only, 6, true);
+        let (start, _) = params.epoch_bounds(6);
+        ledger.observe_content_served(&params, &gossip_pinner, Timestamp::from_millis(start));
+
+        let el = HashMap::from([
+            (gossip_pinner.clone(), eligible(5_000)),
+            (rpc_only.clone(), eligible(5_000)),
+        ]);
+        let s = compute(&params, &ledger, &el, 6, u64::MAX).unwrap();
+        let pinner_amount = s
+            .entries
+            .iter()
+            .find(|e| e.peer == gossip_pinner)
+            .unwrap()
+            .amount;
+        let rpc_amount = s
+            .entries
+            .iter()
+            .find(|e| e.peer == rpc_only)
+            .unwrap()
+            .amount;
+        assert!(rpc_amount > pinner_amount);
+    }
+
+    #[test]
+    fn nothing_vanishes_once_a_third_factor_is_in_the_weight() {
+        // The invariant the whole schedule rests on, re-asserted against
+        // a mixed population: entries plus dust must equal emission.
+        let params = RewardParams::default();
+        let mut ledger = LivenessLedger::new();
+        let (start, _) = params.epoch_bounds(11);
+        for tag in 1..=6u8 {
+            fully_live(&mut ledger, &params, &peer(tag), 11, tag % 2 == 0);
+            if tag % 3 == 0 {
+                ledger.observe_content_served(&params, &peer(tag), Timestamp::from_millis(start));
+            }
+        }
+        let el: HashMap<_, _> = (1..=6u8)
+            .map(|t| (peer(t), eligible(1_000 * u64::from(t))))
+            .collect();
+
+        let s = compute(&params, &ledger, &el, 11, u64::MAX).unwrap();
+        assert_eq!(s.total() + s.dust, s.emission);
+    }
+
     #[test]
     fn half_an_epoch_of_downtime_halves_the_share() {
         let params = RewardParams::default();
@@ -441,6 +595,46 @@ mod tests {
             first, second,
             "a schedule anyone can reproduce is what makes the authority checkable"
         );
+    }
+
+    /// The overflow the third factor exposed.
+    ///
+    /// A four-way product of stake and three bps terms reaches ~1e30, and
+    /// multiplying that by emission passes u128's ceiling — Rust panics
+    /// rather than wrapping, so the whole schedule computation dies for
+    /// every node rather than returning a wrong number for one. Two
+    /// factors merely made it unreachable at ordinary stakes; it was
+    /// never safe.
+    #[test]
+    fn a_very_large_stake_does_not_overflow_the_payout_arithmetic() {
+        let params = RewardParams::default();
+        let mut ledger = LivenessLedger::new();
+        let (start, _) = params.epoch_bounds(2);
+        let whale = peer(1);
+        let minnow = peer(2);
+        fully_live(&mut ledger, &params, &whale, 2, true);
+        fully_live(&mut ledger, &params, &minnow, 2, true);
+        ledger.observe_content_served(&params, &whale, Timestamp::from_millis(start));
+        ledger.observe_content_served(&params, &minnow, Timestamp::from_millis(start));
+
+        let el = HashMap::from([
+            // The entire 1,000,000,000 OPEN supply staked by one node —
+            // impossible in practice, and precisely why it is the right
+            // bound to prove the arithmetic against.
+            (
+                whale.clone(),
+                Eligibility {
+                    effective_stake: 1_000_000_000 * OPEN,
+                    registered: true,
+                },
+            ),
+            (minnow.clone(), eligible(1_000)),
+        ]);
+
+        let s = compute(&params, &ledger, &el, 2, u64::MAX).unwrap();
+        assert_eq!(s.total() + s.dust, s.emission);
+        let whale_amount = s.entries.iter().find(|e| e.peer == whale).unwrap().amount;
+        assert!(whale_amount > 0 && whale_amount <= s.emission);
     }
 
     #[test]

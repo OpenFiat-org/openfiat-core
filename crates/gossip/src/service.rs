@@ -17,14 +17,14 @@ use libp2p::request_response::{self, Message, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
 use openfiat_crypto::{Keypair, verify};
 use openfiat_network::behaviour::OpenFiatBehaviourEvent;
-use openfiat_network::identity::{from_libp2p_peer_id, public_key_from_peer_id};
-use openfiat_network::{Envelope, Node, PeerId as Libp2pPeerId};
+use openfiat_network::identity::{from_libp2p_peer_id, is_dialable, public_key_from_peer_id};
+use openfiat_network::{Envelope, Multiaddr, Node, PeerId as Libp2pPeerId};
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{
     EventEnvelope, EventId, EventType, NodeRole, PeerId, Priority, PublicKey, Timestamp,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// What happened when an event was offered to [`GossipService::receive_event`].
 #[derive(Debug)]
@@ -51,6 +51,24 @@ pub struct GossipService<S> {
     /// to know discovery's storage backing.
     peer_keys: HashMap<PeerId, PublicKey>,
     connected: HashSet<Libp2pPeerId>,
+    /// Addresses at which this node is actually reachable, learned rather
+    /// than configured.
+    ///
+    /// Two independent sources, and the difference matters. `NewListenAddr`
+    /// is what libp2p bound after expanding `--gossip-bind-address`: bind
+    /// `0.0.0.0` and it reports one concrete address per interface, which
+    /// is the answer for a host whose interface address is its real one.
+    /// identify's `observed_addr` is what a *peer* saw the connection
+    /// arrive from, which is the only way to learn a public address behind
+    /// NAT — no amount of local inspection can produce it.
+    ///
+    /// Bind wildcards never enter this set (see [`is_dialable`]): an
+    /// address that cannot be dialled is worse than none, because it looks
+    /// like an answer.
+    reachable: BTreeSet<Multiaddr>,
+    /// Reachable addresses not yet handed to a caller, so each is reported
+    /// once rather than on every tick of whatever is polling.
+    newly_reachable: Vec<Multiaddr>,
     /// Invoked for every event this node stores — whether self-originated
     /// or received (pushed, or recovered) — so a crate built on top of
     /// gossip (registry, advertisements, ...) can react without gossip
@@ -97,6 +115,8 @@ impl<S: KvStore> GossipService<S> {
             subscription,
             peer_keys: HashMap::new(),
             connected: HashSet::new(),
+            reachable: BTreeSet::new(),
+            newly_reachable: Vec::new(),
             event_handlers: Vec::new(),
             forward_filters: Vec::new(),
         }
@@ -316,6 +336,22 @@ impl<S: KvStore> GossipService<S> {
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 self.connected.remove(&peer_id);
             }
+            // What libp2p actually bound, one event per interface once a
+            // wildcard is expanded.
+            SwarmEvent::NewListenAddr { address, .. } => {
+                self.record_reachable(address);
+            }
+            // What a peer saw. The only source that can see through NAT,
+            // and unverified by design: a peer could report anything. It
+            // costs nothing to be wrong here — the address is used to tell
+            // an operator where they appear to be reachable, never to
+            // decide anything — but that is why it is not treated as
+            // authoritative anywhere else.
+            SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Identify(
+                libp2p::identify::Event::Received { info, .. },
+            )) => {
+                self.record_reachable(info.observed_addr);
+            }
             SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Envelope(
                 request_response::Event::Message { peer, message, .. },
             )) => match message {
@@ -326,6 +362,29 @@ impl<S: KvStore> GossipService<S> {
             },
             _ => {}
         }
+    }
+
+    fn record_reachable(&mut self, address: Multiaddr) {
+        if !is_dialable(&address) {
+            return;
+        }
+        if self.reachable.insert(address.clone()) {
+            self.newly_reachable.push(address);
+        }
+    }
+
+    /// Every address this node is known to be reachable at.
+    pub fn reachable_addresses(&self) -> Vec<Multiaddr> {
+        self.reachable.iter().cloned().collect()
+    }
+
+    /// Addresses learned since the last call, draining them.
+    ///
+    /// Draining rather than returning the whole set so a caller that logs
+    /// them reports each once. A node re-announcing the same address every
+    /// tick would bury everything else it says.
+    pub fn take_newly_reachable(&mut self) -> Vec<Multiaddr> {
+        std::mem::take(&mut self.newly_reachable)
     }
 
     /// "Nodes recovering after downtime SHALL request missing events" (§22)

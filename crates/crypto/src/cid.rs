@@ -124,6 +124,25 @@ impl Cid {
         &self.0
     }
 
+    /// Whether [`Cid::matches`] can decide this CID at all.
+    ///
+    /// True for a raw-codec CID, whose digest is taken over the file
+    /// bytes; false for dag-pb, whose digest is over the root DAG node.
+    /// Providers switch at 256 KiB — IPFS's standard chunk size, measured
+    /// against Filebase, which ignores `raw-leaves` and `chunker` and
+    /// decides for itself.
+    ///
+    /// Callers that need a *decision* rather than a best effort must check
+    /// this first. `matches` returning false is ambiguous on a dag-pb CID:
+    /// it means "wrong content, or content this code cannot check", and
+    /// treating the second as the first would fail an honest peer.
+    pub fn is_verifiable(&self) -> bool {
+        let decoded = base32_lower_decode(&self.0[1..]).expect("a Cid was validated at parse time");
+        let mut cursor = decoded.as_slice();
+        read_varint(&mut cursor).expect("a Cid was validated at parse time");
+        read_varint(&mut cursor).expect("a Cid was validated at parse time") == CODEC_RAW
+    }
+
     /// The sha2-256 digest this CID addresses.
     pub fn digest(&self) -> [u8; SHA2_256_LEN] {
         // Re-decoding cannot fail: the only constructor validated it.

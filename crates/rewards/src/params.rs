@@ -44,6 +44,38 @@ pub struct RewardParams {
     /// `[PROPOSED — NEEDS SIGN-OFF]` 0.4.
     pub connectivity_gossip_bps: u64,
 
+    /// Multiplier for a node that answered a retrievability challenge —
+    /// that is, proved it holds content the protocol references.
+    /// `[PROPOSED — NEEDS SIGN-OFF]` 1.0.
+    pub pinning_serving_bps: u64,
+
+    /// Multiplier for a node that did not.
+    /// `[PROPOSED — NEEDS SIGN-OFF]` 0.7, so a node that pins earns
+    /// roughly 1.43× an otherwise identical node that does not.
+    ///
+    /// # Why the premium is expressed as a penalty
+    ///
+    /// "Nodes with IPFS earn more" and "nodes without IPFS earn less" are
+    /// the same statement here, and only the second can be implemented.
+    /// Emission per epoch is fixed, and these multipliers decide how it is
+    /// *divided*; a bonus above 1.0 would not pay a pinning node extra out
+    /// of thin air, it would mint emission that the Infrastructure bucket
+    /// does not contain. [`RewardParams::validate`] rejects that outright.
+    /// So the pinning node keeps its full share and the non-pinning node
+    /// yields part of its own — which produces exactly the intended
+    /// relative outcome without inventing tokens.
+    ///
+    /// # Why 0.7 rather than gossip-only's 0.4
+    ///
+    /// Storage is a smaller favour to the network than a chain
+    /// connection. A `GossipOnly` node cannot answer an on-chain question
+    /// at all, so every `RpcConnected` peer is carrying it; a node that
+    /// does not pin still relays, validates and serves everything else,
+    /// and the content it declines to hold is held by a gateway anyway.
+    /// A penalty as steep as connectivity's would price storage as if it
+    /// were the scarcer service, which it is not.
+    pub pinning_absent_bps: u64,
+
     /// Stake at or below which a node earns nothing, in base units. This
     /// mirrors the on-chain `min_stake_by_role[NodeOperator]` rather than
     /// replacing it: the program is what actually enforces the floor at
@@ -61,6 +93,8 @@ impl Default for RewardParams {
             per_epoch_emission: 82_192 * OPEN,
             connectivity_rpc_bps: BPS_DENOMINATOR,
             connectivity_gossip_bps: 4_000,
+            pinning_serving_bps: BPS_DENOMINATOR,
+            pinning_absent_bps: 7_000,
             min_stake: 1_000 * OPEN,
         }
     }
@@ -93,6 +127,8 @@ impl RewardParams {
         }
         if self.connectivity_rpc_bps > BPS_DENOMINATOR
             || self.connectivity_gossip_bps > BPS_DENOMINATOR
+            || self.pinning_serving_bps > BPS_DENOMINATOR
+            || self.pinning_absent_bps > BPS_DENOMINATOR
         {
             return Err(InvalidParams::MultiplierAboveOne);
         }
@@ -142,10 +178,29 @@ mod tests {
 
     #[test]
     fn a_multiplier_above_one_is_rejected_because_it_would_mint_emission() {
-        let p = RewardParams {
-            connectivity_rpc_bps: BPS_DENOMINATOR + 1,
-            ..RewardParams::default()
-        };
-        assert_eq!(p.validate(), Err(InvalidParams::MultiplierAboveOne));
+        for spoiled in [
+            RewardParams {
+                connectivity_rpc_bps: BPS_DENOMINATOR + 1,
+                ..RewardParams::default()
+            },
+            // The tempting way to write "pinning nodes earn more": a
+            // bonus above 1.0. It does not pay anyone extra, it just
+            // apportions emission the bucket does not hold.
+            RewardParams {
+                pinning_serving_bps: BPS_DENOMINATOR + 1,
+                ..RewardParams::default()
+            },
+        ] {
+            assert_eq!(spoiled.validate(), Err(InvalidParams::MultiplierAboveOne));
+        }
+    }
+
+    #[test]
+    fn pinning_is_worth_less_than_a_chain_connection() {
+        // Both are penalties on the node that lacks the service, so a
+        // smaller penalty means the service is priced lower. Storage is
+        // the lesser favour — see `pinning_absent_bps`.
+        let p = RewardParams::default();
+        assert!(p.pinning_absent_bps > p.connectivity_gossip_bps);
     }
 }

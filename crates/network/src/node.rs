@@ -54,6 +54,15 @@ impl Node {
         from_libp2p_peer_id(*self.swarm.local_peer_id())
     }
 
+    /// This node's identity in libp2p's own form, whose `Display` is the
+    /// base58 `12D3Koo…` string that appears in a multiaddr's `/p2p/`
+    /// segment. [`Node::local_peer_id`]'s protocol-level `PeerId` is the
+    /// same identity as raw bytes, which is the wrong shape for anything
+    /// an operator has to read or type.
+    pub fn libp2p_peer_id(&self) -> Libp2pPeerId {
+        *self.swarm.local_peer_id()
+    }
+
     pub fn listen_on(&mut self, addr: Multiaddr) -> Result<(), NetworkError> {
         self.swarm
             .listen_on(addr)

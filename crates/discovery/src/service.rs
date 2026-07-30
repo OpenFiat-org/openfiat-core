@@ -352,8 +352,14 @@ impl<S: KvStore> DiscoveryService<S> {
 /// address is useless to outsiders declares an external one (see
 /// [`DiscoveryService::add_external_address`]), which is announced first.
 fn is_announceable(address: &str) -> bool {
-    let unspecified = ["/ip4/0.0.0.0/", "/ip6/::/"];
-    !unspecified.iter().any(|prefix| address.starts_with(prefix))
+    // Delegates so this crate and `openfiat-gossip` cannot drift apart on
+    // what "dialable" means. They answer the same question for different
+    // reasons — one decides what to announce, the other what to report to
+    // an operator — and two copies of a filter like this stay identical
+    // only until one of them is fixed.
+    address
+        .parse()
+        .is_ok_and(|parsed| openfiat_network::identity::is_dialable(&parsed))
 }
 
 #[cfg(test)]

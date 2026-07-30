@@ -387,18 +387,13 @@ async fn main() {
         .unwrap_or_else(|e| panic!("failed to bind {http_addr}: {e}"));
     tracing::info!(address = %http_addr, "JSON-RPC and HTTP API listening (try GET /health, GET /docs)");
 
-    // The address other operators put after `--entrypoint` to reach this
-    // node. Printed with the bind address substituted in, because that is
-    // the part an operator has to correct: a node binds `0.0.0.0` and has
-    // no way to learn what a NAT or a firewall makes of it, so it can
-    // supply the shape and the peer id and nothing more. Without this,
-    // joining a cluster means knowing that a multiaddr ends in
-    // `/p2p/<peer id>` and working out where that peer id is printed.
-    tracing::info!(
-        entrypoint = %format!("{}/p2p/{libp2p_peer_id}", args.gossip_bind_address),
-        "peers can reach this node at this address, with the bind address \
-         replaced by one they can route to"
-    );
+    // Deliberately no entrypoint here: at this point there isn't one to
+    // print. `--gossip-bind-address` defaults to `0.0.0.0`, which tells a
+    // socket "every interface" and tells a dialing peer nothing — an
+    // earlier version of this line printed it anyway, and an operator who
+    // handed that string to a peer got an unexplained dial failure on the
+    // far side. The real addresses are logged by `openfiat_rpc::actor` as
+    // libp2p resolves them and as peers report what they observed.
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await

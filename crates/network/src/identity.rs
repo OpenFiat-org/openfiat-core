@@ -102,3 +102,55 @@ mod tests {
         assert_eq!(from_keypair, from_public_key);
     }
 }
+
+/// Whether a multiaddr is one another peer could actually dial.
+///
+/// Excludes the bind wildcards `0.0.0.0` and `::`, which mean "every
+/// interface on this host" to a listening socket and nothing at all to a
+/// dialing one. A node that announces, logs, or discovers its own bind
+/// address hands out an address that can never connect, and — because it
+/// looks like a real address — the failure surfaces as an unexplained
+/// dial error on the far side rather than as anything wrong locally.
+///
+/// Loopback and private ranges pass deliberately. Processes on one host
+/// reach each other over `127.0.0.1` perfectly well, and a docker-compose
+/// cluster or a LAN reaches its peers only by private address; a
+/// single-host dev cluster is a real deployment, not a test artifact. An
+/// operator whose private address is useless to outsiders is the one who
+/// knows it, and says so explicitly.
+pub fn is_dialable(address: &libp2p::Multiaddr) -> bool {
+    let text = address.to_string();
+    !["/ip4/0.0.0.0/", "/ip6/::/"]
+        .iter()
+        .any(|wildcard| text.starts_with(wildcard))
+}
+
+#[cfg(test)]
+mod dialable_tests {
+    use super::is_dialable;
+
+    #[test]
+    fn the_bind_wildcard_is_never_dialable() {
+        // The default --gossip-bind-address. Announcing or printing it
+        // gives a peer an address that cannot connect.
+        for wildcard in [
+            "/ip4/0.0.0.0/udp/4001/quic-v1",
+            "/ip6/::/udp/4001/quic-v1",
+            "/ip4/0.0.0.0/tcp/0",
+        ] {
+            assert!(!is_dialable(&wildcard.parse().unwrap()), "{wildcard}");
+        }
+    }
+
+    #[test]
+    fn loopback_and_private_addresses_are_dialable() {
+        for usable in [
+            "/ip4/127.0.0.1/udp/4001/quic-v1",
+            "/ip4/10.0.0.4/udp/4001/quic-v1",
+            "/ip4/192.168.1.7/udp/4001/quic-v1",
+            "/ip4/203.0.113.9/udp/4001/quic-v1",
+        ] {
+            assert!(is_dialable(&usable.parse().unwrap()), "{usable}");
+        }
+    }
+}
