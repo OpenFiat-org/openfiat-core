@@ -422,10 +422,31 @@ async fn poll_chain<S: KvStore + 'static>(state: &NodeState<S>, client: &dyn Cha
                             .notification_dispatcher
                             .observe_escrow_release(&settlement_id, &awaiting.signature);
                     }
-                    Some(("dispute", id)) => {
+                    Some(("dispute", tail)) => {
+                        // `dispute:<id>` or `dispute:<id>:<case address>`.
+                        // The address is what lets this node read what the
+                        // chain decided rather than assume it; without one
+                        // the execution is recorded and the verdict is not.
+                        let (id, case_account) = match tail.split_once(':') {
+                            Some((id, account)) => (id.to_string(), Some(account.to_string())),
+                            None => (tail, None),
+                        };
+                        let outcome = match &case_account {
+                            Some(address) => read_dispute_outcome(client, address).await,
+                            None => {
+                                tracing::warn!(
+                                    dispute = %id,
+                                    "a dispute execution confirmed with no case address in its \
+                                     correlation tag, so this node cannot read what the chain \
+                                     decided; the case stays awaiting a verdict"
+                                );
+                                None
+                            }
+                        };
                         let _ = state.disputes.apply_onchain_execution(
                             &openfiat_disputes::DisputeId::new(id),
                             awaiting.signature.clone(),
+                            outcome,
                         );
                     }
                     _ => {}
@@ -602,6 +623,38 @@ fn poll_gossip_pruning<S: KvStore + 'static>(state: &NodeState<S>) {
 /// only time, and the content is not urgent — a challenge that arrives
 /// before the fetch is answered by whoever already has it.
 const MAX_GATEWAY_FETCHES_PER_TICK: usize = 8;
+
+/// What the chain decided about a dispute case, read from the case
+/// account itself.
+///
+/// `None` for every reason a node might not know: the account could not
+/// be fetched, it is not a `DisputeCase`, it is owned by some other
+/// program, or the case is genuinely still running. All of those mean the
+/// same thing to the caller — this node cannot state a verdict — and none
+/// of them is a reason to invent one.
+async fn read_dispute_outcome(
+    client: &dyn ChainClient,
+    case_account: &str,
+) -> Option<openfiat_disputes::Resolution> {
+    let (owner, data) = match client.get_account(case_account).await {
+        Ok(Some(account)) => account,
+        Ok(None) => {
+            tracing::warn!(%case_account, "dispute case account not found on chain");
+            return None;
+        }
+        Err(err) => {
+            tracing::warn!(%case_account, %err, "could not read the dispute case account");
+            return None;
+        }
+    };
+    match crate::onchain_dispute::decode_outcome(&owner, &data) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::warn!(%case_account, ?err, "dispute case account did not decode");
+            None
+        }
+    }
+}
 
 /// One tick of content serving: hold what this node is committed to,
 /// release what it no longer is, and go and get what is missing.

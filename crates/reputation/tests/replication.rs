@@ -220,6 +220,24 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
             .unwrap();
     }
 
+    // Reveals alone move nothing. A merchant's reputation follows the
+    // *chain's* verdict, not this node's count of the votes it happened
+    // to see — OFS-3000 §26's "only verified protocol events move
+    // reputation", now enforced rather than assumed, since the off-chain
+    // registry no longer tallies at all.
+    assert_eq!(
+        reputation.profile(&merchant_id).disputes_lost,
+        0,
+        "collected reveals are not a verdict"
+    );
+    disputes
+        .apply_onchain_execution(
+            &dispute_id,
+            "onchain-sig",
+            Some(openfiat_disputes::Resolution::BuyerWins),
+        )
+        .expect("the chain decided against the merchant");
+
     let profile = reputation.profile(&merchant_id);
     assert_eq!(profile.trades_started, 3);
     assert_eq!(profile.trades_completed, 2);

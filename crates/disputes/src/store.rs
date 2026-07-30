@@ -11,7 +11,7 @@ use crate::events::{
 };
 use crate::protocol;
 use crate::record::{
-    ArbitratorCommitment, ArbitratorReveal, Dispute, DisputeId, DisputeStatus, Resolution, Vote,
+    ArbitratorCommitment, ArbitratorReveal, Dispute, DisputeId, DisputeStatus, Resolution,
 };
 use openfiat_crypto::verify;
 use openfiat_serialization::json;
@@ -207,8 +207,10 @@ impl<S: KvStore> DisputeRegistry<S> {
             vote: signed.reveal.vote,
         });
         if dispute.reveals.len() == dispute.required_arbitrators as usize {
-            dispute.resolution = Some(consensus(&dispute.reveals));
-            dispute.status = DisputeStatus::Resolved;
+            // Reveals are recorded, never tallied. See
+            // `DisputeStatus::AwaitingChainVerdict` for why this node does
+            // not decide the case it just finished collecting votes for.
+            dispute.status = DisputeStatus::AwaitingChainVerdict;
         }
         dispute.updated_at = signed.reveal.timestamp;
         self.put(&dispute);
@@ -255,16 +257,54 @@ impl<S: KvStore> DisputeRegistry<S> {
     /// 4b's dispute-to-chain bridge) — local bookkeeping, not gossiped,
     /// mirroring `SettlementRegistry::apply_escrow_released` exactly:
     /// every node can verify chain confirmation for itself.
+    /// Records the outcome the chain decided, and the transaction this
+    /// node independently observed confirming it.
+    ///
+    /// The **only** path that sets a resolution. Everything before this is
+    /// the off-chain layer collecting signed votes and relaying them; what
+    /// those votes add up to is the chain's answer, computed under the
+    /// chain's rules — stake-weighted, quorum-floored, re-opening a round
+    /// rather than breaking a tie — and reading it here rather than
+    /// re-deriving it is what keeps the two from disagreeing.
+    ///
+    /// `outcome` is `None` when this node observed the execution but
+    /// could not read what it decided — see the body for why that is
+    /// recorded honestly rather than guessed at.
+    ///
+    /// Accepts a case still in `RevealPhase` as well as one that has
+    /// collected every reveal: the chain can execute an outcome on a
+    /// deadline that passed with seats unrevealed, and a node that refused
+    /// to record that would be stuck showing a live case that has already
+    /// paid out.
     pub fn apply_onchain_execution(
         &self,
         id: &DisputeId,
         signature: impl Into<String>,
+        outcome: Option<Resolution>,
     ) -> Result<(), DisputeError> {
         let mut dispute = self.get(id).ok_or(DisputeError::DisputeNotFound)?;
-        if dispute.status != DisputeStatus::Resolved {
+        // Anything but an already-resolved case. The chain executes on
+        // its own deadlines, not on this node's view of the phase: a
+        // commit or reveal window can expire with seats unfilled and the
+        // chain will decide anyway. A node that refused to record that
+        // would go on showing a live case that has already paid out,
+        // which is the divergence this whole change removes.
+        if dispute.status == DisputeStatus::Resolved {
             return Err(DisputeError::InvalidStateTransition);
         }
         dispute.onchain_execution_signature = Some(signature.into());
+        // The signature is always recorded — this node genuinely observed
+        // that transaction confirm. The verdict is recorded only when the
+        // node could actually read it from the case account. A node that
+        // saw an execution land but could not read the outcome stays in
+        // `AwaitingChainVerdict`, which is the truth: something happened
+        // on chain and this node does not yet know what. Inventing a
+        // verdict to fill the gap is the exact failure this change
+        // removes.
+        if let Some(outcome) = outcome {
+            dispute.resolution = Some(outcome);
+            dispute.status = DisputeStatus::Resolved;
+        }
         self.put(&dispute);
         Ok(())
     }
@@ -304,33 +344,13 @@ impl<S: KvStore> DisputeRegistry<S> {
     }
 }
 
-/// Majority vote among valid reveals; a genuine tie resolves to
-/// `Invalid` (inconclusive) as a safe, deterministic fallback rather than
-/// picking an arbitrary winner.
-fn consensus(reveals: &[ArbitratorReveal]) -> Resolution {
-    let (mut buyer, mut merchant, mut invalid) = (0u32, 0u32, 0u32);
-    for reveal in reveals {
-        match reveal.vote {
-            Vote::BuyerWins => buyer += 1,
-            Vote::MerchantWins => merchant += 1,
-            Vote::Invalid => invalid += 1,
-        }
-    }
-    if buyer > merchant && buyer > invalid {
-        Resolution::BuyerWins
-    } else if merchant > buyer && merchant > invalid {
-        Resolution::MerchantWins
-    } else {
-        Resolution::Invalid
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::events::{
         ArbitratorJoin, DisputeOpen, MutualSettlementAgree, VoteCommit, VoteReveal,
     };
+    use crate::record::Vote;
     use openfiat_crypto::Keypair;
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_reservations::ReservationId;
@@ -444,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_commit_reveal_round_reaches_the_majority_resolution() {
+    fn a_full_commit_reveal_round_collects_every_vote_and_decides_nothing() {
         let (_settlements, disputes, buyer, _seller, settlement_id) = setup();
         let dispute_id = open_dispute(&disputes, &buyer, &settlement_id);
         let arbitrators: Vec<Keypair> = (0..3).map(|_| Keypair::generate()).collect();
@@ -485,16 +505,43 @@ mod tests {
         }
 
         let dispute = disputes.get(&dispute_id).unwrap();
-        assert_eq!(dispute.status, DisputeStatus::Resolved);
-        assert_eq!(dispute.resolution, Some(Resolution::BuyerWins));
+        assert_eq!(dispute.reveals.len(), 3, "every vote is recorded");
+        assert_eq!(dispute.status, DisputeStatus::AwaitingChainVerdict);
+        // Two of three revealed BuyerWins. This node used to call that
+        // the answer, and the chain would then re-arbitrate the same case
+        // stake-weighted, with a quorum floor, re-opening the round on a
+        // tie rather than resolving it — so the two could and did reach
+        // different verdicts about one dispute, with the interface
+        // showing this one while the money followed the other.
+        assert_eq!(
+            dispute.resolution, None,
+            "collecting votes is not the same as counting them, and only \
+             one of the two is this node's job"
+        );
     }
 
     #[test]
-    fn onchain_execution_cannot_be_recorded_before_resolution() {
+    fn a_resolved_case_cannot_be_resolved_again() {
         let (_settlements, disputes, buyer, _seller, settlement_id) = setup();
         let dispute_id = open_dispute(&disputes, &buyer, &settlement_id);
-        let result = disputes.apply_onchain_execution(&dispute_id, "sig-too-early");
-        assert_eq!(result, Err(DisputeError::InvalidStateTransition));
+        // The chain may execute at any point before a case is resolved —
+        // on an expired window with seats unfilled, for instance — so
+        // there is no "too early". What cannot happen twice is a
+        // resolution.
+        disputes
+            .apply_onchain_execution(&dispute_id, "sig-first", Some(Resolution::BuyerWins))
+            .expect("the chain decides on its own schedule");
+        let second = disputes.apply_onchain_execution(
+            &dispute_id,
+            "sig-second",
+            Some(Resolution::MerchantWins),
+        );
+        assert_eq!(second, Err(DisputeError::InvalidStateTransition));
+        assert_eq!(
+            disputes.get(&dispute_id).unwrap().resolution,
+            Some(Resolution::BuyerWins),
+            "a second execution must not overwrite the decided outcome"
+        );
     }
 
     #[test]
@@ -530,21 +577,55 @@ mod tests {
                 .apply_vote_reveal(SignedVoteReveal::sign(reveal, arbitrator))
                 .unwrap();
         }
+        // Every reveal is in, and this node still has no verdict. It
+        // collected the votes; the chain decides what they add up to.
+        let awaiting = disputes.get(&dispute_id).unwrap();
+        assert_eq!(awaiting.status, DisputeStatus::AwaitingChainVerdict);
         assert_eq!(
-            disputes.get(&dispute_id).unwrap().status,
-            DisputeStatus::Resolved
+            awaiting.resolution, None,
+            "the off-chain layer must not tally — the chain re-arbitrates \
+             the same case under different rules and would have reached a \
+             different answer here"
         );
 
         disputes
-            .apply_onchain_execution(&dispute_id, "5xY...onchainSig")
+            .apply_onchain_execution(
+                &dispute_id,
+                "5xY...onchainSig",
+                Some(Resolution::MerchantWins),
+            )
             .unwrap();
+        let resolved = disputes.get(&dispute_id).unwrap();
+        assert_eq!(resolved.status, DisputeStatus::Resolved);
+        // The chain's answer, not the two-to-one majority the reveals
+        // above would have produced. That divergence is the entire point:
+        // the chain weights by stake and this node cannot.
+        assert_eq!(resolved.resolution, Some(Resolution::MerchantWins));
         assert_eq!(
-            disputes
-                .get(&dispute_id)
-                .unwrap()
-                .onchain_execution_signature,
+            resolved.onchain_execution_signature,
             Some("5xY...onchainSig".to_string())
         );
+    }
+
+    #[test]
+    fn an_execution_this_node_cannot_read_records_the_signature_and_no_verdict() {
+        // A node that saw a transaction land but could not read the case
+        // account. It knows something happened and not what — and saying
+        // so is the honest answer, where filling the gap with a guess is
+        // the failure this whole change removes.
+        let (_settlements, disputes, buyer, _seller, settlement_id) = setup();
+        let dispute_id = open_dispute(&disputes, &buyer, &settlement_id);
+
+        disputes
+            .apply_onchain_execution(&dispute_id, "sig-unreadable", None)
+            .unwrap();
+        let dispute = disputes.get(&dispute_id).unwrap();
+        assert_eq!(
+            dispute.onchain_execution_signature,
+            Some("sig-unreadable".to_string())
+        );
+        assert_eq!(dispute.resolution, None);
+        assert_ne!(dispute.status, DisputeStatus::Resolved);
     }
 
     #[test]

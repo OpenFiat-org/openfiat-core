@@ -4,7 +4,7 @@
 
 use futures::future::select_all;
 use openfiat_crypto::Keypair;
-use openfiat_disputes::{DisputeService, DisputeStatus, Resolution, Vote};
+use openfiat_disputes::{DisputeService, DisputeStatus, Vote};
 use openfiat_gossip::EventStore;
 use openfiat_gossip::channel::Subscription;
 use openfiat_network::identity::peer_id_from_public_key;
@@ -170,12 +170,25 @@ async fn a_full_commit_reveal_cycle_reaches_a_consistent_resolution_across_the_c
     drive_until(&mut all, |services| {
         services
             .iter()
-            .all(|s| s.get(&dispute_id).unwrap().status == DisputeStatus::Resolved)
+            .all(|s| s.get(&dispute_id).unwrap().status == DisputeStatus::AwaitingChainVerdict)
     })
     .await;
 
+    // What replication guarantees, and what it does not.
+    //
+    // Every node ends up holding the same three signed reveals — that is
+    // the property this test exists for, and it still holds. What no node
+    // does is turn them into a verdict: the chain re-arbitrates the case
+    // under its own rules, and a second tally here would be a second
+    // answer rather than a confirmation of the first.
     for service in &all {
         let dispute = service.get(&dispute_id).unwrap();
-        assert_eq!(dispute.resolution, Some(Resolution::BuyerWins));
+        assert_eq!(dispute.reveals.len(), 3);
+        assert_eq!(
+            dispute.resolution, None,
+            "consistent across the cluster is not the same as correct — \
+             all three nodes agreeing on a verdict the chain did not \
+             reach is exactly the failure being prevented"
+        );
     }
 }

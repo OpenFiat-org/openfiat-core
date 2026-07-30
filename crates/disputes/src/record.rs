@@ -36,6 +36,21 @@ pub enum DisputeStatus {
     CaseLocked,
     /// Every required arbitrator has committed; reveal phase is live.
     RevealPhase,
+    /// Every required arbitrator has revealed. The off-chain layer has
+    /// done everything it can and is waiting for the chain to decide.
+    ///
+    /// This used to be `Resolved` with an off-chain verdict attached, and
+    /// that was a divergence generator: the chain re-arbitrates the same
+    /// case under its own rules — stake-weighted, with a quorum floor,
+    /// re-opening the round on a tie rather than resolving it — so the two
+    /// tallies could and did reach different answers about the same
+    /// dispute. The chain is the authority over the funds, so a second
+    /// independent verdict is not a second opinion, it is a lie the
+    /// interface tells while the money goes elsewhere.
+    AwaitingChainVerdict,
+    /// The chain has executed an outcome and this node has independently
+    /// observed the confirmation. Only [`crate::DisputeRegistry::
+    /// apply_onchain_execution`] reaches this.
     Resolved,
 }
 
