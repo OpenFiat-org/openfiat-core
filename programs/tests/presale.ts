@@ -133,6 +133,36 @@ describe("presale", () => {
     throw new Error("unreachable");
   }
 
+  /**
+   * The validator's own clock, which is what `finalize_sale` compares
+   * `end_time` against — not this process's wall clock.
+   *
+   * The two drift apart. On-chain time advances with slot production, so a
+   * loaded runner falls behind real time, and the gap grows with how long the
+   * suite has already been running. Every sale window here is still
+   * *written* from `Date.now()`, which is fine for the hour-long windows, but
+   * the two blocks that deliberately use a two-second window then waited a
+   * fixed 2.5s of wall time and assumed the sale had ended. Under enough
+   * drift it had not, and `finalize_sale` failed with the sale still open —
+   * a failure that appears in an unrelated part of the suite whenever
+   * anything earlier gets slower.
+   */
+  async function onchainNow(): Promise<number> {
+    const slot = await connection.getSlot("confirmed");
+    const time = await connection.getBlockTime(slot);
+    if (time === null) throw new Error(`no block time for slot ${slot}`);
+    return time;
+  }
+
+  /** Polls until the validator's clock has passed `target`. */
+  async function waitForOnchainTime(target: number) {
+    for (let i = 0; i < 240; i++) {
+      if ((await onchainNow()) > target) return;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    throw new Error(`on-chain clock did not pass ${target} within 120s`);
+  }
+
   type SaleParams = {
     hardCap: BN;
     softCap: BN;
@@ -766,10 +796,14 @@ describe("presale", () => {
     let buyer: Keypair;
     let buyerUsdc: PublicKey;
     let buyerOpen: PublicKey;
+    // Describe-scoped: the finalize spec below needs the same value the
+    // `before` hook created the sale with.
+    let saleEndsAt: number;
 
     before(async () => {
       treasury = await ata(usdcMint, Keypair.generate().publicKey);
       const now = Math.floor(Date.now() / 1000);
+      saleEndsAt = (await onchainNow()) + 12;
       ({ saleConfig, usdcVault } = await initSale(
         nonce,
         {
@@ -779,7 +813,11 @@ describe("presale", () => {
           maxContribution: usdcUnit(1_000),
           maxSlippageBps: 100,
           startTime: new BN(now - 60),
-          endTime: new BN(now + 2), // ends 2s from setup, so finalize is callable soon
+          // Derived from the validator's own clock, not this process's, and 12
+          // seconds rather than 2 so the contribution below still lands inside
+          // the window on a slow runner. `waitForOnchainTime` is what makes
+          // the wait deterministic, so a wider window costs no extra time.
+          endTime: new BN(saleEndsAt),
           stablecoinWhitelist: [],
         },
         treasury,
@@ -848,7 +886,7 @@ describe("presale", () => {
     });
 
     it("finalizes the sale (soft cap met) and sweeps USDC to the treasury", async () => {
-      await new Promise((r) => setTimeout(r, 2500));
+      await waitForOnchainTime(saleEndsAt);
 
       await program.methods
         .finalizeSale(new BN(nonce))
@@ -970,6 +1008,7 @@ describe("presale", () => {
     before(async () => {
       treasury = await ata(usdcMint, Keypair.generate().publicKey);
       const now = Math.floor(Date.now() / 1000);
+      const saleEndsAt = (await onchainNow()) + 12;
       ({ saleConfig, usdcVault } = await initSale(
         nonce,
         {
@@ -979,7 +1018,8 @@ describe("presale", () => {
           maxContribution: usdcUnit(1_000),
           maxSlippageBps: 100,
           startTime: new BN(now - 60),
-          endTime: new BN(now + 2),
+          // See the soft-cap-met block above: on-chain clock, wider window.
+          endTime: new BN(saleEndsAt),
           stablecoinWhitelist: [],
         },
         treasury,
@@ -1007,7 +1047,7 @@ describe("presale", () => {
         .signers([buyer])
         .rpc({ commitment: "confirmed" });
 
-      await new Promise((r) => setTimeout(r, 2500));
+      await waitForOnchainTime(saleEndsAt);
       await program.methods
         .finalizeSale(new BN(nonce))
         .accountsPartial({

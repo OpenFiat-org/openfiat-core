@@ -893,6 +893,7 @@ describe("escrow", () => {
     const ROLE_ARBITRATOR = { arbitrator: {} };
     const OUTCOME_BUYER_WINS = { buyerWins: {} };
     const OUTCOME_MERCHANT_WINS = { merchantWins: {} };
+    const OUTCOME_MUTUAL_SETTLEMENT = { mutualSettlement: {} };
     const OUTCOME_BYTE = { buyerWins: 0, merchantWins: 1, mutualSettlement: 2, invalidDispute: 3 };
 
     let stakingConfig: PublicKey;
@@ -1246,15 +1247,24 @@ describe("escrow", () => {
           .rpc({ commitment: "confirmed" }),
       );
 
+      // Three counted votes, so the quorum floor is satisfied and the
+      // round is decided purely on the weights: 50,000 each behind two
+      // opposing outcomes, with a smaller third vote that cannot break the
+      // deadlock. `tally` therefore returns `None` through its tie branch,
+      // not through `MIN_ARBITRATORS` — two arbitrators would re-open the
+      // case either way, which would leave tie handling untested.
       const arb1 = await setUpArbitrator(unit(50000));
       const arb2 = await setUpArbitrator(unit(50000)); // equal weight, opposing votes
+      const arb3 = await setUpArbitrator(unit(20000)); // makes the quorum, loses the vote
 
       const salt1 = crypto.randomBytes(32);
       const salt2 = crypto.randomBytes(32);
+      const salt3 = crypto.randomBytes(32);
 
       for (const [arb, salt, outcomeByte] of [
         [arb1, salt1, OUTCOME_BYTE.buyerWins],
         [arb2, salt2, OUTCOME_BYTE.merchantWins],
+        [arb3, salt3, OUTCOME_BYTE.mutualSettlement],
       ] as [Keypair, Buffer, number][]) {
         await withBlockhashRetry(() =>
           program.methods
@@ -1275,6 +1285,7 @@ describe("escrow", () => {
       for (const [arb, salt, outcome] of [
         [arb1, salt1, OUTCOME_BUYER_WINS],
         [arb2, salt2, OUTCOME_MERCHANT_WINS],
+        [arb3, salt3, OUTCOME_MUTUAL_SETTLEMENT],
       ] as [Keypair, Buffer, any][]) {
         await withBlockhashRetry(() =>
           program.methods
@@ -1341,6 +1352,157 @@ describe("escrow", () => {
       expect(caseAccount.round).to.equal(1);
       expect(caseAccount.arbitrators.length).to.equal(0);
       expect(caseAccount.commitments.length).to.equal(0);
+    });
+
+    it("refuses to decide on fewer than three counted votes, however lopsided", async () => {
+      const reservationId = 9008;
+      const amount = unit(700);
+      const { merchant, buyer } = await openFundedTradeEscrow(reservationId, amount);
+
+      const tradeEscrow = tradeEscrowSeed(reservationId);
+      const disputeCase = disputeCasePda(reservationId);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .openDisputeCase(new BN(60), new BN(60))
+          .accountsPartial({
+            signer: buyer.publicKey,
+            payer: admin.publicKey,
+            tradeEscrow,
+            disputeCase,
+            feeConfig,
+            depositMint: openMint,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+            arbitrationPool,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([buyer])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      // All three are staked up front: a re-opened round only allows the
+      // windows it was created with, so there is no time to stake inside
+      // one.
+      const arb1 = await setUpArbitrator(unit(70000));
+      const arb2 = await setUpArbitrator(unit(20000));
+      const arb3 = await setUpArbitrator(unit(30000));
+
+      const liquidityVault = liquidityVaultPda(merchant.publicKey, mint);
+      const liquidityTokenVault = liquidityTokenVaultPda(merchant.publicKey, mint);
+      const tradeEscrowTokenVault = tradeEscrowTokenVaultPda(reservationId);
+      const buyerAta = await ata(mint, buyer.publicKey);
+
+      const execute = () =>
+        withBlockhashRetry(() =>
+          program.methods
+            .executeDisputeOutcome()
+            .accountsPartial({
+              mint,
+              disputeCase,
+              tradeEscrow,
+              tradeEscrowTokenVault,
+              liquidityVault,
+              liquidityTokenVault,
+              buyerTokenAccount: buyerAta,
+              feeConfig,
+              devTreasury,
+              ecosystemTreasury,
+              infraTreasury,
+              emergencyReserve,
+              depositMint: openMint,
+              arbitrationPool,
+              merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+              merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+              tokenProgram: TOKEN_2022_PROGRAM_ID,
+            })
+            .rpc({ commitment: "confirmed" }),
+        );
+
+      // One full round: everyone named votes the same way, then the round
+      // is executed once its reveal window has closed.
+      async function voteRound(voters: Keypair[]) {
+        const salts = voters.map(() => crypto.randomBytes(32));
+        for (const [i, arb] of voters.entries()) {
+          await withBlockhashRetry(() =>
+            program.methods
+              .commitDisputeVote([...commitmentFor(OUTCOME_BYTE.buyerWins, salts[i])])
+              .accountsPartial({
+                arbitrator: arb.publicKey,
+                disputeCase,
+                stakingConfig,
+                arbitratorStake: stakeAccountPda(arb.publicKey),
+              })
+              .signers([arb])
+              .rpc({ commitment: "confirmed" }),
+          );
+        }
+
+        await new Promise((r) => setTimeout(r, 61000)); // past commit_deadline
+
+        for (const [i, arb] of voters.entries()) {
+          await withBlockhashRetry(() =>
+            program.methods
+              .revealDisputeVote(OUTCOME_BUYER_WINS, [...salts[i]])
+              .accountsPartial({
+                arbitrator: arb.publicKey,
+                disputeCase,
+                stakingConfig,
+                arbitratorStake: stakeAccountPda(arb.publicKey),
+              })
+              .signers([arb])
+              .rpc({ commitment: "confirmed" }),
+          );
+        }
+
+        await new Promise((r) => setTimeout(r, 61000)); // past reveal_deadline
+        await execute();
+      }
+
+      const buyerBefore = await getAccount(connection, buyerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
+      const vaultBefore = await program.account.liquidityVault.fetch(liquidityVault);
+
+      // Two votes, 70,000 against 20,000 — unanimous, so nothing about
+      // this round is close and nothing is tied. It still decides nothing,
+      // because the floor is on how many arbitrators showed up and not on
+      // how much stake they brought. One arbitrator settling a dispute
+      // alone was exactly the bug.
+      await voteRound([arb1, arb2]);
+
+      const midCase = await program.account.disputeCase.fetch(disputeCase);
+      expect(midCase.resolved, "two arbitrators must not be able to decide a case").to.equal(false);
+      expect(midCase.round, "the case must re-open for another round").to.equal(1);
+      expect(midCase.outcome ?? null, "no verdict may be recorded").to.equal(null);
+
+      const midEscrow = await program.account.tradeEscrowVault.fetch(tradeEscrow);
+      expect(midEscrow.state).to.deep.equal({ frozen: {} });
+
+      const buyerMid = await getAccount(connection, buyerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
+      expect(buyerMid.amount.toString(), "the buyer must not be paid").to.equal(
+        buyerBefore.amount.toString(),
+      );
+      const vaultMid = await program.account.liquidityVault.fetch(liquidityVault);
+      expect(vaultMid.available.toString(), "the merchant must not be paid").to.equal(
+        vaultBefore.available.toString(),
+      );
+
+      // A quorum requirement, not a permanent block: the same votes plus a
+      // third arbitrator now carry the same outcome.
+      await voteRound([arb1, arb2, arb3]);
+
+      const finalCase = await program.account.disputeCase.fetch(disputeCase);
+      expect(finalCase.resolved).to.equal(true);
+      expect(finalCase.outcome).to.deep.equal(OUTCOME_BUYER_WINS);
+
+      const finalEscrow = await program.account.tradeEscrowVault.fetch(tradeEscrow);
+      expect(finalEscrow.state).to.deep.equal({ released: {} });
+
+      const feeBaseUnits = amount.mul(new BN(85)).div(new BN(10_000));
+      const buyerAfter = await getAccount(connection, buyerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
+      expect((buyerAfter.amount - buyerBefore.amount).toString()).to.equal(
+        amount.sub(feeBaseUnits).toString(),
+      );
     });
 
     it("rejects a commit from an arbitrator below the role minimum, blocking the seat-squatting attack", async () => {
@@ -1555,36 +1717,48 @@ describe("escrow", () => {
           .rpc({ commitment: "confirmed" }),
       );
 
-      const arb = await setUpArbitrator(unit(50000));
-      const salt = crypto.randomBytes(32);
+      // Three unanimous arbitrators, because a MutualSettlement *verdict*
+      // is what this test is about: fewer than `MIN_ARBITRATORS` counted
+      // votes decides nothing at all, so a single arbitrator here would
+      // silently turn this into another quorum-floor test.
+      const arbs = [
+        await setUpArbitrator(unit(50000)),
+        await setUpArbitrator(unit(40000)),
+        await setUpArbitrator(unit(30000)),
+      ];
+      const salts = arbs.map(() => crypto.randomBytes(32));
 
-      await withBlockhashRetry(() =>
-        program.methods
-          .commitDisputeVote([...commitmentFor(OUTCOME_BYTE.mutualSettlement, salt)])
-          .accountsPartial({
-            arbitrator: arb.publicKey,
-            disputeCase,
-            stakingConfig,
-            arbitratorStake: stakeAccountPda(arb.publicKey),
-          })
-          .signers([arb])
-          .rpc({ commitment: "confirmed" }),
-      );
+      for (const [arb, salt] of arbs.map((a, i) => [a, salts[i]] as [Keypair, Buffer])) {
+        await withBlockhashRetry(() =>
+          program.methods
+            .commitDisputeVote([...commitmentFor(OUTCOME_BYTE.mutualSettlement, salt)])
+            .accountsPartial({
+              arbitrator: arb.publicKey,
+              disputeCase,
+              stakingConfig,
+              arbitratorStake: stakeAccountPda(arb.publicKey),
+            })
+            .signers([arb])
+            .rpc({ commitment: "confirmed" }),
+        );
+      }
 
       await new Promise((r) => setTimeout(r, 61000));
 
-      await withBlockhashRetry(() =>
-        program.methods
-          .revealDisputeVote({ mutualSettlement: {} }, [...salt])
-          .accountsPartial({
-            arbitrator: arb.publicKey,
-            disputeCase,
-            stakingConfig,
-            arbitratorStake: stakeAccountPda(arb.publicKey),
-          })
-          .signers([arb])
-          .rpc({ commitment: "confirmed" }),
-      );
+      for (const [arb, salt] of arbs.map((a, i) => [a, salts[i]] as [Keypair, Buffer])) {
+        await withBlockhashRetry(() =>
+          program.methods
+            .revealDisputeVote(OUTCOME_MUTUAL_SETTLEMENT, [...salt])
+            .accountsPartial({
+              arbitrator: arb.publicKey,
+              disputeCase,
+              stakingConfig,
+              arbitratorStake: stakeAccountPda(arb.publicKey),
+            })
+            .signers([arb])
+            .rpc({ commitment: "confirmed" }),
+        );
+      }
 
       await new Promise((r) => setTimeout(r, 61000));
 
