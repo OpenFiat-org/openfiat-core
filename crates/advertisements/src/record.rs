@@ -113,8 +113,20 @@ pub struct Advertisement {
     /// `openfiat_types::currency` — and `PricingModel::Floating`'s
     /// `price_decimals` above, which reached the same conclusion first.
     pub fiat_currency: FiatCurrency,
+    /// The smallest and largest trade this advertisement will take,
+    /// **denominated in the asset** — not in the fiat currency above.
+    ///
+    /// Stated here because it was previously stated only in passing, in
+    /// `PricingModel::Floating::price_decimals`' doc comment, as the
+    /// reason that field has to exist. Two interfaces read the record and
+    /// reached opposite conclusions: one renders these as fiat and one as
+    /// the asset, and one of them is showing a merchant's limits in the
+    /// wrong currency entirely. A fact load-bearing enough to be wrong
+    /// about belongs on the field it describes.
     pub min_trade: Amount,
     pub max_trade: Amount,
+    /// Denominated in the asset, like `min_trade` and `max_trade` above.
+    ///
     /// §9: for a Sell ad, the unreserved balance in the merchant's
     /// Liquidity Vault. For a Buy ad, remaining declared purchasing
     /// capacity. Adjusted automatically by reservation/settlement events
