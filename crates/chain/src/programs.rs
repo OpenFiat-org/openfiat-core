@@ -18,9 +18,9 @@
 //! does not trust individually, so the test that decides whether a value may
 //! be configured is: *if two honest nodes running the same release could
 //! disagree because of it, it is not configuration.* Program ids fail that
-//! test outright. Contrast the values that pass it — listen address, data
-//! directory, bootstrap peers, RPC endpoints — which remain `CLI_*`
-//! environment variables in `openfiat-cli`, and the protocol *parameters*
+//! test outright. Contrast the values that pass it — bind addresses, the
+//! ledger directory, entry points, Solana RPC endpoints — which are
+//! `openfiat-node`'s command-line flags, and the protocol *parameters*
 //! (fees, stake minimums, quorum), which are neither constants here nor
 //! operator settings but on-chain state under governance control.
 //!

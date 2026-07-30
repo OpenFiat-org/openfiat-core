@@ -1113,8 +1113,8 @@ mod tests {
     /// The regression test for the reason this id is a constant: a node
     /// operator who deploys their own staking program and mints themselves
     /// a `StakeAccount` with any balance they like must not be able to
-    /// make their node count it. Before, the owning program came from
-    /// `CLI_STAKING_PROGRAM_ID` and this account would have been believed.
+    /// make their node count it. Before, the owning program was an operator
+    /// setting, and this account would have been believed.
     #[tokio::test]
     async fn a_stake_account_owned_by_some_other_staking_program_is_never_counted() {
         let state = NodeState::new_for_test(MemoryStore::new());

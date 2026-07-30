@@ -24,3 +24,7 @@ logs/
 /target/
 **/target/
 Cargo.lock.bak
+
+# Agent scratch: `.claude/worktrees/` holds throwaway git worktrees whose
+# branches are merged or abandoned. Nothing here belongs to the repository.
+.claude/
