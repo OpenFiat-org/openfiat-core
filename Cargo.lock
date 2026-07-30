@@ -3674,6 +3674,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bincode",
+ "bs58",
  "futures-util",
  "http-body-util",
  "libp2p-identity",

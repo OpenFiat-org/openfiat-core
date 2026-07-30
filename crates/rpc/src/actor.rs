@@ -197,6 +197,17 @@ pub struct NetworkConfig {
     /// Empty is right for a node genuinely on a public interface: its
     /// bound address already is its public one.
     pub external_addresses: Vec<Multiaddr>,
+    /// Where this node's earnings should be paid, if not to its own
+    /// identity address.
+    ///
+    /// A node cannot start without a keypair, so it always has an address
+    /// it demonstrably controls, and that is the default. This exists for
+    /// the operator who would rather not accrue earnings to a key living
+    /// unencrypted on a server.
+    pub payout_wallet: Option<String>,
+    /// A region this node declares itself to be in, for clients that
+    /// prefer a nearby one. Self-declared and unverified — see #173.
+    pub region: Option<String>,
     /// This node's publicly reachable API URL, if it has one.
     ///
     /// `Some` means the operator has put the node behind TLS and wants it
@@ -220,6 +231,8 @@ impl NetworkConfig {
             bootstrap_peers: Vec::new(),
             chain_mode: NodeChainMode::GossipOnly,
             external_addresses: Vec::new(),
+            payout_wallet: None,
+            region: None,
             serve_content: true,
             content_gateway: openfiat_content::DEFAULT_GATEWAY.to_string(),
             ipfs_api_url: None,
@@ -517,7 +530,76 @@ const GOSSIP_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// consumer should treat it as a candidate to try rather than a
 /// guarantee — which is what `openfiat-app`'s node picker already does,
 /// measuring each one with a real request instead of trusting the list.
-fn advertise_public_api<S: KvStore + 'static>(state: &NodeState<S>, keypair: &Keypair, url: &str) {
+/// What this node can actually do, derived from how it is running.
+///
+/// Not hand-written and not empty. A registration is how one node tells
+/// the rest of the network what it is for, and the previous version
+/// declared nothing at all — so every public node looked identical, and a
+/// client choosing between them had nothing to choose on. Every entry
+/// here is a fact about this process at this moment, so it cannot drift
+/// from what the operator configured: change the flag, restart, and the
+/// registration changes with it.
+///
+/// Self-declared, like every registration field. A node claiming
+/// `chain:rpc` is making a claim, not proving one — but it is a claim
+/// that fails visibly, because a `GossipOnly` node cannot answer
+/// `getLatestBlockhash` with a fresh blockhash and anyone can ask.
+fn declared_capabilities(network: &NetworkConfig) -> Vec<String> {
+    let mut capabilities = vec![
+        if network.chain_mode.is_rpc_connected() {
+            "chain:rpc".to_string()
+        } else {
+            "chain:gossip".to_string()
+        },
+        format!("retention:{}", network.retention.describe()),
+    ];
+    if network.serve_content {
+        // The one an interface actually acts on: a node that serves
+        // content is one a browser can fetch an attachment from.
+        capabilities.push("content:serving".to_string());
+    }
+    if network.snapshot.produces() {
+        capabilities.push("snapshots:producing".to_string());
+    }
+    capabilities
+}
+
+/// Where this node's earnings should be paid.
+///
+/// Defaults to the node's own identity address rather than to nothing. A
+/// node cannot start without a keypair — it is the same key that signs
+/// every event it originates — so "this node has no wallet" was never
+/// true, and registering `payout_wallet: None` meant a node doing real
+/// work had nowhere for its share to go. `ServicePricing` is refused
+/// without a payout wallet, so it also meant a node could never charge
+/// for anything.
+///
+/// An operator who would rather not accrue earnings to a key that lives
+/// unencrypted on a server passes `--payout-wallet` and names a cold one.
+/// That is the right default to *offer* and the wrong one to *assume*:
+/// defaulting to a wallet the node cannot prove it controls would send
+/// payments nowhere recoverable.
+fn payout_wallet(network: &NetworkConfig, keypair: &Keypair) -> String {
+    network
+        .payout_wallet
+        .clone()
+        .unwrap_or_else(|| bs58::encode(keypair.public_key().as_bytes()).into_string())
+}
+
+/// Everything this node will say about itself, decided once from the
+/// configuration as given.
+struct PublicApiAdvert {
+    capabilities: Vec<String>,
+    region: Option<String>,
+    payout_wallet: String,
+    url: String,
+}
+
+fn advertise_public_api<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    advert: &PublicApiAdvert,
+    keypair: &Keypair,
+) {
     use openfiat_registry::{Registration, SignedRegistration};
     use openfiat_types::{InfrastructureService, ServiceId, ServiceType};
 
@@ -536,14 +618,22 @@ fn advertise_public_api<S: KvStore + 'static>(state: &NodeState<S>, keypair: &Ke
         service_type: ServiceType::Infrastructure(InfrastructureService::PublicApiNode),
         provider: provider.clone(),
         provider_public_key: keypair.public_key(),
-        endpoints: vec![url.to_string()],
-        supported_ofs: vec![8200],
-        region: None,
-        capabilities: Vec::new(),
-        // No pricing: a public API node is not charging for this, and a
-        // price without a payout wallet is refused anyway.
+        endpoints: vec![advert.url.clone()],
+        // Everything this node speaks, from the one place that composes
+        // every domain crate — not the single `8200` this used to
+        // declare, which described the RPC surface and none of the
+        // protocols reached through it.
+        supported_ofs: crate::state::SUPPORTED_OFS.to_vec(),
+        // Self-declared and optional. A node on a laptop has no useful
+        // region to state, and inventing one from an IP lookup would be
+        // guessing about the operator on their behalf.
+        region: advert.region.clone(),
+        capabilities: advert.capabilities.clone(),
+        // Still no pricing: serving the public API is not something this
+        // node charges for. The payout wallet below is for the reward
+        // share it earns by running, which is a different thing.
         pricing: None,
-        payout_wallet: None,
+        payout_wallet: Some(advert.payout_wallet.clone()),
         timestamp: openfiat_types::Timestamp::now(),
     };
 
@@ -559,9 +649,14 @@ fn advertise_public_api<S: KvStore + 'static>(state: &NodeState<S>, keypair: &Ke
                 openfiat_types::Priority::Reputation,
                 gossip_bytes,
             );
-            tracing::info!(url, "advertised this node as publicly reachable");
+            tracing::info!(
+                url = %advert.url,
+                capabilities = ?advert.capabilities,
+                payout_wallet = %advert.payout_wallet,
+                "advertised this node as publicly reachable"
+            );
         }
-        Err(err) => tracing::warn!(?err, url, "could not advertise this node"),
+        Err(err) => tracing::warn!(?err, url = %advert.url, "could not advertise this node"),
     }
 }
 
@@ -1236,6 +1331,17 @@ where
             let node =
                 Node::new(&network.keypair).expect("failed to start this node's libp2p transport");
             let advertise_keypair = Keypair::from_seed(network.keypair.seed());
+            // Decided here, from the configuration exactly as the operator
+            // gave it, before `NodeState::new` consumes any of it. Reading
+            // these later would mean reading whatever survived the move,
+            // which is how a registration ends up describing something
+            // other than the node that is running.
+            let advertisement = network.public_rpc_url.clone().map(|url| PublicApiAdvert {
+                capabilities: declared_capabilities(&network),
+                region: network.region.clone(),
+                payout_wallet: payout_wallet(&network, &advertise_keypair),
+                url,
+            });
             let chain_client: Option<Box<dyn ChainClient>> = match &network.chain_mode {
                 NodeChainMode::RpcConnected { rpc_urls, .. } => {
                     Some(Box::new(RpcChainClient::new(rpc_urls.clone())))
@@ -1288,6 +1394,11 @@ where
             // driven by gossiped protocol events, which a `GossipOnly`
             // node sees just as well as an `RpcConnected` one.
             let mut notification_poll = tokio::time::interval(NOTIFICATION_POLL_INTERVAL);
+            // Before the loop starts: the registry record should exist by
+            // the time this node begins answering, not a tick later.
+            if let Some(advertisement) = &advertisement {
+                advertise_public_api(&state, advertisement, &advertise_keypair);
+            }
             let notification_provider = HttpGateway::default();
             // A node that produces nothing still ticks this arm, which
             // returns immediately — cheaper than the conditional-arm
@@ -1317,9 +1428,6 @@ where
                 retention = %retention.describe(),
                 "content serving"
             );
-            if let Some(url) = network.public_rpc_url.as_deref() {
-                advertise_public_api(&state, &advertise_keypair, url);
-            }
             let mut snapshot_produce = tokio::time::interval(
                 snapshot_config
                     .interval
@@ -1530,6 +1638,52 @@ mod tests {
             state.content_wants.borrow().contains(PROBE_CID),
             "a failed answer must leave the want standing so another peer is asked"
         );
+    }
+
+    #[test]
+    fn a_node_declares_what_it_is_actually_running() {
+        // Every public node used to register with an empty capability
+        // list, so they were indistinguishable and a client choosing
+        // between them had nothing to choose on.
+        let mut config = NetworkConfig::for_test();
+        config.serve_content = true;
+        let gossip_only = declared_capabilities(&config);
+        assert!(gossip_only.contains(&"chain:gossip".to_string()));
+        assert!(gossip_only.contains(&"content:serving".to_string()));
+        assert!(
+            gossip_only.iter().any(|c| c.starts_with("retention:")),
+            "how long a node keeps content is what a client needs to know \
+             before relying on it for old evidence: {gossip_only:?}"
+        );
+
+        // Turning a thing off has to change what the node claims, or the
+        // claim is decoration.
+        config.serve_content = false;
+        assert!(!declared_capabilities(&config).contains(&"content:serving".to_string()));
+    }
+
+    #[test]
+    fn a_node_registers_a_payout_wallet_it_controls() {
+        // "This node has no wallet" was never true — it cannot start
+        // without one, and it is the same key that signs every event.
+        let config = NetworkConfig::for_test();
+        let keypair = Keypair::from_seed(config.keypair.seed());
+        let derived = payout_wallet(&config, &keypair);
+        assert_eq!(
+            derived,
+            bs58::encode(keypair.public_key().as_bytes()).into_string(),
+            "the default must be an address this node demonstrably controls"
+        );
+        assert!(!derived.is_empty());
+    }
+
+    #[test]
+    fn an_operator_can_send_earnings_somewhere_colder() {
+        let mut config = NetworkConfig::for_test();
+        let cold = "4oiCmGrMRL4m4RJsRX6F7nCDeEqoiKLYm5hsDcLFvAJB";
+        config.payout_wallet = Some(cold.to_string());
+        let keypair = Keypair::from_seed(config.keypair.seed());
+        assert_eq!(payout_wallet(&config, &keypair), cold);
     }
 
     #[tokio::test]

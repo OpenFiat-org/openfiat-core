@@ -228,6 +228,30 @@ pub struct Args {
     #[arg(long = "external-addr", value_name = "MULTIADDR")]
     pub external_addrs: Vec<Multiaddr>,
 
+    /// Where this node's earnings are paid, as a Solana address.
+    ///
+    /// Defaults to this node's own identity address — the key in
+    /// `--identity`, which the node demonstrably controls because it signs
+    /// every event with it. A node has always had a wallet; registering
+    /// without one meant a node doing real work had nowhere for its share
+    /// to go.
+    ///
+    /// Set this to a wallet you keep elsewhere if you would rather not
+    /// accrue earnings to a key that lives unencrypted on a server. The
+    /// node never needs the payout wallet's private key — it only names
+    /// the address.
+    #[arg(long, value_name = "ADDRESS")]
+    pub payout_wallet: Option<String>,
+
+    /// A region to declare, e.g. `eu-west` or `KE`.
+    ///
+    /// Self-declared and unverified — a client may prefer a nearby node,
+    /// and nothing here proves where this one is. Omit it rather than
+    /// guessing; a node on a laptop has no useful region, and an absent
+    /// answer is better than a wrong one.
+    #[arg(long, value_name = "REGION")]
+    pub region: Option<String>,
+
     /// This node's publicly reachable API URL, e.g.
     /// `https://openfiat.allenhark.com`.
     ///
@@ -513,6 +537,8 @@ async fn main() {
             chain_mode,
             snapshot,
             external_addresses: args.external_addrs.clone(),
+            payout_wallet: args.payout_wallet.clone(),
+            region: args.region.clone(),
             serve_content: !args.no_content_serving,
             content_gateway: args.content_gateway.clone(),
             ipfs_api_url: args.ipfs_api_url.clone(),
