@@ -85,7 +85,25 @@ jobs:
         # needs a newer rustc than that pin provides.
         run: RUSTUP_TOOLCHAIN=stable cargo install anchor-cli --version ${ANCHOR_VERSION} --locked
       - run: npm install
-      - run: anchor build
+      # `cargo build-sbf` reports an SBF stack-frame overflow as a non-fatal
+      # `Error:` line and still emits a working-looking binary. That binary
+      # then dies at runtime with "Access violation ... at address 0x0",
+      # attributed to whatever code path happens to run — not to the account
+      # that pushed the frame over. It cost a 30-minute test cycle and a
+      # wrong hypothesis to trace once; the build already knew.
+      #
+      # Anchor's own exit code cannot be relied on here, so the log is
+      # inspected directly.
+      - name: anchor build, failing on an SBF stack-frame overflow
+        run: |
+          set -o pipefail
+          anchor build 2>&1 | tee /tmp/anchor-build.log
+          if grep -q "overwrites values in the frame" /tmp/anchor-build.log; then
+            echo "::error::SBF stack-frame overflow — a function's locals exceed the 4 KB frame."
+            echo "Box the accounts in the offending Accounts struct, or split the instruction."
+            grep -o "in method [^ ]*" /tmp/anchor-build.log | sort -u
+            exit 1
+          fi
       # --validator legacy: this Anchor CLI version defaults to the
       # `surfpool` validator, which isn't installed in CI; `legacy` uses the
       # standard solana-test-validator that ships with the Solana CLI.
