@@ -45,7 +45,15 @@ pub fn handle_request_unstake(ctx: Context<RequestUnstake>, amount: u64) -> Resu
         ErrorCode::StakeBelowRoleMinimum
     );
 
+    // A full exit stops the age clock. Leaving it set would let an
+    // arbitrator withdraw entirely, re-stake later, and still present the
+    // age they had accrued before the tokens left — an aged identity with
+    // no capital behind it for the gap, which is the thing the age
+    // requirement is meant to make impossible.
     stake_account.amount = remaining;
+    if remaining == 0 {
+        stake_account.first_staked_at = 0;
+    }
     stake_account.unbonding_amount = stake_account
         .unbonding_amount
         .checked_add(amount)

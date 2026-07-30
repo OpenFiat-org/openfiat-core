@@ -17,6 +17,8 @@
 
 use anchor_lang::prelude::*;
 
+pub mod sortition;
+
 /// A staked/bonded protocol role (OFS-4200 §2). `staking::StakeAccount`
 /// is keyed by `(owner, role)` — one wallet may hold independent stakes
 /// under different roles.

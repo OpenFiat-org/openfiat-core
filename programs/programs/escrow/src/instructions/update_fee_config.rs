@@ -62,6 +62,16 @@ pub struct UpdateFeeConfigParams {
     pub infra_treasury_bps: u16,
     pub emergency_reserve_bps: u16,
     pub timeout_secs: i64,
+    /// Arbitrator stake age in seconds; zero disables the gate. This is
+    /// the path OFS-4100 §4's 30 days is actually turned on through — see
+    /// `RECOMMENDED_MIN_ARBITRATOR_STAKE_AGE_SECS` for why it cannot be
+    /// enabled at deployment.
+    pub min_arbitrator_stake_age_secs: i64,
+    /// Opening sortition threshold in basis points; zero disables the
+    /// draw. Values at or above `BPS_DENOMINATOR` would admit every
+    /// wallet, which is the same as disabled but harder to read, so they
+    /// are rejected outright rather than silently accepted.
+    pub arbitrator_sortition_bps: u16,
 }
 
 pub fn handle_update_fee_config(
@@ -78,6 +88,17 @@ pub fn handle_update_fee_config(
         + params.emergency_reserve_bps as u64;
     require!(split_total == BPS_DENOMINATOR, ErrorCode::InvalidFeeSplit);
     require!(params.timeout_secs > 0, ErrorCode::InvalidTimeout);
+    // A negative age would make every comparison against it vacuously
+    // true, which reads in the account as "a requirement is set" while
+    // enforcing nothing — worse than an honest zero.
+    require!(
+        params.min_arbitrator_stake_age_secs >= 0,
+        ErrorCode::InvalidStakeAge
+    );
+    require!(
+        (params.arbitrator_sortition_bps as u64) < BPS_DENOMINATOR,
+        ErrorCode::InvalidSortitionThreshold
+    );
 
     let fee_config = &mut ctx.accounts.fee_config;
     fee_config.ad_listing_fee = params.ad_listing_fee;
@@ -92,6 +113,8 @@ pub fn handle_update_fee_config(
     fee_config.infra_treasury_bps = params.infra_treasury_bps;
     fee_config.emergency_reserve_bps = params.emergency_reserve_bps;
     fee_config.timeout_secs = params.timeout_secs;
+    fee_config.min_arbitrator_stake_age_secs = params.min_arbitrator_stake_age_secs;
+    fee_config.arbitrator_sortition_bps = params.arbitrator_sortition_bps;
     // `admin` is intentionally not updatable here — handing over control
     // is a distinct action from correcting fee parameters, and folding it
     // into this instruction would let one fat-fingered call lock the

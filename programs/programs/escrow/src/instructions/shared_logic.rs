@@ -271,3 +271,61 @@ pub fn release_trade_escrow_funds<'info>(
         .ok_or(ErrorCode::Overflow)?;
     Ok((buyer_amount, fee_shares))
 }
+
+/// Latches a fresh sortition seed for a dispute round from the most recent
+/// entry in the slot-hashes sysvar (OFS-4100 §4.1).
+///
+/// `slot_hashes` must be the real sysvar; every caller pins it with an
+/// `address = SlotHashes::id()` constraint, so this function is only ever
+/// handed the one account it can be. The sysvar is read as raw bytes
+/// because it is far too large to deserialize inside a program — and
+/// `Sysvar::get()` is unsupported for it for the same reason.
+///
+/// Layout: an 8-byte little-endian entry count, then that many
+/// `(slot: u64, hash: [u8; 32])` records, most recent first.
+///
+/// # What this achieves, and what it does not
+///
+/// It stops wallets being **pre-ground** against a known seed. An attacker
+/// who wants many wallets to qualify for a specific future case cannot
+/// compute their draws in advance, because the slot hash does not exist
+/// until the block does — and the stake-age requirement means they would
+/// have needed to commit the capital thirty days earlier anyway.
+///
+/// It does **not** stop the submitter from grinding. Whoever sends the
+/// transaction can simulate it, see the resulting draw, and resubmit in a
+/// later slot until the seed suits them. For `open_dispute_case` that is a
+/// party to the trade. Solana offers no in-transaction randomness, so no
+/// single-transaction seed can close this; a VRF or a two-transaction
+/// future-slot commit is the real fix, and is tracked as follow-up rather
+/// than implied here. Grinding does not remove the barrier sortition
+/// exists to create — an attacker still needs many aged, funded wallets
+/// before any draw can land well — it lowers how many.
+///
+/// The reservation id and escrow address are mixed in so two cases opening
+/// in the same slot cannot share a seed and therefore a draw.
+pub fn latch_case_seed(
+    slot_hashes: &AccountInfo,
+    reservation_id: u64,
+    trade_escrow: &Pubkey,
+) -> Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+
+    let data = slot_hashes.try_borrow_data()?;
+    require!(data.len() >= 8 + 40, ErrorCode::SlotHashesUnavailable);
+    let mut count_bytes = [0u8; 8];
+    count_bytes.copy_from_slice(&data[..8]);
+    // An empty sysvar would mean reading the "most recent" entry out of
+    // padding, producing a seed an attacker could predict as a constant.
+    require!(
+        u64::from_le_bytes(count_bytes) > 0,
+        ErrorCode::SlotHashesUnavailable
+    );
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"openfiat-dispute-case-seed");
+    hasher.update(&data[8..8 + 40]); // most recent (slot, hash) pair
+    hasher.update(reservation_id.to_le_bytes());
+    hasher.update(trade_escrow.as_ref());
+    Ok(hasher.finalize().into())
+}

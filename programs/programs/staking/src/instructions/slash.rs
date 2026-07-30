@@ -95,6 +95,16 @@ pub fn handle_slash(ctx: Context<Slash>, misconduct_code: u16) -> Result<()> {
         .slashed_total
         .checked_add(slash_amount)
         .ok_or(ErrorCode::Overflow)?;
+    // Keeps `first_staked_at`'s "zero balance means zero clock" invariant
+    // true through the one path that can empty an account without its
+    // owner asking. A partial slash deliberately leaves the clock running:
+    // whether misconduct should also cost an arbitrator their accrued age
+    // is a policy question OFS-4100 has not decided, and quietly deciding
+    // it here would make a slash harsher than §16's "partial, moderate"
+    // without anyone signing that off.
+    if stake_account.amount == 0 {
+        stake_account.first_staked_at = 0;
+    }
 
     emit!(SlashApplied {
         stake_account: stake_account.key(),

@@ -65,5 +65,13 @@ pub fn handle_initialize_fee_config(
     fee_config.emergency_reserve_bps = params.emergency_reserve_bps;
     fee_config.timeout_secs = params.timeout_secs;
     fee_config.bump = ctx.bumps.fee_config;
+    // Both arbitrator-eligibility gates start disabled, and are not
+    // instruction parameters at all — see
+    // `RECOMMENDED_MIN_ARBITRATOR_STAKE_AGE_SECS` for why zero is the only
+    // value that can be true on a chain younger than the requirement it
+    // would impose. Governance turns them on via `update_fee_config` once
+    // the arbitrator pool has aged and is large enough to draw from.
+    fee_config.min_arbitrator_stake_age_secs = 0;
+    fee_config.arbitrator_sortition_bps = 0;
     Ok(())
 }

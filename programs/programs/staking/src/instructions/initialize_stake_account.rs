@@ -34,5 +34,11 @@ pub fn handle_initialize_stake_account(
     stake_account.slashed_total = 0;
     stake_account.pending_rewards = 0;
     stake_account.bump = ctx.bumps.stake_account;
+    // Zero, not the current clock: this account holds no stake yet, and an
+    // age clock that starts before any tokens are locked would let an
+    // attacker open accounts now and fund them thirty days later at no
+    // cost — exactly what the age requirement exists to prevent. `stake`
+    // sets it when the first tokens actually arrive.
+    stake_account.first_staked_at = 0;
     Ok(())
 }

@@ -125,6 +125,36 @@ pub struct FeeConfig {
     /// created with.
     pub timeout_secs: i64,
     pub bump: u8,
+    /// How long an Arbitrator-role stake must have been held before its
+    /// wallet may commit a dispute vote (OFS-4100 §4, signed off at 30
+    /// days). Read from [`staking::StakeAccount::first_staked_at`].
+    ///
+    /// This is dispute *policy*, so it lives here rather than on
+    /// `StakingConfig`: staking records the fact of when a position began,
+    /// escrow decides how old is old enough to arbitrate. It also means
+    /// governance can retune it through the `update_fee_config` path that
+    /// already exists, without a second singleton migration.
+    ///
+    /// Zero disables the age gate, which is what makes it safe to deploy
+    /// inert and raise once real arbitrators have accrued age — every
+    /// existing stake account's clock starts at its migration, so
+    /// switching a 30-day requirement on immediately would lock out the
+    /// entire arbitrator pool for a month.
+    pub min_arbitrator_stake_age_secs: i64,
+    /// Opening sortition threshold in basis points — the share of eligible
+    /// arbitrator wallets drawn for a given case at the moment it opens
+    /// (OFS-4100 §4.1). Signed off at **100 (1/100)**.
+    ///
+    /// Widens across the commit window; see
+    /// [`openfiat_programs_shared::sortition`] for the schedule and for an
+    /// honest account of what the draw does and does not prevent.
+    ///
+    /// Zero disables sortition entirely. Both this and the age gate above
+    /// are appended after `bump` for the same reason
+    /// `StakeAccount::first_staked_at` is: every offset before them keeps
+    /// its meaning, so `migrate_fee_config` is a resize rather than a
+    /// rewrite and no existing decoder shifts.
+    pub arbitrator_sortition_bps: u16,
 }
 
 /// On-chain bridge for a trade escrow's dispute (Phase 4b, plan decision
@@ -151,6 +181,38 @@ pub struct DisputeCase {
     /// than a fresh, differently-argued pair.
     pub commit_window_secs: i64,
     pub reveal_window_secs: i64,
+    /// This round's sortition seed (OFS-4100 §4.1) — the value every
+    /// arbitrator's eligibility draw is computed against. Latched from a
+    /// recent slot hash when the round opens, and **re-latched on every
+    /// re-opened round**: reusing one seed across rounds would mean the
+    /// same wallets qualify every time, so an attacker who wins the draw
+    /// once wins it for the life of the case.
+    ///
+    /// Recorded on the account rather than recomputed, so any observer can
+    /// reproduce and check every seat's draw from public data. That
+    /// verifiability is the point — the program cannot enumerate accounts
+    /// to draw names itself, so arbitrators self-select and anyone can
+    /// confirm they were entitled to.
+    ///
+    /// Placed in declaration order rather than appended because, unlike
+    /// `FeeConfig`, no live `DisputeCase` exists to migrate — checked
+    /// against devnet, which holds a `FeeConfig`, a `LiquidityVault` and
+    /// two `TradeEscrowVault`s but no dispute case. A pre-existing open
+    /// case would otherwise have needed one, since this sits ahead of the
+    /// per-seat vectors.
+    pub case_seed: [u8; 32],
+    /// When the **current round** opened, as distinct from [`Self::opened_at`],
+    /// which records when the case first did.
+    ///
+    /// The sortition threshold widens across a round's commit window, so it
+    /// needs that round's own start. Using `opened_at` would mean a
+    /// re-opened round inherited an already-elapsed window and opened its
+    /// draw to everyone immediately — silently disabling sortition for
+    /// every round after the first, which is exactly the situation an
+    /// attacker creates by forcing a re-round. Overwriting `opened_at`
+    /// instead would have worked but would have destroyed the case's
+    /// original timestamp, which the dispute record is audited against.
+    pub round_opened_at: i64,
     /// Parallel arrays (index i = one arbitrator's slot), rather than a
     /// `Vec<Struct>` — Anchor's `#[max_len]` space accounting is simplest
     /// per-field; a struct-of-arrays costs the same total space.

@@ -44,6 +44,14 @@ pub mod staking {
         )
     }
 
+    /// One-shot per-account layout migration adding
+    /// `StakeAccount.first_staked_at` — see `migrate_stake_account`'s own
+    /// doc comment for why it is permissionless and why the age clock
+    /// starts at migration rather than at deployment.
+    pub fn migrate_stake_account(ctx: Context<MigrateStakeAccount>) -> Result<()> {
+        crate::instructions::migrate_stake_account::handle_migrate_stake_account(ctx)
+    }
+
     /// Corrects the singleton config's authorities and parameters.
     /// Admin-only; see `instructions::update_staking_config` for why the
     /// slash destination arrives as an account rather than a key.

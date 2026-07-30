@@ -1,4 +1,7 @@
 use anchor_lang::prelude::*;
+// Brings `SlotHashes::id()` into scope for the `address` constraint, so the
+// sysvar address is derived from the type rather than pasted as a literal.
+use anchor_lang::solana_program::sysvar::SysvarId;
 use anchor_spl::token_interface::{
     transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
 };
@@ -25,7 +28,15 @@ use crate::{constants::*, error::ErrorCode, state::*};
 /// `handle_undecided_round`.
 #[derive(Accounts)]
 pub struct ExecuteDisputeOutcome<'info> {
-    pub mint: InterfaceAccount<'info, Mint>,
+    /// Boxed like almost every account here, and for the same reason: this
+    /// struct's generated `try_accounts` sits close enough to SBF's 4 KB
+    /// stack-frame limit that adding one more account overflowed it. The
+    /// symptom was not a compile failure — `cargo build-sbf` reports
+    /// "overwrites values in the frame" as a non-fatal `Error:` line and
+    /// still produces a binary — but an "Access violation ... at address
+    /// 0x0" at runtime, on the *decided* path, nowhere near the account
+    /// that was added. Keep new accounts here boxed.
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         mut,
@@ -129,6 +140,17 @@ pub struct ExecuteDisputeOutcome<'info> {
     pub merchant_open_token_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token2022>,
+
+    /// CHECK: pinned to the real sysvar by `address`, then read as raw
+    /// bytes — see `shared_logic::latch_case_seed`.
+    ///
+    /// Needed even though this instruction may not re-open the case: a
+    /// round that decides never touches it, but a round that falls short
+    /// must draw a fresh seed, and Anchor's account list is fixed per
+    /// instruction rather than per branch. Passing it always is the cost of
+    /// the seed being re-drawn at all.
+    #[account(address = SlotHashes::id())]
+    pub slot_hashes: UncheckedAccount<'info>,
 }
 
 /// Where an arbitration deposit goes once a case ends.
@@ -429,8 +451,19 @@ fn handle_undecided_round(mut ctx: Context<ExecuteDisputeOutcome>, now: i64) -> 
         .ok_or(ErrorCode::Overflow)?;
 
     dispute_case.round = next_round;
+    dispute_case.round_opened_at = now;
     dispute_case.commit_deadline = commit_deadline;
     dispute_case.reveal_deadline = reveal_deadline;
+    // A fresh draw for the fresh round. Carrying the previous round's seed
+    // over would mean exactly the same wallets qualify again, so an
+    // attacker who won the draw once would hold those seats for every
+    // remaining round — and forcing a re-round is something they can do
+    // deliberately by committing and never revealing.
+    dispute_case.case_seed = crate::instructions::shared_logic::latch_case_seed(
+        &ctx.accounts.slot_hashes.to_account_info(),
+        dispute_case.reservation_id,
+        &dispute_case.trade_escrow,
+    )?;
     dispute_case.arbitrators = Vec::new();
     dispute_case.commitments = Vec::new();
     dispute_case.revealed_outcomes = Vec::new();

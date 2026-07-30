@@ -86,6 +86,11 @@ pub fn handle_stake(ctx: Context<Stake>, amount: u64) -> Result<()> {
         ctx.accounts.mint.decimals,
     )?;
 
+    // Start the age clock only on the transition out of zero, so a top-up
+    // never resets it — see `StakeAccount::first_staked_at`.
+    if ctx.accounts.stake_account.amount == 0 && new_amount > 0 {
+        ctx.accounts.stake_account.first_staked_at = Clock::get()?.unix_timestamp;
+    }
     ctx.accounts.stake_account.amount = new_amount;
     Ok(())
 }
