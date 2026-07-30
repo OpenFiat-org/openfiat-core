@@ -14,6 +14,20 @@ use std::rc::Rc;
 
 const COLUMN_FAMILY: &str = "risk_records";
 
+/// How long an already-expired record is kept before deletion.
+///
+/// Expiry and deletion are separate on purpose. A record past
+/// `expires_at` is already refused by every reader — it is invalid, not
+/// absent — and that distinction is worth something: "this rate expired
+/// two hours ago" is a better answer than silence, and it is how an
+/// operator sees a feed has died rather than that a provider never
+/// existed. #140 was diagnosed exactly that way.
+///
+/// So a record is kept for a grace period past expiry, long enough to
+/// explain itself, and only then deleted. `[PROPOSED — NEEDS SIGN-OFF]`
+/// 7 days.
+pub const EXPIRED_GRACE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
 pub struct RiskIndex<S> {
     store: S,
     services: Rc<Registry<S>>,
@@ -39,6 +53,37 @@ impl<S: KvStore> RiskIndex<S> {
                 .store
                 .put(COLUMN_FAMILY, record.id.as_str().as_bytes(), &bytes);
         }
+    }
+
+    /// Deletes records that expired longer ago than [`EXPIRED_GRACE`].
+    ///
+    /// Nothing aggregates the history of this family — no counter, no
+    /// reputation figure, no earnings total is derived by scanning it —
+    /// so dropping an old record changes no answer except that record's
+    /// own. That is what makes this safe to prune where the marketplace
+    /// records are not.
+    pub fn prune_expired(&self, now: openfiat_types::Timestamp) -> usize {
+        let cutoff = now
+            .as_millis()
+            .saturating_sub(EXPIRED_GRACE.as_millis() as u64);
+        let mut dropped = 0;
+        for (key, value) in self
+            .store
+            .iter_prefix(COLUMN_FAMILY, &[])
+            .unwrap_or_default()
+        {
+            let Ok(record) = wire::from_bytes::<RiskRecord>(&value) else {
+                continue;
+            };
+            let expired_at = record.expires_at;
+            if let Some(at) = expired_at
+                && at.as_millis() < cutoff
+                && self.store.delete(COLUMN_FAMILY, &key).is_ok()
+            {
+                dropped += 1;
+            }
+        }
+        dropped
     }
 
     pub fn all(&self) -> Vec<RiskRecord> {

@@ -14,6 +14,20 @@ use std::rc::Rc;
 
 const COLUMN_FAMILY: &str = "oracle_records";
 
+/// How long an already-expired record is kept before deletion.
+///
+/// Expiry and deletion are separate on purpose. A record past
+/// `expires_at` is already refused by every reader — it is invalid, not
+/// absent — and that distinction is worth something: "this rate expired
+/// two hours ago" is a better answer than silence, and it is how an
+/// operator sees a feed has died rather than that a provider never
+/// existed. #140 was diagnosed exactly that way.
+///
+/// So a record is kept for a grace period past expiry, long enough to
+/// explain itself, and only then deleted. `[PROPOSED — NEEDS SIGN-OFF]`
+/// 7 days.
+pub const EXPIRED_GRACE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
 /// The result of asking this index for a pair's §11 median rate.
 ///
 /// Three outcomes rather than `Option<f64>` because the two failures are
@@ -58,6 +72,37 @@ impl<S: KvStore> OracleIndex<S> {
                 .store
                 .put(COLUMN_FAMILY, record.id.as_str().as_bytes(), &bytes);
         }
+    }
+
+    /// Deletes records that expired longer ago than [`EXPIRED_GRACE`].
+    ///
+    /// Nothing aggregates the history of this family — no counter, no
+    /// reputation figure, no earnings total is derived by scanning it —
+    /// so dropping an old record changes no answer except that record's
+    /// own. That is what makes this safe to prune where the marketplace
+    /// records are not.
+    pub fn prune_expired(&self, now: openfiat_types::Timestamp) -> usize {
+        let cutoff = now
+            .as_millis()
+            .saturating_sub(EXPIRED_GRACE.as_millis() as u64);
+        let mut dropped = 0;
+        for (key, value) in self
+            .store
+            .iter_prefix(COLUMN_FAMILY, &[])
+            .unwrap_or_default()
+        {
+            let Ok(record) = wire::from_bytes::<OracleRecord>(&value) else {
+                continue;
+            };
+            let expired_at = Some(record.expires_at);
+            if let Some(at) = expired_at
+                && at.as_millis() < cutoff
+                && self.store.delete(COLUMN_FAMILY, &key).is_ok()
+            {
+                dropped += 1;
+            }
+        }
+        dropped
     }
 
     pub fn all(&self) -> Vec<OracleRecord> {
@@ -413,5 +458,74 @@ mod tests {
                 expires_at: Timestamp::from_millis(base + 30_000),
             }
         );
+    }
+
+    /// Expiry and deletion are separate, and the gap between them is the
+    /// point: an expired record still explains itself.
+    mod pruning {
+        use super::*;
+
+        const DAY: u64 = 24 * 60 * 60 * 1_000;
+
+        /// Publishes a live record — `apply_publish` refuses an
+        /// already-expired one, which is why these tests move `now`
+        /// forward rather than backdating the record.
+        fn publish_live(
+            registry: &OracleIndex<MemoryStore>,
+            provider: &Keypair,
+            id: &str,
+        ) -> Timestamp {
+            let record = publish(provider, id, 1, 129.52);
+            let expires_at = record.expires_at;
+            registry
+                .apply_publish(SignedOraclePublish::sign(record, provider))
+                .expect("a registered provider may publish a live record");
+            expires_at
+        }
+
+        #[test]
+        fn a_recently_expired_record_is_kept_so_it_can_explain_itself() {
+            // "This feed died 25 hours ago" is a better answer than
+            // silence — it is how #140 was diagnosed at all.
+            let (provider, services) = registered_provider(1);
+            let registry = OracleIndex::new(MemoryStore::new(), services);
+            let expires_at = publish_live(&registry, &provider, "recent");
+
+            let two_days_later = Timestamp::from_millis(expires_at.as_millis() + 2 * DAY);
+            assert_eq!(registry.prune_expired(two_days_later), 0);
+            assert_eq!(registry.all().len(), 1);
+        }
+
+        #[test]
+        fn a_long_expired_record_is_deleted() {
+            let (provider, services) = registered_provider(2);
+            let registry = OracleIndex::new(MemoryStore::new(), services);
+            let expires_at = publish_live(&registry, &provider, "ancient");
+
+            let a_month_later = Timestamp::from_millis(expires_at.as_millis() + 30 * DAY);
+            assert_eq!(registry.prune_expired(a_month_later), 1);
+            assert!(registry.all().is_empty());
+        }
+
+        #[test]
+        fn a_live_record_is_never_touched() {
+            let (provider, services) = registered_provider(3);
+            let registry = OracleIndex::new(MemoryStore::new(), services);
+            publish_live(&registry, &provider, "live");
+
+            assert_eq!(registry.prune_expired(Timestamp::now()), 0);
+            assert_eq!(registry.all().len(), 1);
+        }
+
+        #[test]
+        fn pruning_is_idempotent() {
+            let (provider, services) = registered_provider(4);
+            let registry = OracleIndex::new(MemoryStore::new(), services);
+            let expires_at = publish_live(&registry, &provider, "ancient");
+            let later = Timestamp::from_millis(expires_at.as_millis() + 30 * DAY);
+
+            assert_eq!(registry.prune_expired(later), 1);
+            assert_eq!(registry.prune_expired(later), 0);
+        }
     }
 }

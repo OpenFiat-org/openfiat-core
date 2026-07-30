@@ -142,8 +142,12 @@ transactions:
     --ledger ~/openfiat \
     --identity ~/openfiat/wallet.json \
     --solana-rpc-url https://api.devnet.solana.com \
-    --entrypoint /ip4/<peer-host>/udp/4001/quic-v1
+    --entrypoint /ip4/84.32.223.111/udp/4001/quic-v1/p2p/12D3KooWK9hQ7TwbfvFiaAxUbRFCkdhS7iEpAJDnewNL1anyREQ1
 ```
+
+That entrypoint is the public devnet node — connection to it was verified
+from a clean node, not copied from a config file. Substitute your own if
+you are running a private cluster.
 
 Check it:
 

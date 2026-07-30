@@ -357,6 +357,73 @@ async fn poll_chain<S: KvStore + 'static>(state: &NodeState<S>, client: &dyn Cha
 /// daemon and to every peer's RPC for no better measurement.
 const PINNING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
+/// How long the gossip event log keeps an event before dropping it.
+///
+/// `[PROPOSED — NEEDS SIGN-OFF]` seven days, and the number is bounded
+/// from below by two separate requirements rather than chosen for
+/// roundness:
+///
+/// - Replay protection needs 24 hours (`docs/architecture.md`), so a
+///   week is a wide margin rather than a close call. Past the window a
+///   re-gossiped event is applied again instead of recognised as a
+///   duplicate, which every registry's own idempotence absorbs — but it
+///   should stay a theoretical path, not a routine one.
+/// - Recovery: a peer away for less than a week is caught up from the
+///   log. Longer outages bootstrap from a snapshot, which is what
+///   snapshots are for.
+///
+/// Bounded from above by the fact that this column family holds every
+/// event's full payload beside the record that event already produced,
+/// so on a busy node it is the largest thing on disk and the only one
+/// that grows purely with time.
+const GOSSIP_LOG_RETENTION: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// How often the gossip log is swept. Hourly: the window is a week, so
+/// the sweep cadence only bounds how far past the window the log drifts,
+/// and a scan of a large column family is not something to do often.
+const GOSSIP_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// One sweep of the record families that expire.
+///
+/// Only oracle, risk and session records. Every one of them carries an
+/// `expires_at`, is already refused by readers once past it, and — the
+/// part that matters — has no aggregate derived by scanning its history.
+///
+/// The marketplace records are deliberately not here. `ReputationView`
+/// and `CounterpartyView` both answer by scanning `settlements.all()` on
+/// every call, so deleting an old settlement would silently reduce a
+/// wallet's trade count and reputation, and two nodes with different
+/// retention would give different answers to the same question while both
+/// looked authoritative. Worse, it is unrecoverable: once the settlements
+/// are gone the figure cannot be recomputed. Those families can only be
+/// pruned after their aggregates are materialised — see #108.
+fn poll_expired_records<S: KvStore + 'static>(state: &NodeState<S>) {
+    let now = openfiat_types::Timestamp::now();
+    let dropped = state.oracles.prune_expired(now)
+        + state.risk.prune_expired(now)
+        + state.sessions.prune_expired(now);
+    if dropped > 0 {
+        tracing::info!(dropped, "pruned long-expired records");
+    }
+}
+
+/// One sweep of the gossip event log.
+fn poll_gossip_pruning<S: KvStore + 'static>(state: &NodeState<S>) {
+    let cutoff = openfiat_types::Timestamp::from_millis(
+        openfiat_types::Timestamp::now()
+            .as_millis()
+            .saturating_sub(GOSSIP_LOG_RETENTION.as_millis() as u64),
+    );
+    let dropped = state.gossip.borrow().store().prune_before(cutoff);
+    if dropped > 0 {
+        tracing::info!(
+            dropped,
+            retained_days = GOSSIP_LOG_RETENTION.as_secs() / 86_400,
+            "pruned the gossip event log"
+        );
+    }
+}
+
 /// One tick of pinning: hold the content this node has learned about.
 ///
 /// Only the challengeable subset is kept locally — see
@@ -890,6 +957,7 @@ where
             );
             let mut snapshot_bootstrap = tokio::time::interval(SNAPSHOT_BOOTSTRAP_INTERVAL);
             let mut pinning = tokio::time::interval(PINNING_INTERVAL);
+            let mut gossip_sweep = tokio::time::interval(GOSSIP_SWEEP_INTERVAL);
             let snapshot_client = reqwest::Client::new();
 
             loop {
@@ -932,6 +1000,10 @@ where
                     }
                     _ = snapshot_bootstrap.tick() => {
                         poll_snapshot_bootstrap(&state, &snapshot_client).await;
+                    }
+                    _ = gossip_sweep.tick() => {
+                        poll_gossip_pruning(&state);
+                        poll_expired_records(&state);
                     }
                     _ = pinning.tick() => {
                         // Challenging runs whether or not this node pins:

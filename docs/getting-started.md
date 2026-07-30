@@ -177,7 +177,30 @@ can be asked by declaring a smaller window.
 
 [OFS-4100 §9.2]: https://github.com/OpenFiat-org/openfiat-specs
 
-## 6. The on-chain programs this node talks to
+## 6. Joining the devnet cluster
+
+Peer discovery does not run yet ([#146]), so a node finds only the peers
+it is given. The public devnet entrypoint is:
+
+```
+/ip4/84.32.223.111/udp/4001/quic-v1/p2p/12D3KooWK9hQ7TwbfvFiaAxUbRFCkdhS7iEpAJDnewNL1anyREQ1
+```
+
+```bash
+./target/release/openfiat-node \
+    --ledger ~/openfiat \
+    --identity ~/openfiat/wallet.json \
+    --solana-rpc-url https://api.devnet.solana.com \
+    --entrypoint /ip4/84.32.223.111/udp/4001/quic-v1/p2p/12D3KooWK9hQ7TwbfvFiaAxUbRFCkdhS7iEpAJDnewNL1anyREQ1
+```
+
+Repeat `--entrypoint` for several. Your own node logs the addresses it is
+reachable at once it is listening — see §3 — and those are what you give
+another operator.
+
+[#146]: https://github.com/OpenFiat-org/openfiat-core/issues/146
+
+## 7. The on-chain programs this node talks to
 
 Three Anchor programs are deployed to devnet today (see
 `programs/README.md` and `programs/devnet-addresses.json` for the full,
@@ -203,7 +226,7 @@ devnet deployment above), see `programs/README.md` in full — it covers
 the Anchor toolchain, `anchor test`, and `anchor deploy
 --provider.cluster devnet`.
 
-## 7. Run a local multi-node cluster
+## 8. Run a local multi-node cluster
 
 A real, persistently-running 3-node cluster (one `RpcConnected` bootstrap
 node plus two `GossipOnly` followers, each a genuine `openfiat-node`
@@ -223,7 +246,7 @@ Node 0 is reachable at `http://localhost:7080`, node 1 at
 directory to use a faster private RPC endpoint than Solana's public
 devnet one.
 
-## 8. Turning things off
+## 9. Turning things off
 
 Most of what a node does is not optional — it gossips, validates and
 serves whatever it has replicated. What *is* optional is listed here, so
@@ -245,7 +268,7 @@ verification on every event, and the compile-time program IDs. See
 Nothing here is an environment variable. `openfiat-node --help` is the
 whole surface.
 
-## 9. Production deployment
+## 10. Production deployment
 
 - **Linux (systemd)** — [`packaging/systemd/README.md`](../packaging/systemd/README.md):
   a real unit file with auto-restart and graceful `SIGTERM` shutdown,
@@ -260,7 +283,7 @@ is configured. There is no environment-variable fallback and no config
 file: `openfiat-node --help` is the entire surface, deliberately, so a
 node's behaviour is a function of its invocation and nothing ambient.
 
-## 10. Next steps
+## 11. Next steps
 
 - [`architecture.md`](architecture.md) — crate dependency graph, wire
   format, transport, and canonical protocol parameters.

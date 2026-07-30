@@ -9,8 +9,8 @@ use crate::channel::Subscription;
 use crate::error::GossipError;
 use crate::event_id;
 use crate::protocol::{
-    MESSAGE_TYPE_PUSH, MESSAGE_TYPE_RECOVERY_REQUEST, MESSAGE_TYPE_RECOVERY_RESPONSE, OFS_SPEC,
-    RecoveryRequest, RecoveryResponse,
+    MESSAGE_TYPE_PUSH, MESSAGE_TYPE_PUSH_ACK, MESSAGE_TYPE_RECOVERY_REQUEST,
+    MESSAGE_TYPE_RECOVERY_RESPONSE, OFS_SPEC, RecoveryRequest, RecoveryResponse,
 };
 use crate::store::EventStore;
 use libp2p::request_response::{self, Message, ResponseChannel};
@@ -313,6 +313,15 @@ impl<S: KvStore> GossipService<S> {
         event.origin == self.self_peer_id && event.timestamp > self.started_at
     }
 
+    /// The event log this service replicates through.
+    ///
+    /// Exposed so the node can sweep it on a timer — see
+    /// `EventStore::prune_before` for why an unbounded recovery buffer is
+    /// the largest thing on a busy node's disk.
+    pub fn store(&self) -> &EventStore<S> {
+        &self.store
+    }
+
     /// How many events signed by this identity, but not emitted here,
     /// have been seen. Any non-zero value means the wallet is in use
     /// somewhere else.
@@ -474,8 +483,20 @@ impl<S: KvStore> GossipService<S> {
                 if let Ok(event) = wire::from_bytes::<EventEnvelope>(&envelope.payload) {
                     self.receive_event(Some(peer), event);
                 }
-                // Pushes are fire-and-forget; dropping `channel` here is a
-                // valid, harmless outcome (OFNP request-response semantics).
+                // Acknowledged even though nothing reads the answer.
+                //
+                // A push is fire-and-forget at the protocol level, and an
+                // earlier version dropped `channel` here on the reasoning
+                // that this was "a valid, harmless outcome". It is valid
+                // and it is not harmless: the transport underneath is
+                // request-response, where an unanswered inbound request
+                // holds a stream slot until it times out. Under a burst —
+                // a peer connecting and forwarding its backlog — the
+                // receiver exhausts its inbound capacity and starts
+                // dropping streams, which is `Dropping inbound stream
+                // because we are at capacity` on a live node. Answering
+                // at once releases the slot and costs an empty envelope.
+                self.acknowledge(channel);
             }
             MESSAGE_TYPE_RECOVERY_REQUEST => {
                 if let Ok(request) = wire::from_bytes::<RecoveryRequest>(&envelope.payload) {
@@ -494,6 +515,17 @@ impl<S: KvStore> GossipService<S> {
             }
             _ => {}
         }
+    }
+
+    /// Returns the empty ack that frees the sender's inbound stream slot.
+    fn acknowledge(&mut self, channel: ResponseChannel<Envelope>) {
+        let ack = Envelope::new(OFS_SPEC, MESSAGE_TYPE_PUSH_ACK, 1, Vec::new());
+        let _ = self
+            .node
+            .swarm
+            .behaviour_mut()
+            .envelope
+            .send_response(channel, ack);
     }
 
     fn on_response(&mut self, envelope: Envelope) {
