@@ -212,7 +212,7 @@ fn settle_deposit(
 /// must never be worth more than losing.
 fn tally(dispute_case: &DisputeCase) -> Option<DisputeOutcome> {
     let mut totals = [0u128; 4];
-    let mut any = false;
+    let mut counted = 0usize;
     for (outcome, weight) in dispute_case
         .revealed_outcomes
         .iter()
@@ -223,10 +223,19 @@ fn tally(dispute_case: &DisputeCase) -> Option<DisputeOutcome> {
         }
         if let Some(outcome) = outcome {
             totals[*outcome as usize] += *weight as u128;
-            any = true;
+            counted += 1;
         }
     }
-    if !any {
+    // Fewer than `MIN_ARBITRATORS` counted votes is not a decision, however
+    // lopsided the weights are. One arbitrator used to be able to settle a
+    // dispute alone simply by being the only one who revealed, and a single
+    // large stake could still do it here — so the floor is on the number of
+    // participants, deliberately independent of how much weight they bring.
+    //
+    // `counted` rather than `arbitrators.len()`: it counts the votes the
+    // totals above actually include, so zero-weight reveals cannot pad the
+    // way to a quorum.
+    if counted < MIN_ARBITRATORS {
         return None;
     }
 

@@ -8,6 +8,26 @@ use openfiat_programs_shared::{DisputeOutcome, VaultState};
 /// on-chain commit/reveal bookkeeping can hold.
 pub const MAX_ARBITRATORS: usize = 7;
 
+/// Minimum arbitrators whose vote must actually be **counted** before a
+/// dispute can be decided.
+///
+/// Without this the tally decided on whatever revealed, so a single
+/// arbitrator could settle a dispute alone — and nothing stopped that being
+/// the only one who showed up. Three is the smallest set that yields a real
+/// majority and still resolves when one member is absent or dishonest.
+///
+/// The check deliberately counts votes the tally *uses*, not seats filled.
+/// Zero-weight reveals are skipped by `tally`, so counting seats instead
+/// would let three zero-stake accounts satisfy the minimum while
+/// contributing nothing — reintroducing the seat-squatting shape through the
+/// participation check rather than through the weights.
+///
+/// Falling short is not a verdict. It routes to the same undecided-round
+/// path a tie takes: re-arbitrate up to `MAX_DISPUTE_ROUNDS`, then split the
+/// escrow evenly, so failing to reach a quorum can never pay either party
+/// more than deciding would have.
+pub const MIN_ARBITRATORS: usize = 3;
+
 /// A merchant's pooled inventory for one stablecoin (OFS-4200 §4). Backs
 /// the Liquidity Vault Architecture (Whitepaper Ch.08) — `reserve_liquidity`
 /// only moves counters here; actual token movement happens when a trade
