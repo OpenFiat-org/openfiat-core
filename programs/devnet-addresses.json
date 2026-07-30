@@ -177,7 +177,9 @@
         "governanceExecutionUpgrade": "Upgraded in place at AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE (no new program id; deploy keypairs were destroyed by an earlier cargo clean, so upgrade-in-place is the only option). Required `solana program extend` by 24,576 bytes \u2014 400,168 needed against 376,824 capacity. Deploy signature 3Ycx4grJG2tg5mQDNZMqhPxBmpXN74c6aWSeCcSd3S4DLEHBfg1twBjWpZGWdhZZFAtwQYhv5HN7zXPmNHmK1d9C. Verified by dumping the deployed program and comparing sha256 against the tested binary (5aabd1ea32df4a61fe98eeb48ef7b5ca39a26a3fd7f0d1dcff0a1cc6ed3ffdfd), with the 1,232-byte padding tail asserted all-zero BEFORE trimming \u2014 trimming first makes any tail compare equal and proves nothing. LAYOUT SAFETY, checked before deploying: GovernanceConfig is structurally unchanged (it is a live singleton, so a new field would brick every load until a realloc ran); Proposal is unchanged, which is why ProposalAction is a separate account rather than a field \u2014 growing Proposal would make every pre-upgrade proposal fail to deserialize and strand refund_or_forfeit_deposit on all of them; BanRecord keeps its layout, with listed_by renamed to authorizing_proposal, both Pubkey at the same offset. Only the governance program changed; escrow, staking and presale were deliberately not redeployed. Also applied: vote_lock_secs lowered from 604,800 (seven days) to 60 via scripts/set-devnet-vote-lock.ts in 2sfhumQABwS8wMrSJY85NJfEkZR9psZeieHiTGNSBRhrn5oXWcigZLhYuhkraeXPhgqhoMZ7ueCezP8gBTPPJybt, because a seven-day timelock makes governance untestable on a test network. That used admin's remaining vote_lock_secs power in the benign direction; on mainnet 60 seconds would not be appropriate."
       },
       "devnetProvability": "The positive path cannot be exercised on devnet, and this is a property of the deployment rather than of the code. create_proposal transfers deposit_amount (5,000 OPEN) into the deposit vault and cast_vote weighs a real StakeAccount against a quorum of 10% of total_open_supply (100,000,000 OPEN), but the devnet OPEN mint's authority is permanently unset and the genesis buckets holding the supply have unrecoverable keypairs \u2014 so no wallet on devnet can fund a proposal or reach quorum. Consequence stated plainly: the devnet ban list is inert in BOTH directions; nothing can be listed and nothing could be delisted. Inert is the safe failure, and zero BanRecord accounts exist so nothing is stranded. The positive path is proven by `anchor test --validator legacy` (92 passing) against a validator with a controllable mint. What IS proven against the deployed binary is the negative that was actually asked for: scripts/prove-devnet-ban-authority.ts runs AS the config admin and shows it cannot list a wallet."
-    }
+    },
+    "arbitrationPool": "Hc6aZDRzZsqEkGUZfuhhTza9BtnCvEm2uQUGWQwqN1w1",
+    "arbitrationPoolNote": "Singleton token account at seeds [arbitration_pool], OPEN-denominated, authority = the FeeConfig PDA so only the escrow program can move it. Created 2026-07-30, sig 1XNXLnsEu88oZXdtCTQkkwFgsdC16JB5xsxFAfcCbCUZpUsmuxmkhoxrDaYBSzWKXPHUksoMqq9Vuw4VxDngWyW. It had never been initialized, and its absence was invisible because only create_liquidity_vault's OPEN carve-out reads it: settlement mints (wSOL/USDC/USDT) worked normally while creating a merchant's OPEN vault failed with ArbitrationPoolNotInitialized, which in turn made charge_ad_listing_fee uncallable and every arbitration deposit zero. The mint is permanent -- the carve-out treats whatever this account holds as the definition of OPEN."
   },
   "devnet_sale": {
     "programId": "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7",
@@ -196,26 +198,49 @@
     "closesAt": "2026-08-26T18:17:07.000Z"
   },
   "faucet_open_draw": {
-    "reason": "Devnet faucet tooling, NOT an accounting anomaly. OPEN's mint authority is permanently unset, so the devnet faucet cannot mint OPEN the way it mints mock USDC/USDT \u2014 the only movable OPEN on devnet is the Community Presale bucket, and the only way out of it is claim() on a Finalized sale. This draw is the proceeds of one deliberate, fully-executed presale cycle at the nonce below, run purely to stock the faucet. Nothing was sold and nothing is owed to anyone. Reproduce or audit with scripts/extract-open-for-faucet.ts.",
-    "saleNonce": 2,
-    "saleConfig": "GUY6GFhEk5CjjhmYx7hSa5JURYuFQTYzLaysBGBrtxfe",
-    "openDrawn": 1000000,
-    "usdcContributed": 1000000,
+    "reason": "Devnet faucet tooling, NOT an accounting anomaly. OPEN's mint authority is permanently unset, so the devnet faucet cannot mint OPEN the way it mints mock USDC/USDT \u2014 the only movable OPEN on devnet is the Community Presale bucket, and the only way out of it is claim() on a Finalized sale. Each draw below is the proceeds of one deliberate, fully-executed presale cycle on its own nonce, run purely to stock the faucet. Nothing was sold and nothing is owed to anyone. Reproduce or audit with scripts/extract-open-for-faucet.ts.",
+    "sizing": "10000000 OPEN is 833 grants at the faucet's 12,000 OPEN per-request drip. 12,000 is a deliberate boundary against the live StakingConfig (2wrGGjcUFSn1ZiYzo2o64r7ZC88QNhvvgUYktNs2ifT9): it buys EXACTLY arbitrator + merchant + node operator (10,000 + 1,000 + 1,000) with zero slack. It does NOT cover arbitrator + notification provider (15,000) or all seven roles (20,000) \u2014 those need a second grant the next day, since the cap is per 24h. Because 12,000 is exact for that three-role bundle, nothing may be deducted from an OPEN grant for fees or rent; those come out of the faucet's separate SOL grant.",
+    "moreAvailable": "This is not an irreversible commitment. The presale_vault PDA is a singleton with no nonce, shared by every sale, and initialize_sale only verifies its mint and owner rather than funding it \u2014 so any future sale we open as admin reaches the same vault, and topping the faucet up later is one more cycle on a fresh nonce. Add it to DRAWS in the script; do not try to re-open a finalized sale, which is impossible.",
+    "openDrawnTotal": 10000000,
     "presaleVault": "7Da3NGQkXJGVcF4y5Z3ahpZe4vxDNgqnrhCUvB8PW5wM",
     "presaleVaultOpenBefore": 200000000,
-    "presaleVaultOpenAfter": 199000000,
+    "presaleVaultOpenAfter": 190000000,
     "faucetAuthority": "4oiCmGrMRL4m4RJsRX6F7nCDeEqoiKLYm5hsDcLFvAJB",
     "faucetOpenAta": "6CogAbrEmPmLNv9B4efaFWwF3Ca742k9rNm1vX4A7dKD",
-    "faucetOpenBalance": 1000000,
-    "signatures": {
-      "initializeSale": "2iBcYm1JDxiUdp8uBKwh9Bc8omHVPgUbJKxrrErqu6UuNtK5oMCJ4mEYqAUz9aAnh4b6Hz8CAaKTA8SjRBiz8tvF",
-      "mintUsdc": "3hpF1WhCQU2TheHCwh8k96644BKmVAbzPgVfDBg4WGC4rkZE46tMsCKCQ5YUpkTafkB3VwfCKuHoiTsVzV1kd6Vd",
-      "contributeUsdc": "Q5RoBKuechjGRC6He7kMtb5EMhYwtqLGbssuKZFVh2GC6HgPL8gJDwvg9wzm9FLiphg46Yu1dEGx8D6jQbaBDpN",
-      "finalizeSale": "57AJExpDvEWSZTduxnnPV9X6ihhNR6uJDtqRSkMpvofqYfJ9d5UuHVpAEZX16uXhRRViReseA5ZeqtAQrw9fPbwn",
-      "claim": "5Cc6ixdv1uf5aeMjFidfzN4KAF7BQtfmKTuejd3KhgCsxY4fU1jaJrM6Ym4m9ibuJfxmjgejk3nCjqnSBag3XqkL",
-      "transferToFaucet": "N1hrppKC4owbt357bsDkuKBi5woY9xhrcdroDpBPqi6jee6ExAj1TrDem92KFp8AN5xggxD58wS9CwaBJ2KNwrE"
-    },
+    "faucetOpenBalance": 10000000,
+    "draws": [
+      {
+        "saleNonce": 2,
+        "saleConfig": "GUY6GFhEk5CjjhmYx7hSa5JURYuFQTYzLaysBGBrtxfe",
+        "openDrawn": 1000000,
+        "usdcContributed": 1000000,
+        "signatures": {
+          "initializeSale": "2iBcYm1JDxiUdp8uBKwh9Bc8omHVPgUbJKxrrErqu6UuNtK5oMCJ4mEYqAUz9aAnh4b6Hz8CAaKTA8SjRBiz8tvF",
+          "mintUsdc": "3hpF1WhCQU2TheHCwh8k96644BKmVAbzPgVfDBg4WGC4rkZE46tMsCKCQ5YUpkTafkB3VwfCKuHoiTsVzV1kd6Vd",
+          "contributeUsdc": "Q5RoBKuechjGRC6He7kMtb5EMhYwtqLGbssuKZFVh2GC6HgPL8gJDwvg9wzm9FLiphg46Yu1dEGx8D6jQbaBDpN",
+          "finalizeSale": "57AJExpDvEWSZTduxnnPV9X6ihhNR6uJDtqRSkMpvofqYfJ9d5UuHVpAEZX16uXhRRViReseA5ZeqtAQrw9fPbwn",
+          "claim": "5Cc6ixdv1uf5aeMjFidfzN4KAF7BQtfmKTuejd3KhgCsxY4fU1jaJrM6Ym4m9ibuJfxmjgejk3nCjqnSBag3XqkL"
+        }
+      },
+      {
+        "saleNonce": 3,
+        "saleConfig": "99rm2F3e8qcCMkafoBFHmxuUGq7TzE6TSi1GaY9h4y3C",
+        "openDrawn": 9000000,
+        "usdcContributed": 9000000,
+        "signatures": {
+          "initializeSale": "Ksz1eHDF8aTYS6Mp97xUuSzVvTXJLjrKXFijq5ngLWWKp4bgc5HgXkuGoTPEqD6gxyhWx8nWFkHCDpXR5ooxzfn",
+          "mintUsdc": "5whfTRuMfxoVaGaU72z2uC6Ejja9VPmLGEvgz9PKDfwccScRyUqnMm9y2rBU8SnaFhV2S1kmALui9TXVkWfZYVbL",
+          "contributeUsdc": "Ksrid7dKtUQfD8DeeGq7pKGJrhoQ5iNufTj97h2b3cfeQ3WXUcThbeLM2wxcXXvhQ4vnrH18BLnGiN8rjUt2qA5",
+          "finalizeSale": "62yReACzqXtTvXnnpQHq6QGTHHP5FNpDtgXZTomvjVqwatscC5t3vMTZazVZ1dTGVCZYqZvdbLjJvN76Rwm7KDmh",
+          "claim": "NRFB5homykw8gB85Fx9B8zLVQ8t4Ze2sXqxy5yHgFfNj6VfzLHHGNAPZgM8DQ4Kw9cXmvw16vRD6ZmkRYLyvPt1"
+        }
+      }
+    ],
+    "transferToFaucetSignatures": [
+      "N1hrppKC4owbt357bsDkuKBi5woY9xhrcdroDpBPqi6jee6ExAj1TrDem92KFp8AN5xggxD58wS9CwaBJ2KNwrE",
+      "2kpLUEC8B8wWhgzkQPVfWZLwREBXEHNJ7HWDrT8w7tv5KAgLrHTo5crw5nAUuet4DC5tFpzh7uZTqixq2MkaK1N2"
+    ],
     "executedAt": "2026-07-30T12:47:00.000Z",
-    "lastVerifiedAt": "2026-07-30T12:53:39.543Z"
+    "lastVerifiedAt": "2026-07-30T13:02:02.684Z"
   }
 }
