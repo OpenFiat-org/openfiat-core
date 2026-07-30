@@ -242,5 +242,27 @@
     ],
     "executedAt": "2026-07-30T12:47:00.000Z",
     "lastVerifiedAt": "2026-07-30T13:02:02.684Z"
+  },
+  "devnet_nodes": {
+    "note": "Persistent identities for the docker-compose devnet cluster, living at /data/wallet.json inside each node's volume. Before 2026-07-30 no such file existed, so openfiat-node's load_or_generate_wallet fell through to Wallet::generate() and every node minted a FRESH identity on each boot. That made staking a node impossible in practice: the stake would be stranded against a pubkey that ceased to exist at the next restart. Do not delete these volumes without first unstaking, and keep the keypairs backed up outside the volumes -- node0's key is the only thing that can move its stake.",
+    "node0": {
+      "identity": "D8S7BU5ELD5SvbaLS9ms3MtkfvGJcVd3gBRyzcDjbjhW",
+      "role": "NodeOperator",
+      "stakeAccount": "6v9zaww2ucJ7CwceLrb7Eos6diXoLjPhBS4FDn2XMZx4",
+      "stakedOpen": 100000,
+      "chainMode": "RpcConnected",
+      "stakeSignature": "4cvAXpgfYnoy9PNbT1fArB6se6ovt2kbdhjLXLr4KbYKP3WBSwvdZS4dq8R2LCf9DKwHqKrnvMsruQ1cr7omPWP7",
+      "openSource": "faucet stash (10,000,000 -> 9,876,000); OPEN cannot be minted, mint authority is permanently unset"
+    },
+    "node1": {
+      "identity": "7KNwpoZmAaR74v3fnBuEEKyjDGRzZwGUe8ukQ5ADHYEP",
+      "role": null,
+      "stakedOpen": 0
+    },
+    "node2": {
+      "identity": "BwK2wxBFcMCz8vfEkkJgxVcmZLwms7YTQHLtQXK8dY3K",
+      "role": null,
+      "stakedOpen": 0
+    }
   }
 }
