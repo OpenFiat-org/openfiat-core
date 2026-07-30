@@ -42,7 +42,11 @@ pub struct DiscoveryService<S> {
     self_node_version: String,
     self_supported_ofs: Vec<u16>,
     self_roles: Vec<NodeRole>,
+    /// Addresses libp2p reports this node is bound to.
     self_addresses: Vec<String>,
+    /// Addresses an operator has declared this node is reachable at from
+    /// outside its own network. See [`Self::add_external_address`].
+    external_addresses: Vec<String>,
     connected: HashSet<Libp2pPeerId>,
     target_peers: usize,
 }
@@ -67,6 +71,7 @@ impl<S: KvStore> DiscoveryService<S> {
             self_supported_ofs,
             self_roles,
             self_addresses: Vec::new(),
+            external_addresses: Vec::new(),
             connected: HashSet::new(),
             target_peers,
         }
@@ -80,6 +85,52 @@ impl<S: KvStore> DiscoveryService<S> {
     /// (populated as `NewListenAddr` events arrive).
     pub fn listen_addresses(&self) -> &[String] {
         &self.self_addresses
+    }
+
+    /// Declares an address peers should use to reach this node.
+    ///
+    /// # Why a node cannot work this out for itself
+    ///
+    /// `NewListenAddr` reports the socket libp2p actually bound, which is an
+    /// address on one of this machine's own interfaces. Behind NAT, inside a
+    /// container, or on a cloud host with a mapped public IP, that address is
+    /// private and no peer outside the local network can dial it. The node
+    /// has no way to observe its own public address — by construction, only
+    /// something on the far side of the NAT can see it.
+    ///
+    /// So it is declared by the operator rather than guessed. A node that is
+    /// genuinely on a public interface needs nothing here: its bound address
+    /// already is its public one.
+    ///
+    /// Announced *in addition to* the bound addresses, not instead of them.
+    /// Peers on the same private network (a docker-compose cluster, a LAN)
+    /// can only reach each other by the private address, so dropping those
+    /// would break the local case in order to fix the remote one.
+    pub fn add_external_address(&mut self, address: impl Into<String>) {
+        let address = address.into();
+        if !self.external_addresses.contains(&address) {
+            self.external_addresses.push(address);
+        }
+    }
+
+    /// Every address this node asks peers to dial: operator-declared ones
+    /// first, then the bound ones.
+    ///
+    /// Declared addresses come first because a peer that tries them in order
+    /// reaches a NAT'd node on the first attempt rather than after timing out
+    /// on an unreachable private address.
+    ///
+    /// Unspecified and loopback addresses are never announced: `0.0.0.0` is
+    /// not an address any peer can dial, and `127.0.0.1` resolves to the
+    /// dialing peer's own machine — announcing either sends peers somewhere
+    /// useless, and in the loopback case somewhere actively misleading.
+    pub fn announced_addresses(&self) -> Vec<String> {
+        self.external_addresses
+            .iter()
+            .chain(self.self_addresses.iter())
+            .filter(|addr| is_announceable(addr))
+            .cloned()
+            .collect()
     }
 
     /// Wait for and process exactly one swarm event.
@@ -118,7 +169,7 @@ impl<S: KvStore> DiscoveryService<S> {
         let mut peers = vec![PeerAdvert {
             peer_id: self.self_peer_id.clone(),
             public_key: self.self_public_key,
-            addresses: self.self_addresses.clone(),
+            addresses: self.announced_addresses(),
             roles: self.self_roles.clone(),
             node_version: self.self_node_version.clone(),
             supported_ofs: self.self_supported_ofs.clone(),
@@ -276,5 +327,69 @@ impl<S: KvStore> DiscoveryService<S> {
         if !newly_learned.is_empty() {
             self.broadcast_announcement(peer);
         }
+    }
+}
+
+/// Whether an address is worth announcing to a peer.
+///
+/// Only the **unspecified** wildcard is excluded (`0.0.0.0`, `::`). It is a
+/// bind directive meaning "every local interface", not a destination, and it
+/// is exactly what `CLI_LISTEN_ADDR` normally contains — so without this
+/// filter it is precisely what a node announces, and no peer can dial it.
+///
+/// # Loopback is deliberately NOT filtered
+///
+/// An earlier version of this excluded `127.0.0.0/8` on the reasoning that
+/// it "points a dialing peer at itself". That is true across machines and
+/// false on one: processes on the same host reach each other over loopback
+/// perfectly well. Filtering it broke the five-node convergence test, whose
+/// cluster listens on `/ip4/127.0.0.1/udp/0/quic-v1` — every node announced
+/// an empty address list and the cluster could not converge. A single-host
+/// dev cluster is a real deployment, not just a test artifact.
+///
+/// Private ranges are likewise announced: a docker-compose cluster or a LAN
+/// reaches its peers only by private address. An operator whose private
+/// address is useless to outsiders declares an external one (see
+/// [`DiscoveryService::add_external_address`]), which is announced first.
+fn is_announceable(address: &str) -> bool {
+    let unspecified = ["/ip4/0.0.0.0/", "/ip6/::/"];
+    !unspecified.iter().any(|prefix| address.starts_with(prefix))
+}
+
+#[cfg(test)]
+mod announce_tests {
+    use super::is_announceable;
+
+    #[test]
+    fn refuses_the_bind_wildcard() {
+        // The default CLI_LISTEN_ADDR. Without this filter it is what every
+        // node announces, and no peer can dial it.
+        assert!(!is_announceable("/ip4/0.0.0.0/udp/4001/quic-v1"));
+        assert!(!is_announceable("/ip6/::/udp/4001/quic-v1"));
+    }
+
+    // Filtering loopback broke the five-node convergence test: its cluster
+    // listens on 127.0.0.1, so every node announced nothing and no peer had
+    // an address to dial. Processes on one host reach each other over
+    // loopback, and a single-host cluster is a real deployment.
+    #[test]
+    fn keeps_loopback_so_a_single_host_cluster_still_converges() {
+        assert!(is_announceable("/ip4/127.0.0.1/udp/4001/quic-v1"));
+        assert!(is_announceable("/ip6/::1/udp/4001/quic-v1"));
+    }
+
+    #[test]
+    fn keeps_private_addresses_so_local_clusters_still_work() {
+        // docker-compose's own subnet, and an ordinary LAN. Peers there can
+        // reach each other only by these.
+        assert!(is_announceable("/ip4/172.28.0.10/udp/4001/quic-v1"));
+        assert!(is_announceable("/ip4/192.168.1.20/udp/4001/quic-v1"));
+        assert!(is_announceable("/ip4/10.0.0.5/udp/4001/quic-v1"));
+    }
+
+    #[test]
+    fn keeps_public_addresses() {
+        assert!(is_announceable("/ip4/84.32.34.7/udp/4001/quic-v1"));
+        assert!(is_announceable("/dns4/node.example.com/udp/4001/quic-v1"));
     }
 }
