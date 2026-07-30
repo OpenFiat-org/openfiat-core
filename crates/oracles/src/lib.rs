@@ -23,7 +23,7 @@ pub use error::OracleError;
 pub use provider::{ExchangeRate, OracleProvider, OracleRegistry, ProviderError};
 pub use record::{OracleCategory, OracleData, OracleId, OracleRecord};
 pub use service::OracleService;
-pub use store::OracleIndex;
+pub use store::{ExchangeRateLookup, OracleIndex};
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {

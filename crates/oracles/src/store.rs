@@ -14,6 +14,25 @@ use std::rc::Rc;
 
 const COLUMN_FAMILY: &str = "oracle_records";
 
+/// The result of asking this index for a pair's §11 median rate.
+///
+/// Three outcomes rather than `Option<f64>` because the two failures are
+/// operationally different — see [`OracleIndex::exchange_rate`] — and
+/// because collapsing them is how a caller ends up treating "the feed
+/// died" as "this pair isn't supported" and quietly moving on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExchangeRateLookup {
+    /// A median assembled from at least one unexpired record, good until
+    /// `expires_at` (the earliest expiry among its contributors).
+    Current { rate: f64, expires_at: Timestamp },
+    /// The pair is published, but every record for it has expired. §12:
+    /// "Expired data SHOULD NOT be treated as current" — so this is not a
+    /// rate, deliberately, however recently it lapsed.
+    Stale,
+    /// No provider publishes this pair at all.
+    NoData,
+}
+
 pub struct OracleIndex<S> {
     store: S,
     services: Rc<Registry<S>>,
@@ -94,24 +113,64 @@ impl<S: KvStore> OracleIndex<S> {
     /// `base`/`quote` record from any provider — "no single provider
     /// should become a mandatory dependency."
     pub fn median_exchange_rate(&self, base: &str, quote: &str, now: Timestamp) -> Option<f64> {
-        let mut rates: Vec<f64> = self
+        match self.exchange_rate(base, quote, now) {
+            ExchangeRateLookup::Current { rate, .. } => Some(rate),
+            _ => None,
+        }
+    }
+
+    /// The same §11 median as [`Self::median_exchange_rate`], but saying
+    /// *why* there is no rate when there isn't one, and until when the
+    /// answer holds when there is.
+    ///
+    /// Anything that prices a trade off this needs both. "Nobody publishes
+    /// USDC/KES" and "every provider who does has gone stale" are the same
+    /// `None` to a caller, but they are a missing integration and a broken
+    /// feed respectively — and a caller that pins a number (a reservation)
+    /// has to know how long the number it pinned was actually good for.
+    pub fn exchange_rate(&self, base: &str, quote: &str, now: Timestamp) -> ExchangeRateLookup {
+        // Every matching record at any freshness: telling "absent" from
+        // "expired" apart means looking at the expired ones too, so the
+        // expiry filter is applied below rather than here.
+        let matching: Vec<(f64, Timestamp)> = self
             .all()
             .into_iter()
-            .filter(|record| record.is_current(now))
             .filter_map(|record| match record.data {
                 OracleData::ExchangeRate {
-                    base: b,
-                    quote: q,
+                    base: ref b,
+                    quote: ref q,
                     rate,
-                } if b == base && q == quote => Some(rate),
+                } if b == base && q == quote => Some((rate, record.expires_at)),
                 _ => None,
             })
             .collect();
-        if rates.is_empty() {
-            return None;
+        if matching.is_empty() {
+            return ExchangeRateLookup::NoData;
         }
-        rates.sort_by(|a, b| a.total_cmp(b));
-        Some(rates[rates.len() / 2])
+
+        let mut current: Vec<(f64, Timestamp)> = matching
+            .into_iter()
+            .filter(|(_, expires_at)| now.as_millis() < expires_at.as_millis())
+            .collect();
+        if current.is_empty() {
+            return ExchangeRateLookup::Stale;
+        }
+
+        // The median is only stable until the first contributor lapses, so
+        // that — not the latest expiry — is how long this answer is good
+        // for. Taking the latest would keep quoting a median assembled from
+        // records that have already gone stale.
+        let expires_at = current
+            .iter()
+            .map(|(_, expires_at)| *expires_at)
+            .min()
+            .expect("`current` is non-empty");
+
+        current.sort_by(|(a, _), (b, _)| a.total_cmp(b));
+        ExchangeRateLookup::Current {
+            rate: current[current.len() / 2].0,
+            expires_at,
+        }
     }
 
     pub fn apply_event(&self, event: &EventEnvelope) {
@@ -283,6 +342,76 @@ mod tests {
         assert_eq!(
             registry.median_exchange_rate("USD", "KES", far_future),
             None
+        );
+    }
+
+    /// The distinction `Option<f64>` cannot make: a pair nobody publishes
+    /// versus a pair whose every publisher has lapsed. A caller pricing a
+    /// trade must not treat the second as the first.
+    #[test]
+    fn a_lapsed_feed_reads_as_stale_not_as_an_unsupported_pair() {
+        let (provider, services) = registered_provider(1);
+        let registry = OracleIndex::new(MemoryStore::new(), services);
+        let mut record = publish(&provider, "usd-kes", 1, 129.52);
+        record.expires_at = Timestamp::from_millis(record.timestamp.as_millis() + 1);
+        registry
+            .apply_publish(SignedOraclePublish::sign(record, &provider))
+            .unwrap();
+
+        let far_future = Timestamp::from_millis(Timestamp::now().as_millis() + 60_000);
+        assert_eq!(
+            registry.exchange_rate("USD", "KES", far_future),
+            ExchangeRateLookup::Stale
+        );
+        assert_eq!(
+            registry.exchange_rate("USD", "NGN", far_future),
+            ExchangeRateLookup::NoData,
+            "a pair with no record at all is not the same failure as a lapsed one"
+        );
+    }
+
+    /// A median is only as good as its shortest-lived contributor: once
+    /// that record lapses the median is assembled from a different set.
+    #[test]
+    fn a_current_rate_expires_with_its_earliest_contributor() {
+        let services = Rc::new(Registry::new(MemoryStore::new()));
+        let registry = OracleIndex::new(MemoryStore::new(), Rc::clone(&services));
+        let base = Timestamp::now().as_millis();
+
+        for (i, (rate, ttl)) in [(129.50, 90_000u64), (129.54, 30_000), (129.51, 60_000)]
+            .iter()
+            .enumerate()
+        {
+            let provider = Keypair::from_seed([(i + 1) as u8; 32]);
+            let registration = Registration {
+                service_id: ServiceId::new(format!("svc-{i}")),
+                service_type: ServiceType::MarketData(MarketDataService::FxOracle),
+                provider: peer_id_from_public_key(&provider.public_key()).unwrap(),
+                provider_public_key: provider.public_key(),
+                endpoints: vec![],
+                supported_ofs: vec![7000],
+                region: None,
+                capabilities: vec![],
+                pricing: None,
+                payout_wallet: None,
+                timestamp: Timestamp::now(),
+            };
+            services
+                .apply_registration(SignedRegistration::sign(registration, &provider))
+                .unwrap();
+            let mut record = publish(&provider, &format!("usd-kes-{i}"), 1, *rate);
+            record.expires_at = Timestamp::from_millis(base + ttl);
+            registry
+                .apply_publish(SignedOraclePublish::sign(record, &provider))
+                .unwrap();
+        }
+
+        assert_eq!(
+            registry.exchange_rate("USD", "KES", Timestamp::from_millis(base)),
+            ExchangeRateLookup::Current {
+                rate: 129.51,
+                expires_at: Timestamp::from_millis(base + 30_000),
+            }
         );
     }
 }
