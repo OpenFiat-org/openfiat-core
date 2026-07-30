@@ -89,7 +89,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 // signs is the canonical encoding of their wallet, not
                 // whichever base64 spelling they happened to send.
                 let wallet = encode_peer_id(&decode_peer_id(&params.wallet)?);
-                Ok(state.counterparty_challenges.borrow_mut().issue(
+                Ok(state.wallet_challenges.borrow_mut().issue(
                     wallet,
                     Timestamp::now(),
                     CHALLENGE_TTL_SECS,
@@ -122,7 +122,7 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 // replaying it.
                 let subject = encode_peer_id(&wallet);
                 let challenge = state
-                    .counterparty_challenges
+                    .wallet_challenges
                     .borrow_mut()
                     .consume(&subject, &params.nonce, Timestamp::now())
                     .map_err(|e| RpcError::Application(e.code()))?;

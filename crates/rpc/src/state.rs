@@ -175,11 +175,20 @@ pub struct NodeState<S> {
     /// a wallet the caller cannot prove they control; see that module
     /// for why this one aggregate is gated when no other read is.
     pub counterparties: CounterpartyView<Rc<S>>,
-    /// The outstanding wallet-ownership challenges guarding that
-    /// aggregate. In memory only, deliberately: persisting them would
-    /// leave a node operator a record of who asked about whom, which is
-    /// the exact trail this feature exists to avoid creating.
-    pub counterparty_challenges: Rc<RefCell<ChallengeLedger>>,
+    /// The outstanding wallet-ownership challenges guarding every gated
+    /// read: counterparty history, and a party's own settlements,
+    /// reservations and disputes (`methods::wallet_auth`).
+    ///
+    /// One ledger for all of them. A nonce is worthless without the key
+    /// that signs it, and each surface signs under its own domain
+    /// separator, so a signature collected for one cannot be presented on
+    /// another — sharing the ledger costs nothing and a second one would
+    /// be a second thing to expire correctly.
+    ///
+    /// In memory only, deliberately: persisting them would leave a node
+    /// operator a record of who asked about whom, which is the exact
+    /// trail these features exist to avoid creating.
+    pub wallet_challenges: Rc<RefCell<ChallengeLedger>>,
     pub disputes: Rc<DisputeRegistry<Rc<S>>>,
     pub identity: Rc<IdentityRegistry<Rc<S>>>,
     /// Trade evidence, addressed by IPFS CID. Never the bytes — see
@@ -452,7 +461,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             discovery: RefCell::new(discovery),
             trades,
             counterparties,
-            counterparty_challenges: Rc::new(RefCell::new(ChallengeLedger::new())),
+            wallet_challenges: Rc::new(RefCell::new(ChallengeLedger::new())),
             disputes,
             identity,
             attachments,
@@ -533,7 +542,12 @@ impl<S: KvStore + 'static> NodeState<S> {
     /// `NodeState` construction outside this crate's own dispatch tests
     /// needs a real transport identity; this keeps that boilerplate in
     /// one place instead of repeated at each call site.
-    #[cfg(test)]
+    ///
+    /// Not `cfg(test)`-gated, for the same reason `actor::NetworkConfig::
+    /// for_test` is not: this crate's integration tests live under
+    /// `tests/` and link against a normal build, so a gated constructor
+    /// would be invisible to exactly the tests that exercise the shipped
+    /// dispatch table end to end.
     pub fn new_for_test(store: S) -> Self {
         let keypair = Keypair::generate();
         let node = Node::new(&keypair).expect("loopback node construction cannot fail");

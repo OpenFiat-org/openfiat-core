@@ -13,6 +13,7 @@ pub mod node;
 pub mod notifications;
 pub mod oracles;
 pub mod providers;
+pub mod redaction;
 pub mod reputation;
 pub mod reservations;
 pub mod rewards;
@@ -21,6 +22,7 @@ pub mod sessions;
 pub mod settlement;
 pub mod snapshot;
 pub mod trade;
+pub mod wallet_auth;
 
 use crate::dispatch::MethodTable;
 use openfiat_storage::KvStore;
@@ -32,6 +34,7 @@ pub fn build_table<S: KvStore + 'static>() -> MethodTable<S> {
     reservations::register(&mut table);
     settlement::register(&mut table);
     trade::register(&mut table);
+    wallet_auth::register(&mut table);
     counterparties::register(&mut table);
     disputes::register(&mut table);
     identity::register(&mut table);

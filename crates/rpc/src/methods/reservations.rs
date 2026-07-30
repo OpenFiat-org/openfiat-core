@@ -2,6 +2,8 @@
 
 use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, method_fn};
 use crate::error::RpcError;
+use crate::methods::redaction::PublicReservation;
+use crate::methods::wallet_auth::{WalletProof, verify_wallet};
 use crate::state::NodeState;
 use openfiat_reservations::events::SignedReservationRequest;
 use openfiat_reservations::protocol;
@@ -10,12 +12,24 @@ use openfiat_serialization::{json, wire};
 use openfiat_storage::KvStore;
 use openfiat_types::Priority;
 
+/// Domain separator for `getMyReservations`.
+pub const CHALLENGE_DOMAIN: &str = "openfiat-my-reservations";
+
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
     table.register(
+        // Redacted, like `getReservation(s)` on settlements and for the
+        // same reason — and here the leak is a step earlier, since a
+        // reservation names the buyer and its advertisement names the
+        // merchant, so the edge exists even for trades that never settled.
         "getReservation",
         method_fn(
-            |state: &NodeState<S>, params: IdParams| -> Result<Option<Reservation>, RpcError> {
-                Ok(state.reservations.get(&ReservationId::new(params.id)))
+            |state: &NodeState<S>,
+             params: IdParams|
+             -> Result<Option<PublicReservation>, RpcError> {
+                Ok(state
+                    .reservations
+                    .get(&ReservationId::new(params.id))
+                    .map(PublicReservation::from))
             },
         ),
     );
@@ -24,7 +38,28 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
         method_fn(
             |state: &NodeState<S>,
              _params: serde_json::Value|
-             -> Result<Vec<Reservation>, RpcError> { Ok(state.reservations.all()) },
+             -> Result<Vec<PublicReservation>, RpcError> {
+                Ok(state
+                    .reservations
+                    .all()
+                    .into_iter()
+                    .map(PublicReservation::from)
+                    .collect())
+            },
+        ),
+    );
+    table.register(
+        "getMyReservations",
+        method_fn(
+            |state: &NodeState<S>, params: WalletProof| -> Result<Vec<Reservation>, RpcError> {
+                let wallet = verify_wallet(state, &params, CHALLENGE_DOMAIN)?;
+                Ok(state
+                    .reservations
+                    .all()
+                    .into_iter()
+                    .filter(|r| r.requester == wallet)
+                    .collect())
+            },
         ),
     );
     table.register(
