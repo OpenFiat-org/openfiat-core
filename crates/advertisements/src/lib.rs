@@ -16,12 +16,14 @@ pub mod error;
 pub mod events;
 pub mod pricing;
 pub mod protocol;
+pub mod query;
 pub mod record;
 pub mod service;
 pub mod store;
 
 pub use error::AdvertisementError;
 pub use pricing::{MidPrice, PriceQuote, UnpriceableReason};
+pub use query::{AdvertisementFilter, AdvertisementPage, DEFAULT_PAGE, MAX_PAGE, Page};
 pub use record::{Advertisement, AdvertisementId, AdvertisementStatus, Direction, PricingModel};
 pub use service::AdvertisementService;
 pub use store::AdvertisementRegistry;

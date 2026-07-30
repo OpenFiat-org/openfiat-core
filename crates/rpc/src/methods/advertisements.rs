@@ -105,6 +105,36 @@ fn resolve<S: KvStore + 'static>(
     }
 }
 
+/// `getAdvertisements`' parameters.
+///
+/// Both halves default, so `{}` still means "the first page of the whole
+/// active book" — the call that existed before filtering did keeps
+/// working, and only its size changes.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ListParams {
+    #[serde(default)]
+    pub filter: openfiat_advertisements::AdvertisementFilter,
+    #[serde(default)]
+    pub page: openfiat_advertisements::Page,
+}
+
+/// One page of the order book, each row priced at the instant it was read.
+///
+/// A shape change: this method used to return a bare array. It returned
+/// *every* advertisement on the network with no parameters, which is a
+/// response that grows without bound and a book a buyer cannot search —
+/// so a caller reading `result.length` was already reading something that
+/// could not survive real volume. The cursor has to travel beside the
+/// rows, because a caller deriving it from the last row would have to
+/// know the ordering, and an ordering two parties disagree about is how a
+/// page gets skipped.
+#[derive(Debug, serde::Serialize)]
+pub struct AdvertisementsPage {
+    pub advertisements: Vec<AdvertisementView>,
+    /// Pass back as `page.after`. `None` means this was the last page.
+    pub next_cursor: Option<openfiat_advertisements::AdvertisementId>,
+}
+
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
     table.register(
         "getAdvertisement",
@@ -124,21 +154,26 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
     table.register(
         "getAdvertisements",
         method_fn(
-            |state: &NodeState<S>,
-             _params: serde_json::Value|
-             -> Result<Vec<AdvertisementView>, RpcError> {
+            |state: &NodeState<S>, params: ListParams| -> Result<AdvertisementsPage, RpcError> {
+                let selected = openfiat_advertisements::query::page(
+                    state.advertisements.all(),
+                    &params.filter,
+                    &params.page,
+                );
                 // One `now` for the whole response: resolving each row
                 // against its own clock read would let a feed lapse
                 // partway down the book and return a page that was never
                 // true at any single instant.
                 let now = Timestamp::now();
                 let mut cache = HashMap::new();
-                Ok(state
-                    .advertisements
-                    .all()
-                    .into_iter()
-                    .map(|ad| resolve(state, ad, now, &mut cache))
-                    .collect())
+                Ok(AdvertisementsPage {
+                    advertisements: selected
+                        .advertisements
+                        .into_iter()
+                        .map(|ad| resolve(state, ad, now, &mut cache))
+                        .collect(),
+                    next_cursor: selected.next_cursor,
+                })
             },
         ),
     );
@@ -690,6 +725,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_filtered_listing_answers_only_what_was_asked_for() {
+        let (table, state) = table_and_state();
+        let merchant = Keypair::generate();
+        for (id, fiat) in [("ad-kes", "KES"), ("ad-ngn", "NGN")] {
+            let signed = SignedAdvertisementCreate::sign(
+                AdvertisementCreate {
+                    fiat_currency: fiat.to_string(),
+                    ..create_at(&merchant, id, Timestamp::from_millis(1_000))
+                },
+                &merchant,
+            );
+            table
+                .dispatch(&state, "sendAdvertisementCreate", params(&signed))
+                .unwrap();
+        }
+
+        let result = table
+            .dispatch(
+                &state,
+                "getAdvertisements",
+                serde_json::json!({ "filter": { "fiat_currency": "KES" } }),
+            )
+            .unwrap();
+        let rows = result["advertisements"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "ad-kes");
+    }
+
+    #[test]
+    fn an_unparameterised_call_still_works_and_is_now_bounded() {
+        // The call that existed before filtering did. It used to return
+        // every advertisement on the network; it now returns the first
+        // page, which is the only version of it that survives real volume.
+        let (table, state) = table_and_state();
+        let result = table
+            .dispatch(&state, "getAdvertisements", serde_json::json!({}))
+            .expect("no parameters is still a valid request");
+        assert!(result["advertisements"].is_array());
+        assert!(result["next_cursor"].is_null());
+    }
+
     /// Every row of one response resolves off a single oracle read, so a
     /// page can never mix rows priced before and after a feed lapsed.
     #[test]
@@ -710,7 +787,9 @@ mod tests {
         let result = table
             .dispatch(&state, "getAdvertisements", serde_json::json!({}))
             .unwrap();
-        let rows = result.as_array().expect("a listing is an array");
+        let rows = result["advertisements"]
+            .as_array()
+            .expect("a page carries its rows beside its cursor");
         assert_eq!(rows.len(), 2);
         for row in rows {
             assert_eq!(row["quote"]["kind"], "Floating");
