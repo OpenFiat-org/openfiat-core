@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 
 const WALLET_PARAM_METHODS: &[&str] = &[
     "getCounterpartiesChallenge",
+    "getWalletChallenge",
     "getIdentityClaimsByWallet",
     "getReputation",
     "getSubscription",
@@ -28,6 +29,23 @@ const WALLET_PARAM_METHODS: &[&str] = &[
     "getRiskRecordsByWallet",
     "getWalletScreening",
     "getSessionsByWallet",
+    "getNotificationDispatchesByWallet",
+];
+
+/// Reads that answer only for a wallet the caller proves they control.
+///
+/// Their params are an ownership proof, not a lookup key, and describing
+/// them as `getX(id)` would tell an integrator they are ordinary open
+/// reads — misleading for them and, worse, for anyone auditing what this
+/// node exposes. `getCounterparties` was special-cased here first; the
+/// `getMyX` family arrived with the trade-graph redaction and made it a
+/// category rather than an exception.
+const WALLET_PROOF_METHODS: &[&str] = &[
+    "getCounterparties",
+    "getMySettlements",
+    "getMyReservations",
+    "getMyDisputes",
+    "getMyTrades",
 ];
 
 const NO_PARAM_METHODS: &[&str] = &[
@@ -46,6 +64,7 @@ const NO_PARAM_METHODS: &[&str] = &[
     "getCheckpointHeight",
     "getChainStatus",
     "getLatestBlockhash",
+    "getPeers",
 ];
 
 fn params_schema_for(method: &str) -> Value {
@@ -55,19 +74,41 @@ fn params_schema_for(method: &str) -> Value {
     // would otherwise describe it as an ordinary open read — misleading
     // for an integrator and, worse, for anyone auditing what this node
     // exposes.
-    if method == "getCounterparties" {
+    if WALLET_PROOF_METHODS.contains(&method) {
         return json!({
             "type": "object",
             "properties": {
-                "wallet": { "type": "string", "description": "base64-encoded PeerId — must be the wallet the signature below proves control of; any other wallet is refused" },
+                "wallet": { "type": "string", "description": "base64-encoded PeerId — must be the wallet the signature below proves control of; any other wallet is refused rather than narrowed" },
                 "public_key": { "type": "string", "description": "base64-encoded raw 32-byte Ed25519 public key, which must derive to `wallet`" },
-                "nonce": { "type": "string", "description": "the nonce from a preceding getCounterpartiesChallenge — single-use and expiring" },
-                "signature": { "type": "string", "description": "base64-encoded 64-byte Ed25519 signature over `openfiat-counterparties:<wallet>:<nonce>`" },
+                "nonce": { "type": "string", "description": "the nonce from a preceding getWalletChallenge — single-use and expiring" },
+                "signature": { "type": "string", "description": "base64-encoded 64-byte Ed25519 signature over the challenge under this method's own domain separator; a signature made for another gated method does not verify here" },
             },
             "required": ["wallet", "public_key", "nonce", "signature"],
         });
     }
-    if method == "getMedianExchangeRate" {
+    // A service provider reading their own earnings statement: an id plus
+    // a signed nonce, not a bare lookup. It predates the `getMyX` family
+    // and uses `id`/`nonce`/`signature` rather than the four-field wallet
+    // proof, so it is described on its own rather than folded in — the
+    // document should say what the method takes, not what it resembles.
+    if method == "getProviderEarnings" {
+        return json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "the service id whose statement is being read" },
+                "nonce": { "type": "string", "description": "the nonce from a preceding getProviderEarningsChallenge — single-use and expiring" },
+                "signature": { "type": "string", "description": "base64-encoded 64-byte Ed25519 signature by the provider key that registered the service" },
+            },
+            "required": ["id", "nonce", "signature"],
+        });
+    }
+    if method == "getRewardObservations" {
+        return json!({
+            "type": "object",
+            "properties": { "epoch": { "type": ["integer", "null"], "description": "omit for the most recently completed epoch — the in-flight one's answer would change under the caller" } },
+        });
+    }
+    if method == "getMedianExchangeRate" || method == "getExchangeRate" {
         return json!({ "type": "object", "properties": { "base": { "type": "string" }, "quote": { "type": "string" } }, "required": ["base", "quote"] });
     }
     if NO_PARAM_METHODS.contains(&method) {
@@ -83,8 +124,11 @@ fn params_schema_for(method: &str) -> Value {
             "required": ["data"],
         });
     }
-    // Every remaining `getX(id)` method.
-    json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] })
+    // Every remaining `getX(id)` method. Reached by falling through, so
+    // it is also what an unclassified new method silently becomes — see
+    // `no_method_is_documented_by_accident` for why that matters and what
+    // stops it.
+    json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"], "x-openfiat-classified": "fallback" })
 }
 
 fn result_schema_for(method: &str) -> Value {
@@ -142,6 +186,65 @@ pub fn build_document() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lists above are hand-maintained, and a method absent from all
+    /// of them does not fail — it quietly becomes `getX(id)` in the
+    /// published reference. Six methods had already done exactly that
+    /// (`getPeers`, `getWalletChallenge`, `getExchangeRate` and three
+    /// `getMyX`), so integrators reading the API document were told the
+    /// wrong parameters for a wallet-proof read.
+    ///
+    /// This is the check that turns forgetting into a failing build. The
+    /// allowance below is the genuine `getX(id)` family, named
+    /// individually: a method may take an id, but somebody has to say so.
+    #[test]
+    fn no_method_is_documented_by_accident() {
+        let document = build_document();
+        let fell_through: Vec<String> = document["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["params"][0]["schema"]["x-openfiat-classified"] == "fallback")
+            .map(|m| m["name"].as_str().unwrap().to_string())
+            .collect();
+
+        // Every one of these genuinely takes a single `id`. Adding a
+        // method here is a deliberate statement about its parameters.
+        const TAKES_AN_ID: &[&str] = &[
+            "getAdvertisement",
+            "getReservation",
+            "getSettlement",
+            "getTrade",
+            "getDispute",
+            "getProposal",
+            "getProvider",
+            "getOracleRecord",
+            "getRiskRecord",
+            "getSnapshot",
+            "getSession",
+            "getIdentityClaim",
+            "getAttachment",
+            "getHeldContent",
+            "getAttachmentsBySettlement",
+            "getSubscriptionById",
+            "getDeliveryReceipt",
+            "getProposalVotes",
+            "getNotificationDispatch",
+            "getProviderEarningsChallenge",
+            "getSettlementAttachments",
+        ];
+
+        let unexplained: Vec<&String> = fell_through
+            .iter()
+            .filter(|name| !TAKES_AN_ID.contains(&name.as_str()))
+            .collect();
+        assert!(
+            unexplained.is_empty(),
+            "these methods are documented as taking `id` because nothing \
+             said otherwise, which is how six of them ended up described \
+             wrongly: {unexplained:?}"
+        );
+    }
 
     #[test]
     fn every_dispatch_table_method_appears_in_the_document() {

@@ -123,8 +123,10 @@ pub struct Args {
     /// id is what makes a hijacked record fail the handshake instead of
     /// silently becoming your only peer.
     ///
-    /// A lone node has nothing to dial. Peer discovery does not yet run, so
-    /// a node currently finds only the peers named here.
+    /// A lone node has nothing to dial. Peer discovery spreads knowledge
+    /// between nodes that are already connected, so it finds the rest of
+    /// the network from here — but something has to make the first
+    /// connection, and this is it.
     #[arg(long = "entrypoint", value_name = "MULTIADDR")]
     pub entrypoints: Vec<Multiaddr>,
 

@@ -43,11 +43,17 @@ the HTTPS URL as an `--entrypoint` will not parse it.
 
 ## 3. Run standalone (gossip-only)
 
-`openfiat-node` takes **no command-line flags** — every setting is an
-environment variable, read once at startup
-(`crates/cli/src/main.rs`). With nothing set, it generates a fresh
-identity, listens for peers, and serves its HTTP surface with no Solana
-RPC connectivity (`NodeChainMode::GossipOnly`, OFS-4300 §4):
+Every setting `openfiat-node` has is a **command-line flag**. There is no
+environment-variable fallback and no config file, deliberately: with two
+sources, a node's real configuration becomes a function of the invocation
+*and* the ambient environment, and "why does this node behave differently
+from the identical one beside it" turns into archaeology across shell
+profiles. `systemctl cat openfiat-node` shows exactly what a running node
+was given, and `openfiat-node --help` is the whole surface.
+
+With no flags at all it generates a fresh identity, listens for peers, and
+serves its HTTP surface with no Solana RPC connectivity
+(`NodeChainMode::GossipOnly`, OFS-4300 §4):
 
 ```bash
 ./target/release/openfiat-node
@@ -66,9 +72,9 @@ curl -X POST http://localhost:7080/rpc -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getVersion","params":{}}'
 ```
 
-Every environment variable this binary reads, with its real default:
+Every flag this binary reads, with its real default:
 
-| Variable | Default if unset | What it controls |
+| Flag | Default if unset | What it controls |
 |---|---|---|
 | `--identity <PATH>` | `<ledger>/wallet.json` | This node's identity — a Solana CLI-format `wallet.json` (`solana-keygen new` output). Reused as both the node's gossip/P2P keypair and its Solana signing key. Missing/unreadable → a fresh throwaway identity is generated for that run (fine for local testing, **not** for anything you want to persist). |
 | `--ledger <DIR>` | `./openfiat-data` | RocksDB data directory — every domain registry's persisted state. |
