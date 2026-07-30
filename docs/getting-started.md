@@ -24,6 +24,23 @@ The binary is a real, standalone executable at
 `target/release/openfiat-node` — no container runtime or config file
 required to run it.
 
+## 2b. The public devnet endpoints
+
+Two addresses, for two different jobs. They are not interchangeable:
+
+| | Address | For |
+|---|---|---|
+| **RPC / API** | `https://openfiat.allenhark.com` | Clients — wallets, explorers, the web app. HTTPS, so a browser can use it. |
+| **Entrypoint** | `/dns4/openfiat.allenhark.com/udp/4001/quic-v1/p2p/12D3KooWK9hQ7TwbfvFiaAxUbRFCkdhS7iEpAJDnewNL1anyREQ1` | Nodes — the peer your node dials to join the cluster. QUIC over UDP 4001. |
+
+```bash
+curl -s https://openfiat.allenhark.com/health   # ok
+```
+
+The same host serves both, on different ports and protocols. A client
+that tries the entrypoint multiaddr will get nowhere, and a node given
+the HTTPS URL as an `--entrypoint` will not parse it.
+
 ## 3. Run standalone (gossip-only)
 
 `openfiat-node` takes **no command-line flags** — every setting is an

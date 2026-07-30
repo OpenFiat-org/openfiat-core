@@ -157,6 +157,13 @@ nginx, certbot, and `--public-rpc-url`.
 
 Check it:
 
+The public devnet node, if you just want to query one rather than run
+one:
+
+```bash
+curl -s https://openfiat.allenhark.com/health   # ok
+```
+
 ```bash
 curl -s -X POST http://127.0.0.1:7080/rpc \
   -H 'content-type: application/json' \
