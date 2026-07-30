@@ -234,7 +234,7 @@ mod tests {
             &gateway,
             "gw-1",
             ServiceType::Notifications(NotificationChannel::Email),
-            vec!["https://gw.example/deliver".to_string()],
+            vec!["https://gw.example.com/deliver".to_string()],
         );
         let wallet = Keypair::generate();
         let subscription = subscription(&wallet, vec![destination(&gateway, "gw-1")]);
@@ -248,7 +248,10 @@ mod tests {
 
         assert_eq!(plan.skipped, vec![]);
         assert_eq!(plan.deliveries.len(), 1);
-        assert_eq!(plan.deliveries[0].endpoint, "https://gw.example/deliver");
+        assert_eq!(
+            plan.deliveries[0].endpoint,
+            "https://gw.example.com/deliver"
+        );
         assert_eq!(
             plan.deliveries[0].payload.notification_id,
             NotificationId::derive(
@@ -270,7 +273,7 @@ mod tests {
             &gateway,
             "gw-1",
             ServiceType::Notifications(NotificationChannel::Email),
-            vec!["https://gw.example/deliver".to_string()],
+            vec!["https://gw.example.com/deliver".to_string()],
         );
         let wallet = Keypair::generate();
         let subscription = subscription(&wallet, vec![destination(&gateway, "gw-1")]);
@@ -305,7 +308,7 @@ mod tests {
             &gateway,
             "gw-1",
             ServiceType::Notifications(NotificationChannel::Email),
-            vec!["https://gw.example/deliver".to_string()],
+            vec!["https://gw.example.com/deliver".to_string()],
         );
         let wallet = Keypair::generate();
         let subscription = subscription(&wallet, vec![destination(&gateway, "gw-1")]);
@@ -358,7 +361,7 @@ mod tests {
             &gateway,
             "gw-1",
             ServiceType::MarketData(openfiat_types::MarketDataService::PriceOracle),
-            vec!["https://oracle.example".to_string()],
+            vec!["https://oracle.example.com".to_string()],
         );
         let wallet = Keypair::generate();
         let plan = plan(
@@ -380,7 +383,7 @@ mod tests {
             &gateway,
             "gw-1",
             ServiceType::Notifications(NotificationChannel::Sms),
-            vec!["https://gw.example/deliver".to_string()],
+            vec!["https://gw.example.com/deliver".to_string()],
         );
         let wallet = Keypair::generate();
         let plan = plan(

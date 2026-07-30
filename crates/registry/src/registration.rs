@@ -61,6 +61,15 @@ impl SignedRegistration {
         if self.registration.pricing.is_some() && self.registration.payout_wallet.is_none() {
             return Err(RegistryError::PricingWithoutPayoutWallet);
         }
+        if let Some(endpoint) = self
+            .registration
+            .endpoints
+            .iter()
+            .find(|endpoint| is_unresolvable(endpoint))
+        {
+            let _ = endpoint;
+            return Err(RegistryError::UnresolvableEndpoint);
+        }
         let expected = peer_id_from_public_key(&self.registration.provider_public_key)
             .map_err(|_| RegistryError::InvalidSignature)?;
         if expected != self.registration.provider {
@@ -187,5 +196,112 @@ mod tests {
         let mut signed = SignedRegistration::sign(registration(&keypair, provider), &keypair);
         signed.registration.region = Some("Uganda".to_string());
         assert_eq!(signed.verify(), Err(RegistryError::InvalidSignature));
+    }
+}
+
+/// Names reserved by RFC 2606 and RFC 6761, which are guaranteed never to
+/// resolve for anyone.
+///
+/// `.localhost` is deliberately absent. RFC 6761 reserves it too, but
+/// reserves it *to mean loopback* — it resolves, it works, and a node on a
+/// developer's machine registering `http://localhost:7080` is describing
+/// something genuinely reachable from where it runs. The others resolve
+/// for nobody, ever.
+const UNRESOLVABLE_SUFFIXES: [&str; 3] = [".test", ".invalid", ".example"];
+
+/// Whether an endpoint names a host that can never be reached.
+///
+/// # Why the registry refuses these
+///
+/// A registration is a claim that a service can be found at an address,
+/// and every consumer treats it as one: an interface lists it as a
+/// provider a user can pick, a node may route to it, a browser offers a
+/// button to connect. An address in a reserved domain cannot honour any
+/// of that, so accepting it publishes a service that does not exist into
+/// a registry whose entire value is that its entries are real.
+///
+/// This is not hypothetical. Five such registrations were seeded onto
+/// devnet — `snapshots.eu.devnet.openfiat.test` and four siblings — and
+/// they were served to users as live infrastructure, complete with a
+/// button offering to connect to one. They were genuine signed records;
+/// only their contents were invented, which is harder to spot than a
+/// fixture and, unlike a fixture, replicated to every node on the
+/// network.
+///
+/// Deliberately narrow: it rejects what is *provably* unreachable by
+/// standard, not what happens to be down. A registry that dropped
+/// services failing a liveness check would be making an availability
+/// judgement, which is the consumer's to make — and `health` already
+/// exists for it.
+fn is_unresolvable(endpoint: &str) -> bool {
+    let after_scheme = endpoint.split("://").nth(1).unwrap_or(endpoint);
+    let host = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("");
+    // Strip any port before matching, so `host.test:8443` is caught.
+    let host = host.split(':').next().unwrap_or("").trim_end_matches('.');
+    let host = host.to_ascii_lowercase();
+    UNRESOLVABLE_SUFFIXES
+        .iter()
+        .any(|suffix| host.ends_with(suffix))
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::is_unresolvable;
+
+    #[test]
+    fn reserved_names_are_refused() {
+        // The exact endpoints that were seeded onto devnet and served to
+        // users as live infrastructure.
+        for endpoint in [
+            "https://snapshots.eu.devnet.openfiat.test",
+            "https://rpc.us.devnet.openfiat.test",
+            "https://fx.devnet.openfiat.test",
+            "http://something.invalid",
+            "https://foo.example",
+            "https://HOST.TEST:8443/rpc",
+        ] {
+            assert!(is_unresolvable(endpoint), "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn localhost_is_allowed_because_it_actually_resolves() {
+        // RFC 6761 reserves `.localhost` to MEAN loopback. A node on a
+        // developer's machine registering it is describing something
+        // genuinely reachable from where it runs.
+        for endpoint in [
+            "http://localhost:7080",
+            "http://api.localhost:7080",
+            "http://127.0.0.1:7080",
+        ] {
+            assert!(!is_unresolvable(endpoint), "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn ordinary_endpoints_pass() {
+        for endpoint in [
+            "https://openfiat.allenhark.com",
+            "https://rpc.example.org/path",
+            "https://10.0.0.4:7080",
+            "https://testing.example.com",
+        ] {
+            assert!(!is_unresolvable(endpoint), "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn a_hostname_merely_containing_test_is_not_reserved() {
+        // Suffix matching, not substring: `.test` is a TLD, and
+        // `latest.example.com` or `mytest.io` are ordinary names.
+        for endpoint in ["https://latest.openfiat.network", "https://mytest.io"] {
+            assert!(!is_unresolvable(endpoint), "{endpoint}");
+        }
     }
 }

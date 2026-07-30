@@ -40,7 +40,7 @@ fn seeded_registry(provider: &Keypair, service_id: &str) -> Rc<Registry<MemorySt
         service_type: ServiceType::Notifications(NotificationChannel::Sms),
         provider: peer_id_from_public_key(&provider.public_key()).unwrap(),
         provider_public_key: provider.public_key(),
-        endpoints: vec!["https://sms.example/webhook".to_string()],
+        endpoints: vec!["https://sms.example.com/webhook".to_string()],
         supported_ofs: vec![6000],
         region: None,
         capabilities: vec![],
@@ -189,7 +189,10 @@ async fn a_subscription_and_a_delivery_report_replicate_across_the_cluster() {
                 "the gateway is registered and healthy"
             );
             assert_eq!(plan.deliveries.len(), 1);
-            assert_eq!(plan.deliveries[0].endpoint, "https://sms.example/webhook");
+            assert_eq!(
+                plan.deliveries[0].endpoint,
+                "https://sms.example.com/webhook"
+            );
             plan.deliveries.into_iter().next().unwrap()
         })
         .collect();

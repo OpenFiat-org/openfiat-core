@@ -1711,7 +1711,7 @@ mod tests {
                     service_type: ServiceType::Notifications(NotificationChannel::Email),
                     provider: peer_id_from_public_key(&gateway.public_key()).unwrap(),
                     provider_public_key: gateway.public_key(),
-                    endpoints: vec!["https://gw.example/deliver".to_string()],
+                    endpoints: vec!["https://gw.example.com/deliver".to_string()],
                     supported_ofs: vec![6000],
                     region: None,
                     capabilities: vec![],
@@ -1764,7 +1764,7 @@ mod tests {
 
         assert_eq!(
             provider.sent.lock().unwrap().as_slice(),
-            &[("https://gw.example/deliver".to_string(), id.clone())]
+            &[("https://gw.example.com/deliver".to_string(), id.clone())]
         );
         assert_eq!(
             state.notifications.dispatch(&id).unwrap().status,

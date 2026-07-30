@@ -202,7 +202,7 @@ fn seed_producer_only_state(node: &TestNode) {
                     merchant_service_id().as_str(),
                     ServiceType::Marketplace(MarketplaceService::MerchantGateway),
                 );
-                registration.endpoints = vec!["https://merchant.example/pickup".to_string()];
+                registration.endpoints = vec!["https://merchant.example.com/pickup".to_string()];
                 registration
             },
             &merchant,
@@ -268,7 +268,7 @@ async fn a_joining_node_downloads_verifies_and_imports_a_real_snapshot() {
         .expect("the imported snapshot must carry the producer's registry state");
     assert_eq!(
         recovered.endpoints,
-        vec!["https://merchant.example/pickup".to_string()]
+        vec!["https://merchant.example.com/pickup".to_string()]
     );
     assert_eq!(
         nodes[1].snapshots.checkpoint_height(),

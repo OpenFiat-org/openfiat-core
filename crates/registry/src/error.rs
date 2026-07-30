@@ -28,6 +28,9 @@ pub enum RegistryError {
     /// without somewhere to be paid is a half-configured service, and
     /// the gap would only surface once money was owed.
     PricingWithoutPayoutWallet,
+    /// An endpoint in a domain reserved by RFC 2606/6761, which can never
+    /// resolve for anyone. See `registration::is_unresolvable`.
+    UnresolvableEndpoint,
     /// No outstanding earnings challenge matches this Service ID and
     /// nonce — never issued, already spent, or superseded.
     UnknownChallenge,
@@ -45,6 +48,7 @@ impl RegistryError {
             Self::ServiceNotFound => ErrorCode::ResourceNotFound,
             Self::GossipRejected => ErrorCode::InvalidRequest,
             Self::PricingWithoutPayoutWallet => ErrorCode::InvalidRequest,
+            Self::UnresolvableEndpoint => ErrorCode::InvalidParameter,
             Self::UnknownChallenge => ErrorCode::ResourceNotFound,
             Self::ChallengeExpired => ErrorCode::InvalidRequest,
         }

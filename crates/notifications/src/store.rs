@@ -291,7 +291,7 @@ mod tests {
             service_type: ServiceType::Notifications(NotificationChannel::Sms),
             provider: peer_id_from_public_key(&provider.public_key()).unwrap(),
             provider_public_key: provider.public_key(),
-            endpoints: vec!["https://sms.example/webhook".to_string()],
+            endpoints: vec!["https://sms.example.com/webhook".to_string()],
             supported_ofs: vec![6000],
             region: Some("Kenya".to_string()),
             capabilities: vec![],

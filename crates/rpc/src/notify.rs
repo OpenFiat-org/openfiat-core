@@ -284,7 +284,7 @@ mod tests {
         Amount, EventType, NotificationChannel, Priority, ServiceId, ServiceType, Timestamp,
     };
 
-    const GATEWAY_ENDPOINT: &str = "https://gw.example/deliver";
+    const GATEWAY_ENDPOINT: &str = "https://gw.example.com/deliver";
 
     fn register_gateway(state: &NodeState<MemoryStore>, gateway: &Keypair) {
         state
