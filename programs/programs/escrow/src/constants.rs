@@ -97,3 +97,27 @@ pub const MAX_DISPUTE_WINDOW_SECS: i64 = 7 * 24 * 60 * 60;
 /// `[PROPOSED — NEEDS SIGN-OFF]` — the retry count and the terminal
 /// policy it leads to are economic parameters, not derived from any spec.
 pub const MAX_DISPUTE_ROUNDS: u8 = 3;
+
+/// The arbitrator stake age OFS-4100 §4 signed off: **30 days**.
+///
+/// Deliberately *not* what `initialize_fee_config` writes. Both this and
+/// the sortition threshold below start at **zero — disabled** on any
+/// deployment, and are switched on by governance through
+/// `update_fee_config`.
+///
+/// That is not caution, it is the only correct starting value. A stake age
+/// cannot be satisfied by anyone on a chain younger than the requirement:
+/// on day one no wallet has held stake for thirty days, so enforcing it at
+/// genesis would make every dispute unarbitrable for the network's first
+/// month. The same holds for the existing devnet cluster, where every
+/// migrated account's clock starts at its migration.
+///
+/// So these two constants document the values governance should *reach*,
+/// and the code ships the values that are true on the day it deploys.
+pub const RECOMMENDED_MIN_ARBITRATOR_STAKE_AGE_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// The opening sortition threshold OFS-4100 §4.1 signed off: **100 bps
+/// (1/100)**. Ships disabled for the reason above, and additionally
+/// because a draw needs a pool to draw from — at 1/100 with ten registered
+/// arbitrators the expected number of qualifiers per case is 0.1.
+pub const RECOMMENDED_ARBITRATOR_SORTITION_BPS: u16 = 100;

@@ -100,3 +100,23 @@ pub struct StakingConfigUpdated {
     pub unbonding_period_secs: i64,
     pub timestamp: i64,
 }
+
+/// A `StakeAccount` was grown into the layout carrying
+/// [`crate::state::StakeAccount::first_staked_at`]. Emitted by
+/// `migrate_stake_account`.
+///
+/// Worth an event because the migration is the one place a stake age is
+/// written without the owner having staked anything at that moment: an
+/// indexer needs to be able to tell "clock started at migration" apart
+/// from "clock started when tokens arrived", and after the fact the
+/// account itself no longer says which happened.
+#[event]
+pub struct StakeAccountMigrated {
+    pub stake_account: Pubkey,
+    pub owner: Pubkey,
+    /// Staked balance found at migration time — zero here is why
+    /// `first_staked_at` is also zero.
+    pub amount: u64,
+    pub first_staked_at: i64,
+    pub timestamp: i64,
+}

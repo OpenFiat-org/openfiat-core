@@ -267,6 +267,115 @@ describe("staking", () => {
     });
   });
 
+  // The clock behind OFS-4100 §4's arbitrator stake age. `escrow`'s
+  // `commit_dispute_vote` is the only consumer, but the invariants belong
+  // here: whether a balance of zero can carry a running clock decides
+  // whether an aged identity can exist with no capital behind it.
+  describe("first_staked_at (the arbitrator stake-age clock)", () => {
+    let owner: Keypair;
+    let stakeAccount: PublicKey;
+    let ownerAta: PublicKey;
+
+    before(async () => {
+      owner = Keypair.generate();
+      await airdrop(owner.publicKey);
+      stakeAccount = stakeAccountPda(owner.publicKey, 2); // NodeOperator
+      await withBlockhashRetry(() =>
+        program.methods
+          .initializeStakeAccount(ROLE_NODE_OPERATOR)
+          .accountsPartial({
+            owner: owner.publicKey,
+            stakeAccount,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+      ownerAta = await ata(mint, owner.publicKey);
+      await mintTokens(ownerAta, unit(40000));
+    });
+
+    function stake(amount: BN) {
+      return withBlockhashRetry(() =>
+        program.methods
+          .stake(amount)
+          .accountsPartial({
+            owner: owner.publicKey,
+            stakingConfig,
+            stakeAccount,
+            stakeVault,
+            from: ownerAta,
+            mint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+    }
+
+    it("starts at zero, because an account holding nothing has no age", async () => {
+      // Not the current clock: an age that began before any tokens were
+      // locked would let an attacker open accounts now and fund them thirty
+      // days later at no cost, which is exactly what the requirement exists
+      // to prevent.
+      const account = await program.account.stakeAccount.fetch(stakeAccount);
+      expect(account.amount.toString()).to.equal("0");
+      expect(account.firstStakedAt.toString()).to.equal("0");
+    });
+
+    it("starts on the transition out of zero, and a top-up does not reset it", async () => {
+      await stake(unit(10000));
+      const afterFirst = await program.account.stakeAccount.fetch(stakeAccount);
+      expect(afterFirst.firstStakedAt.gtn(0), "clock must start when tokens arrive").to.equal(true);
+
+      await new Promise((r) => setTimeout(r, 2000));
+      await stake(unit(5000));
+      const afterTopUp = await program.account.stakeAccount.fetch(stakeAccount);
+      // Resetting here would punish an honest arbitrator for adding stake,
+      // and would buy nothing: `is_legal_balance` already forbids holding a
+      // balance between zero and the role minimum, so no account can have
+      // aged cheaply at a token balance and then jumped to a qualifying one.
+      expect(afterTopUp.amount.toString()).to.equal(unit(15000).toString());
+      expect(afterTopUp.firstStakedAt.toString()).to.equal(afterFirst.firstStakedAt.toString());
+    });
+
+    it("clears on a full exit, so age cannot outlive the capital behind it", async () => {
+      await withBlockhashRetry(() =>
+        program.methods
+          .requestUnstake(unit(15000))
+          .accountsPartial({ owner: owner.publicKey, stakingConfig, stakeAccount })
+          .signers([owner])
+          .rpc({ commitment: "confirmed" }),
+      );
+      const account = await program.account.stakeAccount.fetch(stakeAccount);
+      expect(account.amount.toString()).to.equal("0");
+      // Leaving it set would let an arbitrator withdraw entirely, wait, and
+      // re-stake later while still presenting the age they accrued before
+      // the tokens left — an aged identity with no capital behind it for the
+      // gap.
+      expect(account.firstStakedAt.toString()).to.equal("0");
+    });
+
+    it("refuses to migrate an account already in the current layout", async () => {
+      // The migration is one-shot by construction: its length check only
+      // passes against the 82-byte pre-migration layout. That is the whole
+      // reason it can safely be permissionless — otherwise anyone could
+      // call it repeatedly to reset somebody else's age clock.
+      await expectAnchorError(
+        () =>
+          program.methods
+            .migrateStakeAccount()
+            .accountsPartial({
+              payer: provider.wallet.publicKey,
+              stakeAccount,
+              systemProgram: SystemProgram.programId,
+            })
+            .rpc({ commitment: "confirmed" }),
+        "StakeAccountAlreadyMigrated",
+      );
+    });
+  });
+
   describe("slash", () => {
     it("moves slash_bps of the active stake to slash_destination, callable only by slashing_authority", async () => {
       const owner = Keypair.generate();

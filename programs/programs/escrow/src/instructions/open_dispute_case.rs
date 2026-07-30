@@ -1,4 +1,7 @@
 use anchor_lang::prelude::*;
+// Brings `SlotHashes::id()` into scope for the `address` constraint, so the
+// sysvar address is derived from the type rather than pasted as a literal.
+use anchor_lang::solana_program::sysvar::SysvarId;
 use anchor_spl::token_interface::{
     transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
 };
@@ -102,6 +105,14 @@ pub struct OpenDisputeCase<'info> {
     pub token_program: Program<'info, Token2022>,
 
     pub system_program: Program<'info, System>,
+
+    /// CHECK: pinned to the real sysvar by `address`, then read as raw
+    /// bytes — it is far too large to deserialize inside a program, and
+    /// `Sysvar::get()` is unsupported for it for that reason. Seeds this
+    /// case's arbitrator draw; see `shared_logic::latch_case_seed`, which
+    /// is also explicit about the grinding this does *not* prevent.
+    #[account(address = SlotHashes::id())]
+    pub slot_hashes: UncheckedAccount<'info>,
 }
 
 pub fn handle_open_dispute_case(
@@ -197,12 +208,18 @@ pub fn handle_open_dispute_case(
     dispute_case.reservation_id = ctx.accounts.trade_escrow.reservation_id;
     dispute_case.trade_escrow = ctx.accounts.trade_escrow.key();
     dispute_case.opened_at = now;
+    dispute_case.round_opened_at = now;
     dispute_case.commit_deadline = commit_deadline;
     dispute_case.reveal_deadline = reveal_deadline;
     dispute_case.resolved = false;
     dispute_case.round = 0;
     dispute_case.commit_window_secs = commit_window_secs;
     dispute_case.reveal_window_secs = reveal_window_secs;
+    dispute_case.case_seed = crate::instructions::shared_logic::latch_case_seed(
+        &ctx.accounts.slot_hashes.to_account_info(),
+        ctx.accounts.trade_escrow.reservation_id,
+        &ctx.accounts.trade_escrow.key(),
+    )?;
     dispute_case.arbitrators = Vec::new();
     dispute_case.commitments = Vec::new();
     dispute_case.revealed_outcomes = Vec::new();

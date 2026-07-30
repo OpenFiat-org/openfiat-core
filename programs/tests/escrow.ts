@@ -169,6 +169,14 @@ describe("escrow", () => {
       infraTreasuryBps: 2000,
       emergencyReserveBps: 1000,
       timeoutSecs: new BN(1800),
+      // Both arbitrator-eligibility gates off, matching what
+      // `initialize_fee_config` writes. `afterEach` restores the shared
+      // singleton from this object, so leaving them on here would silently
+      // gate every dispute spec that runs afterwards — the arbitrators those
+      // specs create stake seconds before voting and would all be rejected
+      // as too young.
+      minArbitratorStakeAgeSecs: new BN(0),
+      arbitratorSortitionBps: 0,
     };
 
     // Restore the shared singleton so later specs see the fixture's own
@@ -758,6 +766,8 @@ describe("escrow", () => {
             infraTreasuryBps: 2000,
             emergencyReserveBps: 1000,
             timeoutSecs: new BN(1800),
+            minArbitratorStakeAgeSecs: new BN(0),
+            arbitratorSortitionBps: 0,
           })
           .accountsPartial({
             admin: admin.publicKey,
@@ -873,6 +883,8 @@ describe("escrow", () => {
             infraTreasuryBps: 2000,
             emergencyReserveBps: 1000,
             timeoutSecs: new BN(1800),
+            minArbitratorStakeAgeSecs: new BN(0),
+            arbitratorSortitionBps: 0,
           })
           .accountsPartial({
             admin: admin.publicKey,
@@ -921,8 +933,44 @@ describe("escrow", () => {
       return crypto.createHash("sha256").update(Buffer.from([outcomeByte])).update(salt).digest();
     }
 
-    async function setUpArbitrator(stakeAmount: BN): Promise<Keypair> {
-      const owner = Keypair.generate();
+    /** Basis-points denominator and domain of `shared::sortition`. */
+    const SORTITION_BPS_DENOMINATOR = 10_000n;
+    const SORTITION_DOMAIN = Buffer.from("openfiat-arbitrator-sortition");
+
+    /**
+     * Recomputes a stake account's draw for a case exactly as the program
+     * does. Deliberately an independent reimplementation rather than a call
+     * into the program: it is what lets the sortition specs pick wallets by
+     * their draw and therefore assert a *deterministic* accept and reject,
+     * instead of committing from random wallets and hoping the threshold
+     * happened to fall the way the test needs.
+     */
+    function sortitionTicketBps(caseSeed: Buffer, stakeAccount: PublicKey): bigint {
+      const digest = crypto
+        .createHash("sha256")
+        .update(SORTITION_DOMAIN)
+        .update(caseSeed)
+        .update(stakeAccount.toBuffer())
+        .digest();
+      return digest.readBigUInt64LE(0) % SORTITION_BPS_DENOMINATOR;
+    }
+
+    /** A keypair whose Arbitrator stake account's draw satisfies `predicate`. */
+    function findArbitratorByDraw(
+      caseSeed: Buffer,
+      predicate: (ticket: bigint) => boolean,
+    ): Keypair {
+      for (let i = 0; i < 20_000; i++) {
+        const candidate = Keypair.generate();
+        if (predicate(sortitionTicketBps(caseSeed, stakeAccountPda(candidate.publicKey)))) {
+          return candidate;
+        }
+      }
+      throw new Error("no keypair matched the requested draw within 20,000 tries");
+    }
+
+    async function setUpArbitrator(stakeAmount: BN, existing?: Keypair): Promise<Keypair> {
+      const owner = existing ?? Keypair.generate();
       await airdrop(owner.publicKey);
       const stakeAccount = stakeAccountPda(owner.publicKey);
 
@@ -1462,6 +1510,8 @@ describe("escrow", () => {
 
       const buyerBefore = await getAccount(connection, buyerAta, "confirmed", TOKEN_2022_PROGRAM_ID);
       const vaultBefore = await program.account.liquidityVault.fetch(liquidityVault);
+      // Captured so the re-opened round's seed can be compared against it.
+      const openedCase = await program.account.disputeCase.fetch(disputeCase);
 
       // Two votes, 70,000 against 20,000 — unanimous, so nothing about
       // this round is close and nothing is tied. It still decides nothing,
@@ -1474,6 +1524,20 @@ describe("escrow", () => {
       expect(midCase.resolved, "two arbitrators must not be able to decide a case").to.equal(false);
       expect(midCase.round, "the case must re-open for another round").to.equal(1);
       expect(midCase.outcome ?? null, "no verdict may be recorded").to.equal(null);
+
+      // The re-opened round must draw a fresh sortition seed. Carrying the
+      // old one over would mean the same wallets qualify every round, so an
+      // attacker who won the draw once would hold those seats for the rest
+      // of the case — and forcing a re-round is something they can do
+      // deliberately by committing and never revealing.
+      expect(
+        Buffer.from(midCase.caseSeed).equals(Buffer.from(openedCase.caseSeed)),
+        "a re-opened round must re-draw its seed",
+      ).to.equal(false);
+      expect(
+        midCase.roundOpenedAt.gt(openedCase.roundOpenedAt),
+        "the new round's draw window must start when the round did",
+      ).to.equal(true);
 
       const midEscrow = await program.account.tradeEscrowVault.fetch(tradeEscrow);
       expect(midEscrow.state).to.deep.equal({ frozen: {} });
@@ -1895,6 +1959,184 @@ describe("escrow", () => {
 
       const caseAccount = await program.account.disputeCase.fetch(disputeCase);
       expect(caseAccount.resolved).to.equal(true);
+    });
+
+    // --- arbitrator eligibility: stake age and per-case sortition ---------
+    //
+    // Both gates are governance parameters that ship DISABLED, so every spec
+    // above runs with them off. These turn them on deliberately and restore
+    // them afterwards, because the FeeConfig is a shared singleton.
+    describe("arbitrator eligibility gates (OFS-4100 §4, §4.1)", () => {
+      /** Rewrites just the two eligibility gates, leaving the fees alone. */
+      async function setGates(minAgeSecs: number, sortitionBps: number) {
+        await withBlockhashRetry(() =>
+          program.methods
+            .updateFeeConfig({
+              adListingFee: new BN(0),
+              disputeFilingFee: new BN(0),
+              settlementFeeBps: 85,
+              devTreasuryBps: 4000,
+              ecosystemTreasuryBps: 3000,
+              infraTreasuryBps: 2000,
+              emergencyReserveBps: 1000,
+              timeoutSecs: new BN(1800),
+              minArbitratorStakeAgeSecs: new BN(minAgeSecs),
+              arbitratorSortitionBps: sortitionBps,
+            })
+            .accountsPartial({
+              admin: admin.publicKey,
+              feeConfig,
+              mint,
+              devTreasury,
+              ecosystemTreasury,
+              infraTreasury,
+              emergencyReserve,
+            })
+            .rpc({ commitment: "confirmed" }),
+        );
+      }
+
+      // Restore the disabled state whatever a spec in here did, so the
+      // singleton is not left gating anything that runs later.
+      afterEach(async () => {
+        await setGates(0, 0);
+      });
+
+      function commitAs(arb: Keypair, disputeCase: PublicKey, outcomeByte: number, salt: Buffer) {
+        return withBlockhashRetry(() =>
+          program.methods
+            .commitDisputeVote([...commitmentFor(outcomeByte, salt)])
+            .accountsPartial({
+              arbitrator: arb.publicKey,
+              disputeCase,
+              stakingConfig,
+              arbitratorStake: stakeAccountPda(arb.publicKey),
+              feeConfig,
+            })
+            .signers([arb])
+            .rpc({ commitment: "confirmed" }),
+        );
+      }
+
+      /** Opens a case with the given commit window and returns its seed. */
+      async function openCase(
+        reservationId: number,
+        commitWindowSecs: number,
+      ): Promise<{ disputeCase: PublicKey; caseSeed: Buffer }> {
+        const amount = unit(300);
+        const { merchant, buyer } = await openFundedTradeEscrow(reservationId, amount);
+        const disputeCase = disputeCasePda(reservationId);
+        await withBlockhashRetry(() =>
+          program.methods
+            .openDisputeCase(new BN(commitWindowSecs), new BN(60))
+            .accountsPartial({
+              signer: buyer.publicKey,
+              payer: admin.publicKey,
+              tradeEscrow: tradeEscrowSeed(reservationId),
+              disputeCase,
+              feeConfig,
+              depositMint: openMint,
+              merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+              merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+              arbitrationPool,
+              tokenProgram: TOKEN_2022_PROGRAM_ID,
+              systemProgram: SystemProgram.programId,
+            })
+            .signers([buyer])
+            .rpc({ commitment: "confirmed" }),
+        );
+        const account = await program.account.disputeCase.fetch(disputeCase);
+        return { disputeCase, caseSeed: Buffer.from(account.caseSeed) };
+      }
+
+      it("seeds every case from a slot hash, so two cases never share a draw", async () => {
+        const first = await openCase(9101, 600);
+        const second = await openCase(9102, 600);
+
+        // A seed of all zeros would mean the sysvar read silently produced
+        // nothing and every wallet's draw became a constant.
+        expect(first.caseSeed.equals(Buffer.alloc(32)), "seed must not be zero").to.equal(false);
+        expect(
+          first.caseSeed.equals(second.caseSeed),
+          "two cases must not share a seed, or one ground draw would win both",
+        ).to.equal(false);
+      });
+
+      it("refuses a commit from an arbitrator whose stake is younger than the configured age", async () => {
+        const { disputeCase } = await openCase(9103, 600);
+        // Staked seconds ago, so any positive requirement excludes it.
+        const arb = await setUpArbitrator(unit(50000));
+        await setGates(3600, 0);
+
+        await expectAnchorError(
+          commitAs(arb, disputeCase, OUTCOME_BYTE.buyerWins, crypto.randomBytes(32)),
+          "ArbitratorStakeTooYoung",
+        );
+
+        // The same wallet, unchanged, once the requirement is lifted — so the
+        // rejection was the age gate and not something else about the wallet.
+        await setGates(0, 0);
+        await commitAs(arb, disputeCase, OUTCOME_BYTE.buyerWins, crypto.randomBytes(32));
+        const account = await program.account.disputeCase.fetch(disputeCase);
+        expect(account.arbitrators.map((a: PublicKey) => a.toBase58())).to.include(
+          arb.publicKey.toBase58(),
+        );
+      });
+
+      it("admits a drawn wallet and refuses an undrawn one at the same threshold", async () => {
+        // A 7-day commit window keeps the threshold in its first, tightest
+        // slice for the whole spec. With a 60-second window the widening
+        // would move under the test's own feet.
+        const { disputeCase, caseSeed } = await openCase(9104, 7 * 24 * 60 * 60);
+        const THRESHOLD = 100;
+
+        const drawn = findArbitratorByDraw(caseSeed, (t) => t < BigInt(THRESHOLD));
+        const undrawn = findArbitratorByDraw(caseSeed, (t) => t >= BigInt(THRESHOLD));
+        await setUpArbitrator(unit(50000), drawn);
+        await setUpArbitrator(unit(50000), undrawn);
+        await setGates(0, THRESHOLD);
+
+        // Identical stake, identical role, identical case. The only thing
+        // separating them is the draw.
+        await commitAs(drawn, disputeCase, OUTCOME_BYTE.buyerWins, crypto.randomBytes(32));
+        await expectAnchorError(
+          commitAs(undrawn, disputeCase, OUTCOME_BYTE.buyerWins, crypto.randomBytes(32)),
+          "NotDrawnForThisCase",
+        );
+
+        const account = await program.account.disputeCase.fetch(disputeCase);
+        const seated = account.arbitrators.map((a: PublicKey) => a.toBase58());
+        expect(seated).to.include(drawn.publicKey.toBase58());
+        expect(seated).to.not.include(undrawn.publicKey.toBase58());
+      });
+
+      it("widens the draw across the window, so a thin pool can still fill a case", async () => {
+        // The liveness half of sortition. Without widening, a pool smaller
+        // than roughly `seats / threshold` could never fill a case and every
+        // dispute would end in the terminal even split.
+        const COMMIT_WINDOW = 80;
+        const { disputeCase, caseSeed } = await openCase(9105, COMMIT_WINDOW);
+        // Excluded at every threshold the schedule passes through before the
+        // final slice, so the only thing that can admit it is the widening.
+        const undrawn = findArbitratorByDraw(caseSeed, (t) => t >= 6_400n);
+        await setUpArbitrator(unit(50000), undrawn);
+        await setGates(0, 100);
+
+        await expectAnchorError(
+          commitAs(undrawn, disputeCase, OUTCOME_BYTE.buyerWins, crypto.randomBytes(32)),
+          "NotDrawnForThisCase",
+        );
+
+        // Into the final eighth of the window, where the gate is open to
+        // everyone regardless of their draw.
+        await new Promise((r) => setTimeout(r, (COMMIT_WINDOW - 6) * 1000));
+        await commitAs(undrawn, disputeCase, OUTCOME_BYTE.buyerWins, crypto.randomBytes(32));
+
+        const account = await program.account.disputeCase.fetch(disputeCase);
+        expect(account.arbitrators.map((a: PublicKey) => a.toBase58())).to.include(
+          undrawn.publicKey.toBase58(),
+        );
+      });
     });
   });
 });

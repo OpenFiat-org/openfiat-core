@@ -75,9 +75,59 @@ pub struct StakeAccount {
     /// until the owner actually claims it.
     pub pending_rewards: u64,
     pub bump: u8,
+    /// Unix timestamp at which this account's *current* staked position
+    /// began — the anti-grinding clock behind OFS-4100 §4's 30-day
+    /// arbitrator stake age. Zero means "holds no stake", not "infinitely
+    /// old": every reader must treat zero as failing any age requirement.
+    ///
+    /// Set when `amount` first goes from zero to positive, cleared when it
+    /// returns to zero, and deliberately **not** reset by a later top-up.
+    /// Resetting on top-up would punish an honest arbitrator for adding
+    /// stake, and would buy nothing: [`StakingConfig::is_legal_balance`]
+    /// already forbids holding a balance between zero and the role
+    /// minimum, so an account cannot have been aging cheaply at a token
+    /// balance and then jump to a qualifying one. The clock always covers
+    /// a period during which the full role minimum was locked.
+    ///
+    /// It sits after `bump` rather than in layout order because appending
+    /// is what makes this field's migration safe: every existing decoder —
+    /// `crates/rpc::onchain_stake`, both SDKs, the web app — reads fields
+    /// at fixed offsets from the start of the account, so a field added at
+    /// the end leaves all of them reading exactly what they read before.
+    /// Inserting it mid-layout would silently shift `bump` and break every
+    /// one of them.
+    pub first_staked_at: i64,
 }
 
 impl StakeAccount {
+    /// How long this account has continuously held its current staked
+    /// position, or `None` when it holds no stake (or predates the
+    /// [`Self::first_staked_at`] migration and has not been migrated).
+    ///
+    /// `None` rather than zero seconds so a caller cannot accidentally
+    /// compare an unknown age against a threshold and have "unknown" pass
+    /// as "brand new but positive". Both cases must fail an age gate, and
+    /// making the absent case unrepresentable as a number is what forces
+    /// the caller to handle it.
+    pub fn stake_age_secs(&self, now: i64) -> Option<i64> {
+        if self.amount == 0 || self.first_staked_at == 0 {
+            return None;
+        }
+        Some(now.saturating_sub(self.first_staked_at))
+    }
+
+    /// Whether this account has held its stake for at least
+    /// `min_age_secs`. A non-positive requirement disables the gate, which
+    /// is what makes the parameter safe to ship at zero and raise by
+    /// governance later.
+    pub fn meets_stake_age(&self, now: i64, min_age_secs: i64) -> bool {
+        if min_age_secs <= 0 {
+            return true;
+        }
+        self.stake_age_secs(now)
+            .is_some_and(|age| age >= min_age_secs)
+    }
+
     /// OFS-4200 §5's `get_effective_stake` — implemented as a plain
     /// associated function rather than a dispatched CPI instruction.
     /// `openfiat-governance`'s `cast_vote` and `openfiat-escrow`'s

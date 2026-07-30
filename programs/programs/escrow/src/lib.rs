@@ -59,6 +59,14 @@ pub mod escrow {
         crate::instructions::claim_arbitration_reward::handle_claim_arbitration_reward(ctx)
     }
 
+    /// One-shot layout migration adding the two arbitrator-eligibility
+    /// parameters to an already-deployed `FeeConfig`. Both come out
+    /// disabled — see `migrate_fee_config`'s own doc for why that is the
+    /// only correct value and not a placeholder.
+    pub fn migrate_fee_config(ctx: Context<MigrateFeeConfig>) -> Result<()> {
+        crate::instructions::migrate_fee_config::handle_migrate_fee_config(ctx)
+    }
+
     pub fn update_fee_config(
         ctx: Context<UpdateFeeConfig>,
         params: UpdateFeeConfigParams,

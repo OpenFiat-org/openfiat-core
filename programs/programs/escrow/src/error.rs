@@ -62,4 +62,21 @@ pub enum ErrorCode {
     // old number.
     #[msg("This wallet is on the governance ban list (OFS-7100 §12)")]
     WalletBanned,
+    #[msg("This arbitrator's stake has not been held long enough to arbitrate")]
+    ArbitratorStakeTooYoung,
+    /// Deliberately says nothing about the threshold in force or how close
+    /// the draw was. OFS-2400 keeps the per-case arbitrator threshold
+    /// undisclosed, and a message that leaked "your ticket was 140, the
+    /// threshold is 100" would let an attacker measure exactly how many
+    /// more wallets they need.
+    #[msg("This arbitrator was not drawn for this dispute case")]
+    NotDrawnForThisCase,
+    #[msg("The slot-hashes sysvar holds no usable entry to seed this case from")]
+    SlotHashesUnavailable,
+    #[msg("This fee config is not in the pre-migration layout")]
+    FeeConfigAlreadyMigrated,
+    #[msg("min_arbitrator_stake_age_secs may not be negative")]
+    InvalidStakeAge,
+    #[msg("arbitrator_sortition_bps must be below 10_000; use 0 to disable the draw")]
+    InvalidSortitionThreshold,
 }

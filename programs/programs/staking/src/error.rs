@@ -38,4 +38,8 @@ pub enum ErrorCode {
     // old number.
     #[msg("This wallet is on the governance ban list (OFS-7100 §12)")]
     WalletBanned,
+    #[msg("This stake account is not in the pre-migration layout")]
+    StakeAccountAlreadyMigrated,
+    #[msg("Account is not the canonical stake account for the owner and role it claims")]
+    NotAStakeAccount,
 }
