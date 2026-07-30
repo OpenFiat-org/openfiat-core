@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
 use crate::{constants::*, error::ErrorCode, state::*};
@@ -12,6 +12,7 @@ use crate::{constants::*, error::ErrorCode, state::*};
 /// `GovernanceConfig.forfeit_destination`.
 #[derive(Accounts)]
 pub struct RefundOrForfeitDeposit<'info> {
+    #[account(mint::token_program = token_program)]
     pub mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -40,7 +41,7 @@ pub struct RefundOrForfeitDeposit<'info> {
     #[account(mut)]
     pub forfeit_destination: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_refund_or_forfeit_deposit(ctx: Context<RefundOrForfeitDeposit>) -> Result<()> {

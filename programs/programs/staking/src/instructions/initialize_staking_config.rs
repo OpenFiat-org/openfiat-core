@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{Mint, Token2022, TokenAccount};
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
 use openfiat_programs_shared::Role;
 
@@ -10,6 +10,7 @@ pub struct InitializeStakingConfig<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
 
+    #[account(mint::token_program = token_program)]
     pub mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -43,7 +44,7 @@ pub struct InitializeStakingConfig<'info> {
     )]
     pub rewards_vault: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }

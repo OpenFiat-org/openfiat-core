@@ -73,5 +73,17 @@ pub fn handle_initialize_fee_config(
     // the arbitrator pool has aged and is large enough to draw from.
     fee_config.min_arbitrator_stake_age_secs = 0;
     fee_config.arbitrator_sortition_bps = 0;
+
+    // The settlement allowlist ships populated, unlike the two gates above,
+    // and the asymmetry is deliberate. An empty allowlist is not an
+    // inert default — it refuses every trade, so the protocol would deploy
+    // switched off and stay that way until a governance write. The two
+    // arbitrator gates start at zero because zero means "no requirement";
+    // here the equivalent of "no requirement" is a populated list, and the
+    // steward's directive is precisely what it should be populated with.
+    fee_config.settlement_mints = [Pubkey::default(); MAX_SETTLEMENT_MINTS];
+    fee_config.settlement_mints[..DEFAULT_SETTLEMENT_MINTS.len()]
+        .copy_from_slice(&DEFAULT_SETTLEMENT_MINTS);
+    fee_config.settlement_mint_count = DEFAULT_SETTLEMENT_MINTS.len() as u8;
     Ok(())
 }

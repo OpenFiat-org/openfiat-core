@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
 use crate::{constants::*, error::ErrorCode, state::*};
@@ -27,9 +27,10 @@ pub struct FinalizeSale<'info> {
     #[account(mut)]
     pub treasury: InterfaceAccount<'info, TokenAccount>,
 
+    #[account(mint::token_program = token_program)]
     pub usdc_mint: InterfaceAccount<'info, Mint>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_finalize_sale(ctx: Context<FinalizeSale>, sale_nonce: u64) -> Result<()> {

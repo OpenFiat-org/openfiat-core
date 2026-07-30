@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
 use crate::instructions::shared_logic::split_fee_four_ways;
@@ -94,9 +94,10 @@ pub struct ChargeAdListingFee<'info> {
     #[account(mut, constraint = emergency_reserve.mint == mint.key())]
     pub emergency_reserve: Box<InterfaceAccount<'info, TokenAccount>>,
 
+    #[account(mint::token_program = token_program)]
     pub mint: Box<InterfaceAccount<'info, Mint>>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_charge_ad_listing_fee(

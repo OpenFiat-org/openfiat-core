@@ -79,4 +79,14 @@ pub enum ErrorCode {
     InvalidStakeAge,
     #[msg("arbitrator_sortition_bps must be below 10_000; use 0 to disable the draw")]
     InvalidSortitionThreshold,
+    #[msg("This mint is not on the settlement-mint allowlist; governance must add it via update_fee_config")]
+    SettlementMintNotAllowed,
+    #[msg("The settlement-mint allowlist is full")]
+    SettlementMintListFull,
+    #[msg("The settlement-mint allowlist may not contain duplicates or the default pubkey")]
+    InvalidSettlementMint,
+    #[msg("The settlement-mint allowlist may not be empty")]
+    EmptySettlementMintList,
+    #[msg("The arbitration pool is not initialized; run initialize_arbitration_pool first")]
+    ArbitrationPoolNotInitialized,
 }

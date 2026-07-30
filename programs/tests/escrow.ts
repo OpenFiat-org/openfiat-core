@@ -157,7 +157,12 @@ describe("escrow", () => {
     // release_escrow un-executable (Anchor cannot deserialize a wallet as
     // a TokenAccount). These cover the instruction that corrects it, and
     // the constraints that stop the same mistake being stored again.
-    const ORIGINAL = {
+    // A function rather than a const object. `mint` is assigned in the
+    // outer `before` hook, which runs after this block is constructed, so
+    // an object literal here would capture `undefined` as the sole
+    // allowlisted settlement mint — de-listing the fixture's own mint on
+    // every restore and breaking every spec that runs afterwards.
+    const original = () => ({
       adListingFee: new BN(0),
       disputeFilingFee: new BN(0),
       // Must match the fixture's own value: `afterEach` restores the shared
@@ -177,14 +182,17 @@ describe("escrow", () => {
       // as too young.
       minArbitratorStakeAgeSecs: new BN(0),
       arbitratorSortitionBps: 0,
-    };
+      // Restores the allowlist the shared fixture set. Omitting it would
+      // leave the singleton allowing nothing this suite can settle in.
+      settlementMints: [mint],
+    });
 
     // Restore the shared singleton so later specs see the fixture's own
     // treasuries, whatever this block did to it.
     afterEach(async () => {
       await withBlockhashRetry(() =>
         program.methods
-          .updateFeeConfig(ORIGINAL)
+          .updateFeeConfig(original())
           .accountsPartial({
             admin: admin.publicKey,
             feeConfig,
@@ -204,7 +212,7 @@ describe("escrow", () => {
 
       await withBlockhashRetry(() =>
         program.methods
-          .updateFeeConfig({ ...ORIGINAL, settlementFeeBps: 25 })
+          .updateFeeConfig({ ...original(), settlementFeeBps: 25 })
           .accountsPartial({
             admin: admin.publicKey,
             feeConfig,
@@ -232,7 +240,7 @@ describe("escrow", () => {
       await expectAnchorError(
         withBlockhashRetry(() =>
           program.methods
-            .updateFeeConfig(ORIGINAL)
+            .updateFeeConfig(original())
             .accountsPartial({
               admin: intruder.publicKey,
               feeConfig,
@@ -253,7 +261,7 @@ describe("escrow", () => {
       await expectAnchorError(
         withBlockhashRetry(() =>
           program.methods
-            .updateFeeConfig({ ...ORIGINAL, devTreasuryBps: 4001 })
+            .updateFeeConfig({ ...original(), devTreasuryBps: 4001 })
             .accountsPartial({
               admin: admin.publicKey,
               feeConfig,
@@ -277,7 +285,7 @@ describe("escrow", () => {
       let failed = false;
       try {
         await program.methods
-          .updateFeeConfig(ORIGINAL)
+          .updateFeeConfig(original())
           .accountsPartial({
             admin: admin.publicKey,
             feeConfig,
@@ -310,7 +318,7 @@ describe("escrow", () => {
       let failed = false;
       try {
         await program.methods
-          .updateFeeConfig(ORIGINAL)
+          .updateFeeConfig(original())
           .accountsPartial({
             admin: admin.publicKey,
             feeConfig,
@@ -768,6 +776,11 @@ describe("escrow", () => {
             timeoutSecs: new BN(1800),
             minArbitratorStakeAgeSecs: new BN(0),
             arbitratorSortitionBps: 0,
+            // The settlement allowlist is carried through unchanged. The
+            // ad-listing fee is OPEN-denominated and has nothing to do
+            // with which mints may be traded, so repointing the
+            // treasuries must not quietly de-list the settlement mint.
+            settlementMints: [mint],
           })
           .accountsPartial({
             admin: admin.publicKey,
@@ -885,6 +898,7 @@ describe("escrow", () => {
             timeoutSecs: new BN(1800),
             minArbitratorStakeAgeSecs: new BN(0),
             arbitratorSortitionBps: 0,
+            settlementMints: [mint],
           })
           .accountsPartial({
             admin: admin.publicKey,
@@ -1251,6 +1265,14 @@ describe("escrow", () => {
             merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
             merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
             tokenProgram: TOKEN_2022_PROGRAM_ID,
+            // The OPEN arbitration deposit moves through its own token
+            // program handle, because a mint's owning program is fixed when
+            // the mint is created and OPEN need not share one with the
+            // settlement stablecoin. Both fixture mints happen to be
+            // Token-2022 here, so the two ids coincide — the accounts are
+            // still distinct, and on devnet (legacy USDC, Token-2022 OPEN)
+            // they diverge.
+            depositTokenProgram: TOKEN_2022_PROGRAM_ID,
           })
           .rpc({ commitment: "confirmed" }),
       );
@@ -1382,6 +1404,7 @@ describe("escrow", () => {
             merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
             merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
             tokenProgram: TOKEN_2022_PROGRAM_ID,
+            depositTokenProgram: TOKEN_2022_PROGRAM_ID,
           })
           .rpc({ commitment: "confirmed" }),
       );
@@ -1464,6 +1487,7 @@ describe("escrow", () => {
               merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
               merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
               tokenProgram: TOKEN_2022_PROGRAM_ID,
+              depositTokenProgram: TOKEN_2022_PROGRAM_ID,
             })
             .rpc({ commitment: "confirmed" }),
         );
@@ -1854,6 +1878,7 @@ describe("escrow", () => {
             merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
             merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
             tokenProgram: TOKEN_2022_PROGRAM_ID,
+            depositTokenProgram: TOKEN_2022_PROGRAM_ID,
           })
           .rpc({ commitment: "confirmed" }),
       );
@@ -1928,6 +1953,7 @@ describe("escrow", () => {
               merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
               merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
               tokenProgram: TOKEN_2022_PROGRAM_ID,
+              depositTokenProgram: TOKEN_2022_PROGRAM_ID,
             })
             .rpc({ commitment: "confirmed" }),
         );
@@ -1982,6 +2008,7 @@ describe("escrow", () => {
               timeoutSecs: new BN(1800),
               minArbitratorStakeAgeSecs: new BN(minAgeSecs),
               arbitratorSortitionBps: sortitionBps,
+              settlementMints: [mint],
             })
             .accountsPartial({
               admin: admin.publicKey,

@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
 use crate::{constants::*, error::ErrorCode, events::RewardsClaimed, state::*};
@@ -9,6 +9,7 @@ use crate::{constants::*, error::ErrorCode, events::RewardsClaimed, state::*};
 pub struct ClaimRewards<'info> {
     pub owner: Signer<'info>,
 
+    #[account(mint::token_program = token_program)]
     pub mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -32,7 +33,7 @@ pub struct ClaimRewards<'info> {
     #[account(mut, constraint = to.mint == mint.key())]
     pub to: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_claim_rewards(ctx: Context<ClaimRewards>) -> Result<()> {

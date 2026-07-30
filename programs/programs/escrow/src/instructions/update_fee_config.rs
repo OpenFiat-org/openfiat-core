@@ -72,6 +72,24 @@ pub struct UpdateFeeConfigParams {
     /// wallet, which is the same as disabled but harder to read, so they
     /// are rejected outright rather than silently accepted.
     pub arbitrator_sortition_bps: u16,
+    /// The complete settlement-mint allowlist, replacing whatever is
+    /// stored. This is the governance path the steward's "governance can
+    /// vote to add more tokens" is exercised through, and — because it is
+    /// a replacement rather than an append — the only way to de-list.
+    ///
+    /// A replacement rather than an add/remove pair for a reason that
+    /// matters more than convenience: the caller states the full intended
+    /// list, so what is stored afterwards is exactly what was reviewed and
+    /// voted on. An `add_mint` instruction makes the stored list the
+    /// accumulated result of every call ever made, which is not a thing
+    /// anybody voted for.
+    ///
+    /// De-listing strands nothing. Existing vaults keep their balances and
+    /// stay withdrawable; only new reservations and new escrows are
+    /// refused. See `reserve_liquidity` and `create_trade_escrow`, which
+    /// are the two places the check lives, and `withdraw_liquidity`, which
+    /// deliberately has no check at all.
+    pub settlement_mints: Vec<Pubkey>,
 }
 
 pub fn handle_update_fee_config(
@@ -100,6 +118,35 @@ pub fn handle_update_fee_config(
         ErrorCode::InvalidSortitionThreshold
     );
 
+    // An empty list refuses every trade. That is indistinguishable from
+    // pausing the protocol, and pausing the protocol is not a fee
+    // parameter — if it is ever wanted it should be its own instruction
+    // with its own name, so it cannot happen as a side effect of somebody
+    // sending an under-populated params struct.
+    require!(
+        !params.settlement_mints.is_empty(),
+        ErrorCode::EmptySettlementMintList
+    );
+    require!(
+        params.settlement_mints.len() <= MAX_SETTLEMENT_MINTS,
+        ErrorCode::SettlementMintListFull
+    );
+    for (i, mint) in params.settlement_mints.iter().enumerate() {
+        // `Pubkey::default()` is the array's own padding value, so storing
+        // it inside the live prefix would make a mint that was never
+        // configured indistinguishable from one that was — and an omitted
+        // account argument deserializes to exactly this key.
+        require_keys_neq!(*mint, Pubkey::default(), ErrorCode::InvalidSettlementMint);
+        // A duplicate is harmless to the lookup but silently wastes a slot
+        // and misreports the list's real size to anyone reading the
+        // account, so it is refused rather than deduplicated: a caller who
+        // sent a list they did not mean should find out.
+        require!(
+            !params.settlement_mints[..i].contains(mint),
+            ErrorCode::InvalidSettlementMint
+        );
+    }
+
     let fee_config = &mut ctx.accounts.fee_config;
     fee_config.ad_listing_fee = params.ad_listing_fee;
     fee_config.dispute_filing_fee = params.dispute_filing_fee;
@@ -115,6 +162,16 @@ pub fn handle_update_fee_config(
     fee_config.timeout_secs = params.timeout_secs;
     fee_config.min_arbitrator_stake_age_secs = params.min_arbitrator_stake_age_secs;
     fee_config.arbitrator_sortition_bps = params.arbitrator_sortition_bps;
+    // Cleared in full before the new list is written. Leaving the old tail
+    // in place would be invisible while `settlement_mint_count` is honoured
+    // — `allows_settlement_mint` never reads past the count — but it would
+    // leave de-listed mints sitting in the account for anyone decoding the
+    // raw bytes, which is exactly the sort of "is this still allowed?"
+    // ambiguity an allowlist must not have.
+    fee_config.settlement_mints = [Pubkey::default(); MAX_SETTLEMENT_MINTS];
+    fee_config.settlement_mints[..params.settlement_mints.len()]
+        .copy_from_slice(&params.settlement_mints);
+    fee_config.settlement_mint_count = params.settlement_mints.len() as u8;
     // `admin` is intentionally not updatable here — handing over control
     // is a distinct action from correcting fee parameters, and folding it
     // into this instruction would let one fat-fingered call lock the

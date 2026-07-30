@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
 use crate::{constants::*, error::ErrorCode, events::RewardsVaultFunded, state::*};
@@ -77,6 +77,7 @@ pub struct FundRewardsVault<'info> {
     )]
     pub ban_record: UncheckedAccount<'info>,
 
+    #[account(mint::token_program = token_program)]
     pub mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -92,7 +93,7 @@ pub struct FundRewardsVault<'info> {
     #[account(mut, constraint = from.mint == mint.key())]
     pub from: InterfaceAccount<'info, TokenAccount>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_fund_rewards_vault(ctx: Context<FundRewardsVault>, amount: u64) -> Result<()> {

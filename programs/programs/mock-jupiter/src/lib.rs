@@ -15,7 +15,7 @@
 //! devnet/mainnet-fork smoke test (see programs/README.md) — this fixture
 //! makes no claim about Jupiter's actual routing/pricing behavior.
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{self, Mint, Token2022, TokenAccount, TransferChecked};
+use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked};
 
 declare_id!("8ysRdUzhhvm4jHJwbJqYF6ZuS2AqekfTJbxMUF1g3Ugn");
 
@@ -73,12 +73,21 @@ pub struct MockSwap<'info> {
 
     #[account(mut)]
     pub source: InterfaceAccount<'info, TokenAccount>,
+    /// Both mints are pinned to the single `token_program` below, which
+    /// means this fixture can only swap between two mints owned by the
+    /// *same* token program. A real aggregator would take one program per
+    /// side (see [`openfiat_programs_shared::token_dispatch`]); the fixture
+    /// does not, because widening it would be inventing behaviour the tests
+    /// do not exercise. If a test ever needs a legacy-SPL/Token-2022 pair
+    /// swapped, this is the account list that has to grow.
+    #[account(mint::token_program = token_program)]
     pub source_mint: InterfaceAccount<'info, Mint>,
     #[account(mut)]
     pub sink: InterfaceAccount<'info, TokenAccount>,
 
     #[account(mut)]
     pub destination: InterfaceAccount<'info, TokenAccount>,
+    #[account(mint::token_program = token_program)]
     pub destination_mint: InterfaceAccount<'info, Mint>,
     #[account(mut)]
     pub reserve: InterfaceAccount<'info, TokenAccount>,
@@ -87,5 +96,5 @@ pub struct MockSwap<'info> {
     #[account(seeds = [RESERVE_AUTHORITY_SEED], bump)]
     pub reserve_authority: UncheckedAccount<'info>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
 }

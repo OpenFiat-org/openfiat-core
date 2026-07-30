@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{Mint, Token2022, TokenAccount};
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use openfiat_programs_shared::VaultState;
 
 use crate::events::EscrowReleased;
@@ -14,6 +14,7 @@ use crate::{constants::*, error::ErrorCode, state::*};
 /// relaying node, an automated cranker) may trigger the release.
 #[derive(Accounts)]
 pub struct ReleaseEscrow<'info> {
+    #[account(mint::token_program = token_program)]
     pub mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -63,7 +64,7 @@ pub struct ReleaseEscrow<'info> {
     #[account(mut)]
     pub emergency_reserve: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_release_escrow(ctx: Context<ReleaseEscrow>) -> Result<()> {

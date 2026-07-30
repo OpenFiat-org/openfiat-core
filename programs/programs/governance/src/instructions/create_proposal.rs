@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 use openfiat_programs_shared::ProposalCategory;
 
@@ -29,6 +29,7 @@ pub struct CreateProposal<'info> {
     )]
     pub ban_record: UncheckedAccount<'info>,
 
+    #[account(mint::token_program = token_program)]
     pub mint: InterfaceAccount<'info, Mint>,
 
     #[account(
@@ -79,7 +80,7 @@ pub struct CreateProposal<'info> {
     )]
     pub proposal_action: Account<'info, ProposalAction>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }

@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{
-    transfer_checked, Mint, Token2022, TokenAccount, TransferChecked,
+    transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
 use crate::{constants::*, error::ErrorCode, events::ArbitrationRewardClaimed, state::*};
@@ -52,7 +52,10 @@ pub struct ClaimArbitrationReward<'info> {
     )]
     pub fee_config: Box<Account<'info, FeeConfig>>,
 
-    #[account(constraint = mint.key() == dispute_case.deposit_mint)]
+    #[account(
+        constraint = mint.key() == dispute_case.deposit_mint,
+        mint::token_program = token_program,
+    )]
     pub mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
@@ -66,7 +69,7 @@ pub struct ClaimArbitrationReward<'info> {
     #[account(mut, constraint = to.mint == mint.key())]
     pub to: Box<InterfaceAccount<'info, TokenAccount>>,
 
-    pub token_program: Program<'info, Token2022>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 pub fn handle_claim_arbitration_reward(ctx: Context<ClaimArbitrationReward>) -> Result<()> {
