@@ -17,7 +17,10 @@ use crate::timestamp::Timestamp;
 /// job) so two nodes that independently receive the same event always
 /// agree on its ID — this is what makes gossip's duplicate-detection work
 /// without a central sequence authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+///
+/// Serializes as base58 in JSON and as its raw bytes on the compact wire —
+/// see [`crate::base58`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EventId([u8; 32]);
 
 impl EventId {
@@ -27,6 +30,25 @@ impl EventId {
 
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+}
+
+impl std::fmt::Display for EventId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&bs58::encode(self.0).into_string())
+    }
+}
+
+impl serde::Serialize for EventId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        crate::base58::serialize("EventId", &self.0, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for EventId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::base58::deserialize_array32("EventId", "a base58 event id (32 bytes)", deserializer)
+            .map(Self)
     }
 }
 

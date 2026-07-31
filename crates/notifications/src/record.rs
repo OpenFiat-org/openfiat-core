@@ -363,11 +363,18 @@ mod tests {
     /// Already-gossiped subscriptions predate `destinations` entirely; if
     /// they stopped decoding, every one of them would vanish from the
     /// store on the next restart.
+    ///
+    /// The identifiers here are base58, which is how `PeerId` and
+    /// `PublicKey` render in JSON. That is not what makes this fixture
+    /// "legacy" — the absent `destinations` field is. Stored state is
+    /// replayed from postcard-encoded gossip events rather than from JSON
+    /// rows, so this shape is a hand-built stand-in for a decode, not a
+    /// row anyone's disk actually holds.
     #[test]
     fn a_subscription_without_destinations_still_decodes() {
         let legacy = serde_json::json!({
-            "wallet": b"wallet-alpha".to_vec(),
-            "wallet_public_key": vec![0u8; 32],
+            "wallet": bs58::encode(b"wallet-alpha").into_string(),
+            "wallet_public_key": bs58::encode([0u8; 32]).into_string(),
             "enabled_categories": ["Trading"],
             "updated_at": Timestamp::now(),
         });

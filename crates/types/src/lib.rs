@@ -2,9 +2,13 @@
 //!
 //! The foundation of the workspace's dependency graph (see
 //! `docs/architecture.md`): almost every other crate depends on this one,
-//! and this crate depends on nothing but `serde`. Anything that needs a
+//! and this crate depends on nothing but `serde` and `bs58` — the latter
+//! only to render identifiers the way every human and every other system
+//! in this stack writes them (see [`base58`]). Anything that needs a
 //! heavier dependency (cryptographic signing, libp2p, storage) belongs in
 //! the crate that owns that concern instead.
+
+mod base58;
 
 pub mod amount;
 pub mod currency;
