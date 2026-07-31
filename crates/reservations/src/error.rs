@@ -29,6 +29,13 @@ pub enum ReservationError {
     /// — which is the whole failure this check exists to prevent, arrived
     /// at from the other direction.
     PriceDisagreement,
+    /// The requester dated their own request further into the future than
+    /// [`crate::protocol::MAX_CLOCK_SKEW`] allows.
+    ///
+    /// A reservation's deadline is derived from this timestamp, so an
+    /// unbounded one is a self-granted extension of the validation window
+    /// — and of how long the merchant's liquidity stays locked.
+    TimestampTooFarAhead,
 }
 
 impl ReservationError {
@@ -44,6 +51,7 @@ impl ReservationError {
             Self::PriceDisagreement => ErrorCode::PriceDisagreement,
             Self::InsufficientLiquidity => ErrorCode::InsufficientAvailableLiquidity,
             Self::InvalidReservationState => ErrorCode::InvalidReservationState,
+            Self::TimestampTooFarAhead => ErrorCode::InvalidParameter,
         }
     }
 }

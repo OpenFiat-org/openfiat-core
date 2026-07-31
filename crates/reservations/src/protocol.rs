@@ -46,6 +46,31 @@ pub const VALIDATION_WINDOW: Duration = Duration::from_secs(30 * 60);
 /// sweep.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
+/// How far ahead of a node's own clock a requester's claimed timestamp
+/// may be and still be accepted.
+///
+/// A reservation's deadline is derived from a timestamp the requester
+/// signs, and a signature proves authorship, not honesty. Without a
+/// bound, a requester dates their request a decade out and the
+/// reservation never expires — [`VALIDATION_WINDOW`] becomes whatever
+/// the taker feels like, and the sweep that returns a merchant's
+/// liquidity never fires for it. The merchant's capital is held
+/// hostage by a number the person holding it chose.
+///
+/// Only the future side is bounded. A timestamp in the past shortens the
+/// requester's own window and expires their own reservation early, which
+/// is not an attack on anyone else, and gossip delay makes a slightly
+/// stale timestamp the normal case rather than a suspicious one.
+///
+/// Five minutes because it must clear real clock disagreement between
+/// honest, unsynchronised machines without being a meaningful extension
+/// of a thirty-minute window. This does mean two nodes can briefly
+/// disagree about a request signed right at the boundary — but expiry is
+/// already computed against local clocks (see [`SWEEP_INTERVAL`], which
+/// sizes exactly that divergence deliberately), so this adds no new kind
+/// of disagreement, only the same one at a bounded edge.
+pub const MAX_CLOCK_SKEW: Duration = Duration::from_secs(5 * 60);
+
 #[cfg(test)]
 mod tests {
     use super::*;

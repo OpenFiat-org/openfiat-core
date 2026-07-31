@@ -95,6 +95,22 @@ impl<S: KvStore> ReservationRegistry<S> {
             return Err(ReservationError::InvalidAmount);
         }
 
+        // The requester signs their own timestamp, and everything about
+        // how long this reservation lives is derived from it — both the
+        // `expires_at` stored below and the deadline `expire_stale`
+        // enforces. A signature says who wrote the number, not that the
+        // number is true, so an unbounded one lets a taker mint
+        // themselves an arbitrarily long validation window and hold a
+        // merchant's liquidity for as long as they like.
+        //
+        // Checked here, before `reserve_liquidity`, so a refused request
+        // never moves a merchant's balance even briefly.
+        if signed.request.timestamp.as_millis()
+            > Timestamp::now().as_millis() + protocol::MAX_CLOCK_SKEW.as_millis() as u64
+        {
+            return Err(ReservationError::TimestampTooFarAhead);
+        }
+
         let ad = self
             .advertisements
             .get(&signed.request.advertisement_id)
@@ -504,6 +520,52 @@ mod tests {
         };
         let result = reservations.apply_cancel(SignedReservationCancel::sign(cancel, &attacker));
         assert_eq!(result, Err(ReservationError::InvalidSignature));
+    }
+
+    /// The reservation equivalent of signing your own permission slip.
+    ///
+    /// Every deadline this crate enforces is derived from a timestamp the
+    /// requester chose, so without a bound a taker simply dates their
+    /// request past the heat death of the merchant's patience and the
+    /// sweep never touches it.
+    #[test]
+    fn a_requester_cannot_date_their_request_into_the_future_to_extend_their_own_window() {
+        let (advertisements, reservations, _merchant, ad_id) = setup();
+        let buyer = Keypair::generate();
+        let mut req = request(&buyer, "res-far-future", &ad_id, 2_000_000);
+        req.timestamp = Timestamp::from_millis(
+            Timestamp::now().as_millis() + 365 * 24 * 60 * 60 * 1_000, // a year out
+        );
+        let liquidity_before = advertisements.get(&ad_id).unwrap().available_liquidity;
+
+        assert_eq!(
+            reservations.apply_request(SignedReservationRequest::sign(req, &buyer)),
+            Err(ReservationError::TimestampTooFarAhead)
+        );
+        assert_eq!(
+            advertisements.get(&ad_id).unwrap().available_liquidity,
+            liquidity_before,
+            "a refused request still moved the merchant's liquidity"
+        );
+    }
+
+    /// The bound has to clear ordinary clock disagreement between honest,
+    /// unsynchronised machines, or it becomes an outage for anyone whose
+    /// laptop runs a few seconds fast.
+    #[test]
+    fn a_request_from_a_slightly_fast_clock_is_still_accepted() {
+        let (_advertisements, reservations, _merchant, ad_id) = setup();
+        let buyer = Keypair::generate();
+        let mut req = request(&buyer, "res-fast-clock", &ad_id, 2_000_000);
+        req.timestamp = Timestamp::from_millis(
+            Timestamp::now().as_millis() + (protocol::MAX_CLOCK_SKEW.as_millis() as u64 / 2),
+        );
+
+        assert!(
+            reservations
+                .apply_request(SignedReservationRequest::sign(req, &buyer))
+                .is_ok()
+        );
     }
 
     #[test]
