@@ -215,7 +215,11 @@ async function main() {
   };
 
   // Mirrors compute_fee_split: 85 bps of the amount, then 40/30/20/10 of the
-  // fee, with the truncation remainder swept to the emergency reserve.
+  // fee, with the truncation remainder swept to the ecosystem treasury
+  // (OFS-4100 §6 — it went to the emergency reserve before that was signed
+  // off). Recomputed here from the same rules rather than copied from the
+  // program's output, so a change on one side and not the other shows up as
+  // a mismatch instead of agreeing with itself.
   const amount = BigInt(AMOUNT.toString());
   const fee = (amount * 85n) / 10_000n;
   const expected: Record<string, bigint> = {
@@ -225,7 +229,7 @@ async function main() {
     infra: (fee * 2000n) / 10_000n,
     emergency: (fee * 1000n) / 10_000n,
   };
-  expected.emergency +=
+  expected.ecosystem +=
     fee - (expected.dev + expected.ecosystem + expected.infra + expected.emergency);
 
   let ok = true;

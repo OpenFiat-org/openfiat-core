@@ -28,9 +28,12 @@ pub struct EscrowReleased {
     pub buyer_amount: u64,
     pub fee: u64,
     pub dev_treasury_amount: u64,
+    /// Includes the basis-point truncation remainder, per OFS-4100 §6 —
+    /// so this is the one share that is not exactly its own bps slice of
+    /// `fee`, and an indexer reconciling the four against `fee` should
+    /// expect the difference here rather than treating it as an error.
     pub ecosystem_treasury_amount: u64,
     pub infra_treasury_amount: u64,
-    /// Includes the basis-point truncation remainder, per OFS-4100 §6.
     pub emergency_reserve_amount: u64,
     /// True when this release came out of an arbitrated dispute rather
     /// than a normal settlement.

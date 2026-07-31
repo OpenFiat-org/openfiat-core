@@ -714,7 +714,12 @@ describe("escrow", () => {
   // are off-chain gossip records, so the fee is charged against the thing
   // that *is* on-chain: the merchant's OPEN liquidity vault.
   describe("charge_ad_listing_fee", () => {
-    const LISTING_FEE = unit(1);
+    // Deliberately three base units above a round OPEN, so 40/30/20/10 of
+    // it does *not* divide exactly and the truncation remainder is
+    // non-zero. A fee that divides evenly proves the four-way routing but
+    // says nothing about where the dust goes, which is the thing OFS-4100
+    // §6 actually fixes.
+    const LISTING_FEE = unit(1).addn(3);
 
     it("debits the merchant's OPEN vault and routes the fee to the treasury", async () => {
       const openMint = await getSharedOpenMint();
@@ -814,26 +819,34 @@ describe("escrow", () => {
           .rpc({ commitment: "confirmed" }),
       );
 
+      const remaining = unit(10).sub(LISTING_FEE);
       const vault = await program.account.liquidityVault.fetch(openVault);
-      expect(vault.available.toString()).to.equal(unit(9).toString());
-      expect(vault.total.toString()).to.equal(unit(9).toString());
+      expect(vault.available.toString()).to.equal(remaining.toString());
+      expect(vault.total.toString()).to.equal(remaining.toString());
 
       // Listing fees are protocol revenue and split 40/30/20/10 exactly
       // like the settlement fee, rather than landing wholly in one
-      // treasury. 1 OPEN divides evenly, so there is no rounding dust.
+      // treasury.
       const balances = await Promise.all(
         [openDevTreasury, openEco, openInfra, openEmerg].map(async (t) =>
-          (await getAccount(connection, t, "confirmed", TOKEN_2022_PROGRAM_ID)).amount.toString(),
+          (await getAccount(connection, t, "confirmed", TOKEN_2022_PROGRAM_ID)).amount,
         ),
       );
-      expect(balances).to.deep.equal([
-        (LISTING_FEE.toNumber() * 0.4).toString(),
-        (LISTING_FEE.toNumber() * 0.3).toString(),
-        (LISTING_FEE.toNumber() * 0.2).toString(),
-        (LISTING_FEE.toNumber() * 0.1).toString(),
-      ]);
+
+      // Recomputed from the split rules rather than read back from the
+      // program, so a change to one side and not the other is a failure
+      // rather than a tautology. The remainder goes to the ECOSYSTEM
+      // treasury (index 1) per OFS-4100 §6 — it used to be swept to the
+      // emergency reserve, and this assertion is what pins the difference.
+      const fee = BigInt(LISTING_FEE.toString());
+      const expected = [4000n, 3000n, 2000n, 1000n].map((bps) => (fee * bps) / 10_000n);
+      const dust = fee - expected.reduce((sum, v) => sum + v, 0n);
+      expect(dust > 0n).to.equal(true, "the fixture fee must not divide evenly");
+      expected[1] += dust;
+
+      expect(balances.map(String)).to.deep.equal(expected.map(String));
       expect(
-        balances.reduce((sum, v) => sum + BigInt(v), 0n).toString(),
+        balances.reduce((sum, v) => sum + v, 0n).toString(),
       ).to.equal(LISTING_FEE.toString());
     });
 
