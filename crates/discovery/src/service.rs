@@ -222,6 +222,30 @@ impl<S: KvStore> DiscoveryService<S> {
         }
     }
 
+    /// Keep every currently-connected peer's record fresh, then drop the
+    /// records of peers not seen within `max_age`.
+    ///
+    /// The cache had no expiry wired at all. It accumulated every peer
+    /// this node ever met — 3,600 of them while it was on the public IPFS
+    /// DHT — and `getPeers` reported all of them as though they were
+    /// present, long after they had become unreachable. A node must not
+    /// report a network it does not have.
+    ///
+    /// Connected peers are touched first so the sweep can never evict a
+    /// peer that is on the other end of a live connection: `last_seen` is
+    /// otherwise only written when a peer is discovered, and a stable
+    /// long-lived connection would age out of its own cache.
+    pub fn sweep_peers(&mut self, max_age: std::time::Duration) -> usize {
+        for peer in &self.connected {
+            let peer_id = from_libp2p_peer_id(*peer);
+            if let Ok(Some(mut record)) = self.cache.get(&peer_id) {
+                record.last_seen = openfiat_types::Timestamp::now();
+                let _ = self.cache.upsert(&record);
+            }
+        }
+        self.cache.expire_stale(max_age).unwrap_or(0)
+    }
+
     /// Record which peers came from `--entrypoint`, so a failure to reach
     /// one can be told apart from the ordinary churn of a public DHT.
     pub fn set_entrypoints(&mut self, peers: impl IntoIterator<Item = Libp2pPeerId>) {

@@ -89,6 +89,15 @@ const REGISTRY_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::fr
 /// see.
 const PEER_ARRIVAL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long a peer may go unseen before this node stops claiming it.
+///
+/// Matched to the registry's own eviction window: the two answer the same
+/// question about different things, and an operator comparing `getPeers`
+/// with `getProviders` should not be reading two different definitions of
+/// "still here". Currently-connected peers are refreshed by the sweep
+/// itself, so this only ever removes peers that really are gone.
+const PEER_EXPIRATION_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// How long a service may go without a health update before this node
 /// drops it.
 ///
@@ -1904,6 +1913,16 @@ where
                     }
                     _ = registry_sweep.tick() => {
                         state.services.expire_stale(REGISTRY_EXPIRATION_THRESHOLD);
+                        // The peer cache had no expiry wired, so it grew
+                        // without bound and `getPeers` answered with every
+                        // peer this node had ever met.
+                        let dropped = state
+                            .discovery
+                            .borrow_mut()
+                            .sweep_peers(PEER_EXPIRATION_THRESHOLD);
+                        if dropped > 0 {
+                            tracing::debug!(dropped, "dropped peers not seen recently");
+                        }
                     }
                     _ = registry_heartbeat.tick() => {
                         // Re-announced unconditionally rather than only
