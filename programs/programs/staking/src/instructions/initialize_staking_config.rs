@@ -3,6 +3,7 @@ use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
 use openfiat_programs_shared::Role;
 
+use crate::instructions::shared_logic::require_valid_unbonding_periods;
 use crate::{constants::*, error::ErrorCode, state::*};
 
 #[derive(Accounts)]
@@ -51,9 +52,12 @@ pub struct InitializeStakingConfig<'info> {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct InitializeStakingConfigParams {
-    /// Indexed by [`Role::index`].
+    /// Indexed by [`Role::index`]. See
+    /// [`RECOMMENDED_MIN_STAKE_BY_ROLE`] for the OFS-4100 §4 figures.
     pub min_stake_by_role: [u64; Role::COUNT],
-    pub unbonding_period_secs: i64,
+    /// Also indexed by [`Role::index`] — see
+    /// [`RECOMMENDED_UNBONDING_PERIOD_SECS_BY_ROLE`].
+    pub unbonding_period_secs_by_role: [i64; Role::COUNT],
     pub slash_bps: u16,
     pub slashing_authority: Pubkey,
     pub slash_destination: Pubkey,
@@ -68,16 +72,13 @@ pub fn handle_initialize_staking_config(
         params.slash_bps as u64 <= BPS_DENOMINATOR,
         ErrorCode::InvalidSlashBps
     );
-    require!(
-        params.unbonding_period_secs > 0,
-        ErrorCode::InvalidUnbondingPeriod
-    );
+    require_valid_unbonding_periods(&params.unbonding_period_secs_by_role)?;
 
     let staking_config = &mut ctx.accounts.staking_config;
     staking_config.admin = ctx.accounts.admin.key();
     staking_config.mint = ctx.accounts.mint.key();
     staking_config.min_stake_by_role = params.min_stake_by_role;
-    staking_config.unbonding_period_secs = params.unbonding_period_secs;
+    staking_config.unbonding_period_secs_by_role = params.unbonding_period_secs_by_role;
     staking_config.slash_bps = params.slash_bps;
     staking_config.slashing_authority = params.slashing_authority;
     staking_config.slash_destination = params.slash_destination;

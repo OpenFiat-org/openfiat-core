@@ -39,6 +39,18 @@ pub fn handle_request_unstake(ctx: Context<RequestUnstake>, amount: u64) -> Resu
     // on the way out: stake the minimum, unstake one lamport, and keep an
     // account that still reads as staked while no longer qualifying.
     // Either clear the minimum or leave entirely — never the middle.
+    //
+    // This is checked against whatever the config holds *now*, not against
+    // the minimum in force when the position was opened, and that is the
+    // right way round for both directions of a parameter change. Lowering
+    // a minimum — which is what OFS-4100 §4's 500-OPEN floors do to
+    // Merchant and Arbitrator — can only widen the set of legal balances,
+    // so no existing account is stranded by it. Raising one leaves
+    // accounts sitting below the new floor, and they must still be able to
+    // exit: `is_legal_balance` admits zero unconditionally, so a full
+    // withdrawal is always available even when a partial one is not. A
+    // minimum that could trap tokens would be a far worse defect than the
+    // silent middle it exists to rule out.
     let remaining = stake_account.amount - amount;
     require!(
         staking_config.is_legal_balance(stake_account.role, remaining),
@@ -58,8 +70,14 @@ pub fn handle_request_unstake(ctx: Context<RequestUnstake>, amount: u64) -> Resu
         .unbonding_amount
         .checked_add(amount)
         .ok_or(ErrorCode::Overflow)?;
+    // The role's own period (OFS-4100 §4), not one flat figure: 24 hours
+    // for a merchant, 3 days for an arbitrator, 7 days for everyone else.
+    // A second request before the first is withdrawn moves the whole
+    // cohort's release forward to this one, which is what keeps a single
+    // fixed-size account honest — the alternative is releasing the older
+    // tranche early on the strength of a newer request.
     stake_account.unbonding_release_at = now
-        .checked_add(staking_config.unbonding_period_secs)
+        .checked_add(staking_config.unbonding_period_for(stake_account.role))
         .ok_or(ErrorCode::Overflow)?;
     Ok(())
 }

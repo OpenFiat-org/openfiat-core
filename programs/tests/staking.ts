@@ -32,7 +32,14 @@ describe("staking", () => {
     unit(1000),
     unit(1000),
   ];
-  const UNBONDING_SECS = new BN(1);
+  // One second for every role. The suite's withdraw tests need to be able
+  // to actually wait one out, and OFS-4100 §4's real figures (24h / 3d /
+  // 7d) are unreachable inside a test validator — the per-role *dispatch*
+  // is what a test can prove, and `request_unstake` gets its own case
+  // below that gives one role a distinguishable period.
+  const UNBONDING_SECS_BY_ROLE = [
+    new BN(1), new BN(1), new BN(1), new BN(1), new BN(1), new BN(1), new BN(1),
+  ];
 
   const ROLE_NODE_OPERATOR = { nodeOperator: {} };
   const ROLE_ARBITRATOR = { arbitrator: {} };
@@ -730,7 +737,7 @@ describe("staking", () => {
         program.methods
           .updateStakingConfig({
             minStakeByRole: MIN_STAKE_BY_ROLE,
-            unbondingPeriodSecs: UNBONDING_SECS,
+            unbondingPeriodSecsByRole: UNBONDING_SECS_BY_ROLE,
             slashBps: 1000,
             slashingAuthority: slashingAuthority.publicKey,
             rewardsAuthority: rewardsAuthority.publicKey,
@@ -752,7 +759,7 @@ describe("staking", () => {
         program.methods
           .updateStakingConfig({
             minStakeByRole: MIN_STAKE_BY_ROLE,
-            unbondingPeriodSecs: UNBONDING_SECS,
+            unbondingPeriodSecsByRole: UNBONDING_SECS_BY_ROLE,
             slashBps: 1000,
             slashingAuthority: slashingAuthority.publicKey,
             rewardsAuthority: PublicKey.default,
@@ -776,7 +783,7 @@ describe("staking", () => {
         program.methods
           .updateStakingConfig({
             minStakeByRole: MIN_STAKE_BY_ROLE,
-            unbondingPeriodSecs: UNBONDING_SECS,
+            unbondingPeriodSecsByRole: UNBONDING_SECS_BY_ROLE,
             slashBps: 1000,
             slashingAuthority: slashingAuthority.publicKey,
             rewardsAuthority: rewardsAuthority.publicKey,
@@ -793,12 +800,152 @@ describe("staking", () => {
       );
     });
 
+    it("rejects a zero unbonding period for a single role, not just for all of them", async () => {
+      // A per-role array can be wrong for exactly one role, which a flat
+      // field could not be. That role's stake would release in the same
+      // slot it was requested, silently, while the other six looked fine.
+      const oneRoleZeroed = [...UNBONDING_SECS_BY_ROLE];
+      oneRoleZeroed[1] = new BN(0); // Arbitrator
+      await expectAnchorError(() =>
+        program.methods
+          .updateStakingConfig({
+            minStakeByRole: MIN_STAKE_BY_ROLE,
+            unbondingPeriodSecsByRole: oneRoleZeroed,
+            slashBps: 1000,
+            slashingAuthority: slashingAuthority.publicKey,
+            rewardsAuthority: rewardsAuthority.publicKey,
+          })
+          .accountsPartial({
+            admin: admin.publicKey,
+            stakingConfig,
+            mint,
+            slashDestination,
+          })
+          .signers([admin])
+          .rpc({ commitment: "confirmed" }),
+        "InvalidUnbondingPeriod",
+      );
+    });
+
+    // The OFS-4100 §4 rework, exercised end to end: the 500-OPEN floors,
+    // and an unbonding period that differs by role.
+    it("applies the OFS-4100 §4 floors and gives each role its own unbonding period", async () => {
+      const OPEN = (n: number) => unit(n);
+      // Merchant and Arbitrator drop to a 500 floor; everything else keeps
+      // the figures the deployment already had.
+      const FLOORS = [OPEN(500), OPEN(500), OPEN(1000), OPEN(5000), OPEN(1000), OPEN(1000), OPEN(1000)];
+      // Real §4 periods are 24h/3d/7d, none of which a test validator can
+      // wait out. What is testable is that the *dispatch* is per role, so
+      // the arbitrator gets a period an order of magnitude off everyone
+      // else's and the two are compared against each other.
+      const ARBITRATOR_SECS = 300;
+      const PERIODS = [
+        new BN(1), new BN(ARBITRATOR_SECS), new BN(1), new BN(1), new BN(1), new BN(1), new BN(1),
+      ];
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .updateStakingConfig({
+            minStakeByRole: FLOORS,
+            unbondingPeriodSecsByRole: PERIODS,
+            slashBps: 500, // 5%, per §4
+            slashingAuthority: slashingAuthority.publicKey,
+            rewardsAuthority: rewardsAuthority.publicKey,
+          })
+          .accountsPartial({ admin: admin.publicKey, stakingConfig, mint, slashDestination })
+          .signers([admin])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const config = await program.account.stakingConfig.fetch(stakingConfig);
+      expect(config.minStakeByRole.map(String)).to.deep.equal(FLOORS.map(String));
+      expect(config.unbondingPeriodSecsByRole.map(String)).to.deep.equal(PERIODS.map(String));
+      expect(config.slashBps).to.equal(500);
+
+      async function stakeThenRequest(roleArg: unknown, roleIndex: number, stakeAmount: BN, unstakeAmount: BN) {
+        const owner = Keypair.generate();
+        await airdrop(owner.publicKey);
+        const stakeAccount = stakeAccountPda(owner.publicKey, roleIndex);
+        await withBlockhashRetry(() =>
+          program.methods
+            .initializeStakeAccount(roleArg as never)
+            .accountsPartial({ owner: owner.publicKey, stakeAccount, systemProgram: SystemProgram.programId })
+            .signers([owner])
+            .rpc({ commitment: "confirmed" }),
+        );
+        const ownerAta = await ata(mint, owner.publicKey);
+        await mintTokens(ownerAta, stakeAmount);
+        await withBlockhashRetry(() =>
+          program.methods
+            .stake(stakeAmount)
+            .accountsPartial({
+              owner: owner.publicKey,
+              stakingConfig,
+              stakeAccount,
+              stakeVault,
+              from: ownerAta,
+              mint,
+              tokenProgram: TOKEN_2022_PROGRAM_ID,
+            })
+            .signers([owner])
+            .rpc({ commitment: "confirmed" }),
+        );
+        await withBlockhashRetry(() =>
+          program.methods
+            .requestUnstake(unstakeAmount)
+            .accountsPartial({ owner: owner.publicKey, stakingConfig, stakeAccount })
+            .signers([owner])
+            .rpc({ commitment: "confirmed" }),
+        );
+        return program.account.stakeAccount.fetch(stakeAccount);
+      }
+
+      // 10,000 down to 500 — legal only because the floor moved. It was
+      // the old minimum, so this also covers the case the rework had to
+      // not break: lowering a minimum can only widen the set of legal
+      // balances, never strand a position that was already open.
+      const arbitrator = await stakeThenRequest(ROLE_ARBITRATOR, 1, OPEN(10000), OPEN(9500));
+      expect(arbitrator.amount.toString()).to.equal(OPEN(500).toString());
+
+      const nodeOperator = await stakeThenRequest(ROLE_NODE_OPERATOR, 2, OPEN(1000), OPEN(1000));
+      expect(nodeOperator.amount.toString()).to.equal("0");
+
+      // Clock-independent, and independent of how long the setup above
+      // took: the arbitrator's release is `t_a + 300`, the node
+      // operator's is `t_n + 1` with `t_n > t_a`, so the gap is
+      // `299 - (t_n - t_a)` — strictly below the arbitrator's period and,
+      // unless the second setup took minutes, well above half of it. A
+      // flat period would put the gap at zero.
+      const gap =
+        arbitrator.unbondingReleaseAt.toNumber() -
+        nodeOperator.unbondingReleaseAt.toNumber();
+      expect(gap).to.be.lessThan(ARBITRATOR_SECS);
+      expect(gap).to.be.greaterThan(ARBITRATOR_SECS / 2);
+
+      // Restore, so the rest of the suite keeps the 1-second period its
+      // withdraw tests wait out. Not left to the test that follows: a
+      // fixture this one moved is this one's to put back.
+      await withBlockhashRetry(() =>
+        program.methods
+          .updateStakingConfig({
+            minStakeByRole: MIN_STAKE_BY_ROLE,
+            unbondingPeriodSecsByRole: UNBONDING_SECS_BY_ROLE,
+            slashBps: 1000,
+            slashingAuthority: slashingAuthority.publicKey,
+            rewardsAuthority: rewardsAuthority.publicKey,
+          })
+          .accountsPartial({ admin: admin.publicKey, stakingConfig, mint, slashDestination })
+          .signers([admin])
+          .rpc({ commitment: "confirmed" }),
+      );
+    });
+
     it("writes a real token account through and leaves slash executable", async () => {
       await withBlockhashRetry(() =>
         program.methods
           .updateStakingConfig({
             minStakeByRole: MIN_STAKE_BY_ROLE,
-            unbondingPeriodSecs: UNBONDING_SECS,
+            unbondingPeriodSecsByRole: UNBONDING_SECS_BY_ROLE,
             slashBps: 1000,
             slashingAuthority: slashingAuthority.publicKey,
             rewardsAuthority: rewardsAuthority.publicKey,

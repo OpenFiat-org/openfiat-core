@@ -90,6 +90,14 @@ pub struct RewardsVaultFunded {
 /// Worth an event because the two authority fields decide who can slash
 /// and who can pay: a silent change to either is the kind of thing an
 /// operator needs to be able to notice after the fact.
+///
+/// The two per-role arrays are carried in full rather than summarised.
+/// `min_stake_by_role` decides which accounts confer any weight at all
+/// (see [`crate::state::StakeAccount::effective_stake`]), so lowering an
+/// entry can silently *restore* weight to accounts a slash had pushed
+/// below the old floor — a change to the electorate, which nobody should
+/// have to detect by diffing account fetches. `unbonding_period_secs_by_role`
+/// decides how long stake stays at risk after a withdrawal request.
 #[event]
 pub struct StakingConfigUpdated {
     pub admin: Pubkey,
@@ -97,7 +105,10 @@ pub struct StakingConfigUpdated {
     pub slash_destination: Pubkey,
     pub rewards_authority: Pubkey,
     pub slash_bps: u16,
-    pub unbonding_period_secs: i64,
+    /// Indexed by [`Role::index`].
+    pub min_stake_by_role: [u64; Role::COUNT],
+    /// Indexed by [`Role::index`].
+    pub unbonding_period_secs_by_role: [i64; Role::COUNT],
     pub timestamp: i64,
 }
 

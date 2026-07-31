@@ -32,15 +32,18 @@ pub mod staking {
         )
     }
 
-    /// One-shot layout migration for the existing devnet deployment — see
-    /// `migrate_staking_config`'s own doc comment.
+    /// One-shot layout migration for the existing devnet deployment,
+    /// growing the flat `unbonding_period_secs` into the per-role array.
+    /// Carries every other field across untouched — see
+    /// `migrate_staking_config`'s own doc comment for why a migration
+    /// deliberately writes no policy.
     pub fn migrate_staking_config(
         ctx: Context<MigrateStakingConfig>,
-        min_stake_by_role: [u64; Role::COUNT],
+        unbonding_period_secs_by_role: [i64; Role::COUNT],
     ) -> Result<()> {
         crate::instructions::migrate_staking_config::handle_migrate_staking_config(
             ctx,
-            min_stake_by_role,
+            unbonding_period_secs_by_role,
         )
     }
 

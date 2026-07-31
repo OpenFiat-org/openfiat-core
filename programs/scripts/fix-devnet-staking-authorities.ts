@@ -8,6 +8,11 @@
  * `distribute_reward` requires it to sign, so no reward could ever be
  * distributed however correct the computed schedule was.
  *
+ * ALREADY APPLIED on devnet (see devnet-addresses.json). Kept because the
+ * decode below is the same walk every later script reuses, and because a
+ * one-shot whose offsets are allowed to rot is a landmine for whoever runs
+ * it next — it has been updated for the per-role unbonding layout.
+ *
  * Run after upgrading the staking program:
  *   npx ts-node scripts/fix-devnet-staking-authorities.ts
  *
@@ -45,31 +50,65 @@ const SLASH_DESTINATION = new PublicKey(
 /** From `target/idl/staking.json`, not hand-computed. */
 const DISCRIMINATOR = Buffer.from([214, 238, 91, 123, 207, 114, 9, 246]);
 
-/** `8 disc + 32 admin + 32 mint`, then the fields in declaration order. */
-const OFF_MIN_STAKE = 72;
-const OFF_UNBONDING = OFF_MIN_STAKE + 7 * 8;
-const OFF_SLASH_BPS = OFF_UNBONDING + 8;
-const OFF_SLASHING_AUTHORITY = OFF_SLASH_BPS + 2;
-const OFF_SLASH_DESTINATION = OFF_SLASHING_AUTHORITY + 32;
-const OFF_REWARDS_AUTHORITY = OFF_SLASH_DESTINATION + 32;
+const ROLE_COUNT = 7;
+const TRAILING_BUMPS = 3; // bump, stake_vault_bump, rewards_vault_bump
 
+/**
+ * A single moving cursor over `StakingConfig`, asserting the walk lands
+ * exactly at the account length minus its trailing bumps (OFS-4200 §7.1).
+ *
+ * This used to read each field at its own independently-computed offset.
+ * That is the pattern that, elsewhere in this repo and on this exact
+ * struct, skipped a 32-byte field and reported two adjacent pubkeys with
+ * their identities transposed — well-formed, plausible, and wrong. It also
+ * silently survived `unbonding_period_secs` becoming a per-role array,
+ * which shifted every field after it by 48 bytes: the offsets still
+ * computed, and every value after the array would have been read out of
+ * the wrong place. A cursor that has to balance cannot do either.
+ */
 function decode(data: Buffer) {
-  return {
-    minStakeByRole: Array.from({ length: 7 }, (_, i) =>
-      data.readBigUInt64LE(OFF_MIN_STAKE + i * 8),
-    ),
-    unbondingPeriodSecs: data.readBigInt64LE(OFF_UNBONDING),
-    slashBps: data.readUInt16LE(OFF_SLASH_BPS),
-    slashingAuthority: new PublicKey(
-      data.subarray(OFF_SLASHING_AUTHORITY, OFF_SLASHING_AUTHORITY + 32),
-    ),
-    slashDestination: new PublicKey(
-      data.subarray(OFF_SLASH_DESTINATION, OFF_SLASH_DESTINATION + 32),
-    ),
-    rewardsAuthority: new PublicKey(
-      data.subarray(OFF_REWARDS_AUTHORITY, OFF_REWARDS_AUTHORITY + 32),
-    ),
+  let o = 8; // Anchor account discriminator.
+  const pubkey = () => {
+    const v = new PublicKey(data.subarray(o, o + 32));
+    o += 32;
+    return v;
   };
+  const u64 = () => {
+    const v = data.readBigUInt64LE(o);
+    o += 8;
+    return v;
+  };
+  const i64 = () => {
+    const v = data.readBigInt64LE(o);
+    o += 8;
+    return v;
+  };
+  const u16 = () => {
+    const v = data.readUInt16LE(o);
+    o += 2;
+    return v;
+  };
+
+  const decoded = {
+    admin: pubkey(),
+    mint: pubkey(),
+    minStakeByRole: Array.from({ length: ROLE_COUNT }, () => u64()),
+    unbondingPeriodSecsByRole: Array.from({ length: ROLE_COUNT }, () => i64()),
+    slashBps: u16(),
+    slashingAuthority: pubkey(),
+    slashDestination: pubkey(),
+    rewardsAuthority: pubkey(),
+  };
+
+  const expected = data.length - TRAILING_BUMPS;
+  if (o !== expected) {
+    throw new Error(
+      `decode walked ${o} bytes, expected ${expected} (account ${data.length} ` +
+        `less ${TRAILING_BUMPS} trailing bumps) — the field walk does not ` +
+        `match the on-chain struct`,
+    );
+  }
+  return decoded;
 }
 
 function u64LE(value: bigint): Buffer {
@@ -108,11 +147,11 @@ async function main() {
   const data = Buffer.concat([
     DISCRIMINATOR,
     ...prev.minStakeByRole.map(u64LE),
-    (() => {
+    ...prev.unbondingPeriodSecsByRole.map((secs) => {
       const b = Buffer.alloc(8);
-      b.writeBigInt64LE(prev.unbondingPeriodSecs);
+      b.writeBigInt64LE(secs);
       return b;
-    })(),
+    }),
     (() => {
       const b = Buffer.alloc(2);
       b.writeUInt16LE(prev.slashBps);
@@ -156,11 +195,15 @@ async function main() {
   console.log(`  rewards_authority after  ${now.rewardsAuthority.toBase58()}`);
   console.log(`  slashing_authority       ${now.slashingAuthority.toBase58()}`);
   console.log(`  slash_bps                ${now.slashBps}`);
-  console.log(`  unbonding_period_secs    ${now.unbondingPeriodSecs}`);
+  console.log(
+    `  unbonding_period_secs    [${now.unbondingPeriodSecsByRole.join(", ")}]`,
+  );
 
   const unchanged =
     now.slashBps === prev.slashBps &&
-    now.unbondingPeriodSecs === prev.unbondingPeriodSecs &&
+    now.unbondingPeriodSecsByRole.every(
+      (v, i) => v === prev.unbondingPeriodSecsByRole[i],
+    ) &&
     now.slashingAuthority.equals(prev.slashingAuthority) &&
     now.minStakeByRole.every((v, i) => v === prev.minStakeByRole[i]);
   if (!unchanged) throw new Error("a policy field moved; expected only the two addresses to change");

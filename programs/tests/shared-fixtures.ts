@@ -285,7 +285,11 @@ export function getSharedStakingConfig(staking: Program<Staking>): Promise<Share
             unit(1000),
             unit(1000),
           ],
-          unbondingPeriodSecs: new BN(1),
+          // One second per role — see tests/staking.ts's own note on why
+          // the suite cannot use OFS-4100 §4's real periods.
+          unbondingPeriodSecsByRole: [
+            new BN(1), new BN(1), new BN(1), new BN(1), new BN(1), new BN(1), new BN(1),
+          ],
           slashBps: 1000,
           slashingAuthority: slashingAuthority.publicKey,
           slashDestination,

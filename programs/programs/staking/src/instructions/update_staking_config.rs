@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 use openfiat_programs_shared::Role;
 
+use crate::instructions::shared_logic::require_valid_unbonding_periods;
 use crate::{constants::*, error::ErrorCode, events::StakingConfigUpdated, state::*};
 
 /// Corrects the singleton `StakingConfig` after `initialize_staking_config`
@@ -75,7 +76,17 @@ pub struct UpdateStakingConfig<'info> {
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct UpdateStakingConfigParams {
     pub min_stake_by_role: [u64; Role::COUNT],
-    pub unbonding_period_secs: i64,
+    /// Per-role unbonding periods, indexed by [`Role::index`] — see
+    /// [`crate::state::StakingConfig::unbonding_period_secs_by_role`].
+    ///
+    /// Restated in full on every update, like `min_stake_by_role` beside
+    /// it, rather than offering a "leave this one alone" sentinel. A
+    /// partial write of a per-role array is how one role quietly keeps an
+    /// old value nobody meant it to keep; the caller reads the live
+    /// account and writes back what it means, which is exactly what
+    /// `scripts/fix-devnet-staking-authorities.ts` already does and
+    /// asserts afterwards.
+    pub unbonding_period_secs_by_role: [i64; Role::COUNT],
     pub slash_bps: u16,
     /// Both are addresses that sign elsewhere rather than accounts read
     /// here, so they arrive as plain keys — validated non-zero below.
@@ -91,10 +102,7 @@ pub fn handle_update_staking_config(
         params.slash_bps as u64 <= BPS_DENOMINATOR,
         ErrorCode::InvalidSlashBps
     );
-    require!(
-        params.unbonding_period_secs > 0,
-        ErrorCode::InvalidUnbondingPeriod
-    );
+    require_valid_unbonding_periods(&params.unbonding_period_secs_by_role)?;
     require!(
         params.slashing_authority != Pubkey::default(),
         ErrorCode::ZeroAuthority
@@ -106,7 +114,7 @@ pub fn handle_update_staking_config(
 
     let config = &mut ctx.accounts.staking_config;
     config.min_stake_by_role = params.min_stake_by_role;
-    config.unbonding_period_secs = params.unbonding_period_secs;
+    config.unbonding_period_secs_by_role = params.unbonding_period_secs_by_role;
     config.slash_bps = params.slash_bps;
     config.slashing_authority = params.slashing_authority;
     config.slash_destination = ctx.accounts.slash_destination.key();
@@ -118,7 +126,8 @@ pub fn handle_update_staking_config(
         slash_destination: config.slash_destination,
         rewards_authority: config.rewards_authority,
         slash_bps: config.slash_bps,
-        unbonding_period_secs: config.unbonding_period_secs,
+        min_stake_by_role: config.min_stake_by_role,
+        unbonding_period_secs_by_role: config.unbonding_period_secs_by_role,
         timestamp: Clock::get()?.unix_timestamp,
     });
     Ok(())

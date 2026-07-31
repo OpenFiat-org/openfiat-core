@@ -20,7 +20,37 @@ pub struct StakingConfig {
     /// actually makes that sentence hold: a new minimum for any role is a
     /// parameter write, and no layout or code change.
     pub min_stake_by_role: [u64; Role::COUNT],
-    pub unbonding_period_secs: i64,
+    /// Unbonding period per role, in seconds, indexed by [`Role::index`].
+    ///
+    /// This replaced a single flat `unbonding_period_secs`, for the same
+    /// reason `min_stake_by_role` replaced a flat `min_stake`: OFS-4100 §4
+    /// signs off *different* periods per role — 24 hours for a merchant,
+    /// 3 days for an arbitrator, 7 days for everyone else — and one field
+    /// cannot hold three values however the parameter is described.
+    ///
+    /// The periods are not arbitrary and the ordering is the argument for
+    /// them. Unbonding exists so that misconduct discovered after the fact
+    /// still has stake to bite on, so each role's period tracks how long
+    /// its misconduct takes to surface. A merchant's failure is visible
+    /// within one trade's settlement window, and a long lock on merchant
+    /// capital is a direct cost to liquidity that buys nothing. An
+    /// arbitrator's misconduct only surfaces when a case is revealed and
+    /// tallied, which is why theirs is longer. Everyone else — node
+    /// operators, oracles, notification and snapshot providers — is judged
+    /// on sustained behaviour observed over time rather than on a single
+    /// act, so their stake stays exposed the longest.
+    ///
+    /// Placed exactly where the flat field was rather than appended, which
+    /// shifts every subsequent field by 48 bytes. That is deliberate: a
+    /// second "unbonding" value sitting at the end of the struct while a
+    /// now-meaningless one sat mid-layout is precisely how two sources of
+    /// truth for one parameter come into existence. Nothing outside this
+    /// workspace decodes `StakingConfig` at fixed offsets — the only
+    /// hand-rolled decoder in the wider repo, `crates/rpc::onchain_stake`,
+    /// reads `StakeAccount` and is untouched — so the shift costs the two
+    /// scripts in `scripts/` and nothing else. See
+    /// `migrate_staking_config` for how the live singleton is grown.
+    pub unbonding_period_secs_by_role: [i64; Role::COUNT],
     pub slash_bps: u16,
     pub slashing_authority: Pubkey,
     /// Where a `slash`'s forfeited tokens go — not named in OFS-4200 §5,
@@ -41,6 +71,17 @@ impl StakingConfig {
     /// The minimum this role must hold to count as staked at all.
     pub fn min_stake_for(&self, role: Role) -> u64 {
         self.min_stake_by_role[role.index()]
+    }
+
+    /// How long this role's stake stays locked after `request_unstake`.
+    ///
+    /// An accessor rather than a direct index for the same reason
+    /// [`Self::min_stake_for`] is one: `Role::index` is the only place
+    /// that maps a role to an array position, so a new role added to the
+    /// enum fails to compile there instead of silently reading a
+    /// neighbouring role's period here.
+    pub fn unbonding_period_for(&self, role: Role) -> i64 {
+        self.unbonding_period_secs_by_role[role.index()]
     }
 
     /// A stake balance is legal only if it clears the role's minimum or is
