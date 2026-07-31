@@ -3,7 +3,7 @@ use anchor_spl::token_interface::{
     transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked,
 };
 
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, events::ProposalDepositSettled, state::*};
 
 /// Permissionless, callable once `tally_and_finalize` has run. Refunds
 /// the proposer if quorum was met (regardless of accept/reject — OFS-4100
@@ -46,11 +46,15 @@ pub struct RefundOrForfeitDeposit<'info> {
 
 pub fn handle_refund_or_forfeit_deposit(ctx: Context<RefundOrForfeitDeposit>) -> Result<()> {
     let amount = ctx.accounts.proposal.stake_deposit;
-    let destination = if ctx.accounts.proposal.quorum_met {
+    // Quorum alone decides this, not acceptance — OFS-4100 §5. The two
+    // are emitted together below so the branch is checkable from the log.
+    let refunded = ctx.accounts.proposal.quorum_met;
+    let destination = if refunded {
         ctx.accounts.proposer_token_account.to_account_info()
     } else {
         ctx.accounts.forfeit_destination.to_account_info()
     };
+    let destination_key = destination.key();
 
     let bump = ctx.accounts.governance_config.bump;
     let signer_seeds: &[&[u8]] = &[GOVERNANCE_CONFIG_SEED, &[bump]];
@@ -71,5 +75,19 @@ pub fn handle_refund_or_forfeit_deposit(ctx: Context<RefundOrForfeitDeposit>) ->
     )?;
 
     ctx.accounts.proposal.deposit_settled = true;
+
+    let proposal = &ctx.accounts.proposal;
+    emit!(ProposalDepositSettled {
+        proposal: proposal.key(),
+        proposal_id: proposal.id,
+        proposer: proposal.proposer,
+        amount,
+        mint: ctx.accounts.mint.key(),
+        refunded,
+        destination: destination_key,
+        quorum_met: proposal.quorum_met,
+        state: proposal.state,
+        timestamp: Clock::get()?.unix_timestamp,
+    });
     Ok(())
 }

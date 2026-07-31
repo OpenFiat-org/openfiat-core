@@ -25,6 +25,7 @@ import {
   MINT_DECIMALS,
   SHARED_VOTE_LOCK_SECS,
 } from "./shared-fixtures";
+import { passProposal } from "./governance-cycle";
 
 describe("governance", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
@@ -143,6 +144,30 @@ describe("governance", () => {
       program.programId
     )[0];
   }
+  const eventParser = new anchor.EventParser(program.programId, program.coder);
+
+  /**
+   * The events a *landed* transaction emitted, decoded from its own logs.
+   *
+   * Deliberately not `.simulate()`. Anchor's simulate helper calls
+   * `Transaction.sign(...signers)` for any extra signers, which resets the
+   * signature list and so discards the fee payer's signature, and then
+   * asks the validator to verify signatures — every builder carrying a
+   * `.signers([...])` fails to simulate at all, for reasons that have
+   * nothing to do with the program. Reading the transaction that actually
+   * executed is the stronger check anyway: it asserts on what was emitted,
+   * not on what would have been.
+   */
+  async function eventsOf(signature: string): Promise<any[]> {
+    const tx = await connection.getTransaction(signature, {
+      commitment: "confirmed",
+      maxSupportedTransactionVersion: 0,
+    });
+    const logs = tx?.meta?.logMessages;
+    if (!logs) throw new Error(`no log messages for ${signature}`);
+    return [...eventParser.parseLogs(logs)];
+  }
+
   function stakeAccountPda(owner: PublicKey, roleByte: number) {
     return PublicKey.findProgramAddressSync(
       [Buffer.from("stake"), owner.toBuffer(), Buffer.from([roleByte])],
@@ -197,20 +222,29 @@ describe("governance", () => {
     category: any,
     votingPeriodSecs: number,
     action: any = ACTION_NONE
-  ): Promise<{ proposer: Keypair; proposal: PublicKey }> {
+  ): Promise<{
+    proposer: Keypair;
+    proposal: PublicKey;
+    events: readonly any[];
+  }> {
     const proposer = Keypair.generate();
     await airdrop(proposer.publicKey);
     const proposerAta = await ata(mint, proposer.publicKey);
     await mintTokens(proposerAta, DEPOSIT_AMOUNT);
 
     const proposal = proposalPda(id);
-    await withBlockhashRetry(() =>
+    // Hoisted out of the builder: it is called once per send attempt, and
+    // fresh randomness per attempt would mean a retry landed different
+    // content from the one whose event is asserted on below.
+    const titleHash = [...crypto.randomBytes(32)];
+    const summaryHash = [...crypto.randomBytes(32)];
+    const builder = () =>
       program.methods
         .createProposal(
           new BN(id),
           category,
-          [...crypto.randomBytes(32)],
-          [...crypto.randomBytes(32)],
+          titleHash,
+          summaryHash,
           new BN(votingPeriodSecs),
           action
         )
@@ -226,10 +260,12 @@ describe("governance", () => {
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
         })
-        .signers([proposer])
-        .rpc({ commitment: "confirmed" })
+        .signers([proposer]);
+
+    const signature = await withBlockhashRetry(() =>
+      builder().rpc({ commitment: "confirmed" })
     );
-    return { proposer, proposal };
+    return { proposer, proposal, events: await eventsOf(signature) };
   }
 
   before(async () => {
@@ -240,7 +276,11 @@ describe("governance", () => {
   });
 
   it("creates a proposal, snapshotting its category's quorum/threshold", async () => {
-    const { proposal } = await createFundedProposal(1, CATEGORY_PARAMETER, 3);
+    const { proposal, proposer, events } = await createFundedProposal(
+      1,
+      CATEGORY_PARAMETER,
+      3
+    );
     const account = await program.account.proposal.fetch(proposal);
     expect(account.state).to.deep.equal({ voting: {} });
     expect(account.thresholdSnapshot).to.equal(THRESHOLD_SIMPLE_BPS);
@@ -252,6 +292,28 @@ describe("governance", () => {
     expect(account.quorumSnapshot.toString()).to.equal(
       expectedQuorum.toString()
     );
+
+    // OFS-4100 §9.4: the creation event has to carry the bar the proposal
+    // must clear, not just its identity. Both snapshots are fixed now and
+    // never change, so this event alone tells a reader what it would take
+    // to pass — without it they would have to guess which config values
+    // were live at the moment of creation.
+    const created = events.find((e: any) => e.name === "proposalCreated");
+    expect(created, "proposalCreated event").to.not.be.undefined;
+    expect(created.data.proposal.toBase58()).to.equal(proposal.toBase58());
+    expect(created.data.proposalId.toString()).to.equal("1");
+    expect(created.data.proposer.toBase58()).to.equal(proposer.publicKey.toBase58());
+    expect(created.data.category).to.deep.equal(CATEGORY_PARAMETER);
+    expect([...created.data.titleHash]).to.deep.equal(
+      [...(await program.account.proposal.fetch(proposal)).titleHash]
+    );
+    expect(created.data.action).to.deep.equal(ACTION_NONE);
+    expect(created.data.thresholdSnapshot).to.equal(THRESHOLD_SIMPLE_BPS);
+    expect(created.data.quorumSnapshot.toString()).to.equal(expectedQuorum.toString());
+    expect(created.data.stakeDeposit.toString()).to.equal(DEPOSIT_AMOUNT.toString());
+    expect(created.data.votingEndsAt.toNumber()).to.be.greaterThan(
+      created.data.timestamp.toNumber()
+    );
   });
 
   it("fixes what a proposal may do at creation, in its own immutable account", async () => {
@@ -262,7 +324,7 @@ describe("governance", () => {
     // executor see the same one.
     const wallet = Keypair.generate().publicKey;
     const evidence = [...crypto.randomBytes(32)];
-    const { proposal } = await createFundedProposal(
+    const { proposal, events } = await createFundedProposal(
       11,
       CATEGORY_STANDARDS,
       3,
@@ -277,6 +339,18 @@ describe("governance", () => {
       wallet.toBase58()
     );
     expect([...action.action.listWallet.evidenceHash]).to.deep.equal(evidence);
+
+    // The same action is in the creation event, in full. A reader deciding
+    // how to vote on an exclusion must not have to fetch a second account
+    // to learn whom it excludes (OFS-7100 §12.2).
+    const created = events.find((e: any) => e.name === "proposalCreated");
+    expect(created.data.action.listWallet.wallet.toBase58()).to.equal(
+      wallet.toBase58()
+    );
+    expect([...created.data.action.listWallet.evidenceHash]).to.deep.equal(evidence);
+    expect(created.data.proposalAction.toBase58()).to.equal(
+      proposalActionPda(proposal).toBase58()
+    );
 
     // There is no instruction that writes it again — creating it a
     // second time is the only way to try, and the address is taken.
@@ -309,7 +383,7 @@ describe("governance", () => {
     const forVoter = await setUpVoter(forVoterStake);
     const againstVoter = await setUpVoter(againstVoterStake);
 
-    await withBlockhashRetry(() =>
+    const forVote = () =>
       program.methods
         .castVote(true, ROLE_NODE_OPERATOR)
         .accountsPartial({
@@ -320,9 +394,32 @@ describe("governance", () => {
           voteRecord: voteRecordPda(proposal, forVoter.publicKey),
           systemProgram: SystemProgram.programId,
         })
-        .signers([forVoter])
-        .rpc({ commitment: "confirmed" })
+        .signers([forVoter]);
+
+    const forVoteSignature = await withBlockhashRetry(() =>
+      forVote().rpc({ commitment: "confirmed" })
     );
+
+    // OFS-4100 §9.4. The assertion that matters is `weight`: `cast_vote`
+    // takes no weight argument at all, so this number can only have come
+    // from the voter's on-chain StakeAccount via `effective_stake`. An
+    // event echoing a self-reported figure is exactly what `crates/rpc`'s
+    // async vote verification exists to override, and would hand every
+    // indexer a tally the chain does not agree with.
+    const voteEvent = (await eventsOf(forVoteSignature)).find(
+      (e: any) => e.name === "voteCast"
+    );
+    expect(voteEvent, "voteCast event").to.not.be.undefined;
+    expect(voteEvent.data.weight.toString()).to.equal(forVoterStake.toString());
+    expect(voteEvent.data.voter.toBase58()).to.equal(forVoter.publicKey.toBase58());
+    expect(voteEvent.data.voterStake.toBase58()).to.equal(
+      stakeAccountPda(forVoter.publicKey, 2).toBase58()
+    );
+    expect(voteEvent.data.role).to.deep.equal(ROLE_NODE_OPERATOR);
+    expect(voteEvent.data.inFavor).to.equal(true);
+    expect(voteEvent.data.proposal.toBase58()).to.equal(proposal.toBase58());
+    // Running total after this vote, so a replay needs no re-summing.
+    expect(voteEvent.data.votesFor.toString()).to.equal(forVoterStake.toString());
 
     await withBlockhashRetry(() =>
       program.methods
@@ -371,11 +468,32 @@ describe("governance", () => {
 
     await new Promise((r) => setTimeout(r, 27000));
 
-    await withBlockhashRetry(() =>
+    const tallySignature = await withBlockhashRetry(() =>
       program.methods
         .tallyAndFinalize()
         .accountsPartial({ proposal })
         .rpc({ commitment: "confirmed" })
+    );
+
+    // The tally event must carry the weights AND quorum_met, not just the
+    // verdict: quorum alone decides refund versus forfeiture below, so an
+    // observer who cannot see it cannot check that the deposit was handled
+    // correctly. Everything needed to recompute the decision is here.
+    const finalizedEvent = (await eventsOf(tallySignature)).find(
+      (e: any) => e.name === "proposalFinalized"
+    );
+    expect(finalizedEvent, "proposalFinalized event").to.not.be.undefined;
+    expect(finalizedEvent.data.quorumMet).to.equal(true);
+    expect(finalizedEvent.data.state).to.deep.equal({ accepted: {} });
+    expect(finalizedEvent.data.votesFor.toString()).to.equal(forVoterStake.toString());
+    expect(finalizedEvent.data.votesAgainst.toString()).to.equal(
+      againstVoterStake.toString()
+    );
+    expect(finalizedEvent.data.totalCast.toString()).to.equal(
+      forVoterStake.add(againstVoterStake).toString()
+    );
+    expect(finalizedEvent.data.totalCast.gte(finalizedEvent.data.quorumSnapshot)).to.equal(
+      true
     );
 
     const account = await program.account.proposal.fetch(proposal);
@@ -384,7 +502,7 @@ describe("governance", () => {
 
     // Deposit refunded to the proposer since quorum was met.
     const proposerAta = await ata(mint, proposer.publicKey);
-    await withBlockhashRetry(() =>
+    const settleSignature = await withBlockhashRetry(() =>
       program.methods
         .refundOrForfeitDeposit()
         .accountsPartial({
@@ -399,6 +517,15 @@ describe("governance", () => {
         .rpc({ commitment: "confirmed" })
     );
 
+    const settledEvent = (await eventsOf(settleSignature)).find(
+      (e: any) => e.name === "proposalDepositSettled"
+    );
+    expect(settledEvent, "proposalDepositSettled event").to.not.be.undefined;
+    expect(settledEvent.data.refunded).to.equal(true);
+    expect(settledEvent.data.quorumMet).to.equal(true);
+    expect(settledEvent.data.destination.toBase58()).to.equal(proposerAta.toBase58());
+    expect(settledEvent.data.amount.toString()).to.equal(DEPOSIT_AMOUNT.toString());
+
     const proposerTokens = await getAccount(
       connection,
       proposerAta,
@@ -410,16 +537,33 @@ describe("governance", () => {
     );
 
     // update_config_parameter: only callable once Accepted + Parameter.
-    await withBlockhashRetry(() =>
+    const authorizeParameter = () =>
       program.methods
         .updateConfigParameter(
           PublicKey.default,
           "settlement_fee_bps",
           new BN(10)
         )
-        .accountsPartial({ proposal })
-        .rpc({ commitment: "confirmed" })
+        .accountsPartial({ proposal });
+
+    const paramSignature = await withBlockhashRetry(() =>
+      authorizeParameter().rpc({ commitment: "confirmed" })
     );
+
+    // Record-only: this instruction writes no parameter anywhere. The
+    // event has to say so — hence `authorizedValue`, not `newValue`.
+    const paramEvent = (await eventsOf(paramSignature)).find(
+      (e: any) => e.name === "configParameterChangeAuthorized"
+    );
+    expect(paramEvent, "configParameterChangeAuthorized event").to.not.be.undefined;
+    expect(paramEvent.data.parameterKey).to.equal("settlement_fee_bps");
+    expect(paramEvent.data.authorizedValue.toString()).to.equal("10");
+    expect(paramEvent.data.targetProgram.toBase58()).to.equal(
+      PublicKey.default.toBase58()
+    );
+    expect(paramEvent.data.proposal.toBase58()).to.equal(proposal.toBase58());
+    expect(Object.keys(paramEvent.data)).to.not.include("applied");
+
     const finalAccount = await program.account.proposal.fetch(proposal);
     expect(finalAccount.executed).to.equal(true);
   });
@@ -462,7 +606,7 @@ describe("governance", () => {
     expect(account.state).to.deep.equal({ rejected: {} });
 
     const proposerAta = await ata(mint, proposer.publicKey);
-    await withBlockhashRetry(() =>
+    const settleSignature = await withBlockhashRetry(() =>
       program.methods
         .refundOrForfeitDeposit()
         .accountsPartial({
@@ -475,6 +619,21 @@ describe("governance", () => {
           tokenProgram: TOKEN_2022_PROGRAM_ID,
         })
         .rpc({ commitment: "confirmed" })
+    );
+
+    // The other branch of the same event. `refunded` and `quorumMet`
+    // disagree with the accepted case above and agree with each other,
+    // which is the whole point of carrying both: a forfeiture nobody can
+    // check against the tally is indistinguishable from a confiscation.
+    const settledEvent = (await eventsOf(settleSignature)).find(
+      (e: any) => e.name === "proposalDepositSettled"
+    );
+    expect(settledEvent, "proposalDepositSettled event").to.not.be.undefined;
+    expect(settledEvent.data.refunded).to.equal(false);
+    expect(settledEvent.data.quorumMet).to.equal(false);
+    expect(settledEvent.data.state).to.deep.equal({ rejected: {} });
+    expect(settledEvent.data.destination.toBase58()).to.equal(
+      forfeitDestination.toBase58()
     );
 
     // Proposer's own ATA received nothing — the deposit was forfeited.
@@ -495,6 +654,57 @@ describe("governance", () => {
           .rpc({ commitment: "confirmed" }),
       "ProposalNotAccepted"
     );
+  });
+
+  it("records a treasury spend as authorized, and moves nothing", async () => {
+    // The one governance instruction whose event could most easily lie.
+    // `authorize_treasury_spend` sets `executed` and returns — governance
+    // holds no treasury to disburse from (OFS-4200 §1) — so the event has
+    // to read as an authorization or every explorer reports protocol funds
+    // leaving an account they are still sitting in.
+    const proposal = await passProposal(
+      program,
+      staking,
+      ACTION_NONE,
+      CATEGORY_TREASURY
+    );
+    const amount = unit(1);
+    const before = await getAccount(
+      connection,
+      forfeitDestination,
+      "confirmed",
+      TOKEN_2022_PROGRAM_ID
+    );
+
+    const signature = await withBlockhashRetry(() =>
+      program.methods
+        .authorizeTreasurySpend(forfeitDestination, amount)
+        .accountsPartial({ proposal })
+        .rpc({ commitment: "confirmed" })
+    );
+
+    const event = (await eventsOf(signature)).find(
+      (e: any) => e.name === "treasurySpendAuthorized"
+    );
+    expect(event, "treasurySpendAuthorized event").to.not.be.undefined;
+    expect(event.data.proposal.toBase58()).to.equal(proposal.toBase58());
+    expect(event.data.authorizedDestination.toBase58()).to.equal(
+      forfeitDestination.toBase58()
+    );
+    expect(event.data.authorizedAmount.toString()).to.equal(amount.toString());
+    // Nothing in the event claims a completed transfer.
+    expect(Object.keys(event.data)).to.not.include("disbursed");
+
+    // And the authorization really was only that.
+    const after = await getAccount(
+      connection,
+      forfeitDestination,
+      "confirmed",
+      TOKEN_2022_PROGRAM_ID
+    );
+    expect(after.amount.toString()).to.equal(before.amount.toString());
+    const account = await program.account.proposal.fetch(proposal);
+    expect(account.executed).to.equal(true);
   });
 
   describe("update_governance_config", () => {
@@ -555,7 +765,7 @@ describe("governance", () => {
       );
       const replacement = await ata(mint, Keypair.generate().publicKey);
 
-      await withBlockhashRetry(() =>
+      const updateSignature = await withBlockhashRetry(() =>
         program.methods
           .updateGovernanceConfig(baseParams())
           .accountsPartial({
@@ -565,6 +775,26 @@ describe("governance", () => {
             forfeitDestination: replacement,
           })
           .rpc({ commitment: "confirmed" })
+      );
+
+      // OFS-4100 §9.4. `admin` alone can move `forfeit_destination` and
+      // `vote_lock_secs`, so the write has to leave a trace: one decides
+      // where forfeited deposits go, the other how long an accepted
+      // proposal is held before it can act.
+      const event = (await eventsOf(updateSignature)).find(
+        (e: any) => e.name === "governanceConfigUpdated"
+      );
+      expect(event, "governanceConfigUpdated event").to.not.be.undefined;
+      expect(event.data.admin.toBase58()).to.equal(admin.publicKey.toBase58());
+      expect(event.data.forfeitDestination.toBase58()).to.equal(
+        replacement.toBase58()
+      );
+      expect(event.data.voteLockSecs.toString()).to.equal(
+        baseParams().voteLockSecs.toString()
+      );
+      expect(event.data.quorumBps).to.equal(QUORUM_BPS);
+      expect(event.data.depositAmount.toString()).to.equal(
+        DEPOSIT_AMOUNT.toString()
       );
 
       const after = await program.account.governanceConfig.fetch(

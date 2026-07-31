@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, events::TreasurySpendAuthorized, state::*};
 
 /// OFS-4200 §6: `authorize_treasury_spend`, callable only when `Accepted`
 /// and `category == Treasury`.
@@ -28,9 +28,23 @@ pub struct AuthorizeTreasurySpend<'info> {
 
 pub fn handle_authorize_treasury_spend(
     ctx: Context<AuthorizeTreasurySpend>,
-    _destination: Pubkey,
-    _amount: u64,
+    destination: Pubkey,
+    amount: u64,
 ) -> Result<()> {
     ctx.accounts.proposal.executed = true;
+
+    // `authorized_destination`/`authorized_amount`, not `destination`/
+    // `amount`: no transfer happened, and an event that read as a
+    // completed disbursement would have every explorer report protocol
+    // funds leaving an account they never left. What is recorded is the
+    // authorization — which until now was discarded, leaving an accepted
+    // Treasury proposal with no on-chain trace of what it had approved.
+    emit!(TreasurySpendAuthorized {
+        proposal: ctx.accounts.proposal.key(),
+        proposal_id: ctx.accounts.proposal.id,
+        authorized_destination: destination,
+        authorized_amount: amount,
+        timestamp: Clock::get()?.unix_timestamp,
+    });
     Ok(())
 }

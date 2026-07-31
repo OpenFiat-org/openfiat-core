@@ -5,7 +5,7 @@ use anchor_spl::token_interface::{
 use openfiat_programs_shared::ProposalCategory;
 
 use crate::shared_logic::{quorum_bps_for, threshold_bps_for};
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, events::ProposalCreated, state::*};
 
 #[derive(Accounts)]
 #[instruction(id: u64)]
@@ -167,9 +167,27 @@ pub fn handle_create_proposal(
     proposal.bump = ctx.bumps.proposal;
 
     let proposal_key = proposal.key();
+    let voting_ends_at = proposal.voting_ends_at;
+
     let proposal_action = &mut ctx.accounts.proposal_action;
     proposal_action.proposal = proposal_key;
     proposal_action.action = action;
     proposal_action.bump = ctx.bumps.proposal_action;
+
+    emit!(ProposalCreated {
+        proposal: proposal_key,
+        proposal_id: id,
+        proposer: ctx.accounts.proposer.key(),
+        category,
+        title_hash,
+        summary_hash,
+        action,
+        proposal_action: proposal_action.key(),
+        stake_deposit: deposit_amount,
+        quorum_snapshot,
+        threshold_snapshot: threshold_bps,
+        voting_ends_at,
+        timestamp: now,
+    });
     Ok(())
 }

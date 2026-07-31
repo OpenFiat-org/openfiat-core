@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, events::ProposalFinalized, state::*};
 
 /// Permissionless, callable once voting has ended (OFS-4200 §6) — matches
 /// `openfiat-presale`'s `finalize_sale` and `openfiat-escrow`'s
@@ -46,5 +46,23 @@ pub fn handle_tally_and_finalize(ctx: Context<TallyAndFinalize>) -> Result<()> {
     } else {
         ProposalState::Rejected
     };
+
+    // `quorum_met` travels with the outcome rather than being inferred
+    // from it: a rejected proposal that met quorum still gets its deposit
+    // back, so an observer who sees only `Rejected` cannot tell whether
+    // `refund_or_forfeit_deposit` then did the right thing.
+    emit!(ProposalFinalized {
+        proposal: proposal.key(),
+        proposal_id: proposal.id,
+        category: proposal.category,
+        votes_for: proposal.votes_for,
+        votes_against: proposal.votes_against,
+        total_cast,
+        quorum_snapshot: proposal.quorum_snapshot,
+        threshold_snapshot: proposal.threshold_snapshot,
+        quorum_met,
+        state: proposal.state,
+        timestamp: now,
+    });
     Ok(())
 }

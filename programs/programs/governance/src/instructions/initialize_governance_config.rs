@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, events::GovernanceConfigInitialized, state::*};
 
 #[derive(Accounts)]
 pub struct InitializeGovernanceConfig<'info> {
@@ -65,6 +65,9 @@ pub fn handle_initialize_governance_config(
     require_valid_bps(params.quorum_upgrade_bps)?;
     crate::shared_logic::require_valid_vote_lock(params.vote_lock_secs)?;
 
+    let deposit_vault = ctx.accounts.deposit_vault.key();
+    let now = Clock::get()?.unix_timestamp;
+
     let governance_config = &mut ctx.accounts.governance_config;
     governance_config.admin = ctx.accounts.admin.key();
     governance_config.mint = ctx.accounts.mint.key();
@@ -79,5 +82,22 @@ pub fn handle_initialize_governance_config(
     governance_config.vote_lock_secs = params.vote_lock_secs;
     governance_config.bump = ctx.bumps.governance_config;
     governance_config.deposit_vault_bump = ctx.bumps.deposit_vault;
+
+    emit!(GovernanceConfigInitialized {
+        governance_config: governance_config.key(),
+        admin: governance_config.admin,
+        mint: governance_config.mint,
+        deposit_vault,
+        total_open_supply: governance_config.total_open_supply,
+        quorum_bps: governance_config.quorum_bps,
+        threshold_simple_bps: governance_config.threshold_simple_bps,
+        threshold_treasury_bps: governance_config.threshold_treasury_bps,
+        threshold_upgrade_bps: governance_config.threshold_upgrade_bps,
+        quorum_upgrade_bps: governance_config.quorum_upgrade_bps,
+        deposit_amount: governance_config.deposit_amount,
+        forfeit_destination: governance_config.forfeit_destination,
+        vote_lock_secs: governance_config.vote_lock_secs,
+        timestamp: now,
+    });
     Ok(())
 }

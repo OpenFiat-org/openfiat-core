@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use openfiat_programs_shared::Role;
 
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, events::VoteCast, state::*};
 
 #[derive(Accounts)]
 #[instruction(in_favor: bool, role: Role)]
@@ -60,17 +60,22 @@ pub struct CastVote<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handle_cast_vote(ctx: Context<CastVote>, in_favor: bool, _role: Role) -> Result<()> {
+pub fn handle_cast_vote(ctx: Context<CastVote>, in_favor: bool, role: Role) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     require!(
         now < ctx.accounts.proposal.voting_ends_at,
         ErrorCode::NotInVotingState
     );
 
+    // The one and only weight in this instruction: the voter's on-chain
+    // stake, reduced to zero below the role minimum. `cast_vote` takes no
+    // weight argument, so there is no self-reported figure that could be
+    // counted here or emitted below — see `VoteCast`'s own doc.
     let weight = ctx
         .accounts
         .voter_stake
         .effective_stake(&ctx.accounts.staking_config);
+    let voter_stake_key = ctx.accounts.voter_stake.key();
 
     let proposal = &mut ctx.accounts.proposal;
     if in_favor {
@@ -85,14 +90,35 @@ pub fn handle_cast_vote(ctx: Context<CastVote>, in_favor: bool, _role: Role) -> 
             .ok_or(ErrorCode::Overflow)?;
     }
 
+    let proposal_key = proposal.key();
+    let proposal_id = proposal.id;
+    let votes_for = proposal.votes_for;
+    let votes_against = proposal.votes_against;
+
+    let locked_until = now
+        .checked_add(ctx.accounts.governance_config.vote_lock_secs)
+        .ok_or(ErrorCode::Overflow)?;
+
     let vote_record = &mut ctx.accounts.vote_record;
-    vote_record.proposal = ctx.accounts.proposal.key();
+    vote_record.proposal = proposal_key;
     vote_record.voter = ctx.accounts.voter.key();
     vote_record.weight = weight;
     vote_record.in_favor = in_favor;
-    vote_record.locked_until = now
-        .checked_add(ctx.accounts.governance_config.vote_lock_secs)
-        .ok_or(ErrorCode::Overflow)?;
+    vote_record.locked_until = locked_until;
     vote_record.bump = ctx.bumps.vote_record;
+
+    emit!(VoteCast {
+        proposal: proposal_key,
+        proposal_id,
+        voter: vote_record.voter,
+        voter_stake: voter_stake_key,
+        role,
+        in_favor,
+        weight,
+        votes_for,
+        votes_against,
+        locked_until,
+        timestamp: now,
+    });
     Ok(())
 }

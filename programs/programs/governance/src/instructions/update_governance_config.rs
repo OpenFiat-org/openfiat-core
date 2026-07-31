@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount};
 
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, events::GovernanceConfigUpdated, state::*};
 
 /// Corrects the singleton `GovernanceConfig` after
 /// `initialize_governance_config` has run — admin-only, matching that
@@ -82,6 +82,10 @@ pub fn handle_update_governance_config(
     require_valid_bps(params.quorum_upgrade_bps)?;
     crate::shared_logic::require_valid_vote_lock(params.vote_lock_secs)?;
 
+    let admin = ctx.accounts.admin.key();
+    let forfeit_destination = ctx.accounts.forfeit_destination.key();
+    let now = Clock::get()?.unix_timestamp;
+
     let governance_config = &mut ctx.accounts.governance_config;
     governance_config.total_open_supply = params.total_open_supply;
     governance_config.quorum_bps = params.quorum_bps;
@@ -90,7 +94,22 @@ pub fn handle_update_governance_config(
     governance_config.threshold_upgrade_bps = params.threshold_upgrade_bps;
     governance_config.quorum_upgrade_bps = params.quorum_upgrade_bps;
     governance_config.deposit_amount = params.deposit_amount;
-    governance_config.forfeit_destination = ctx.accounts.forfeit_destination.key();
+    governance_config.forfeit_destination = forfeit_destination;
     governance_config.vote_lock_secs = params.vote_lock_secs;
+
+    emit!(GovernanceConfigUpdated {
+        governance_config: governance_config.key(),
+        admin,
+        total_open_supply: governance_config.total_open_supply,
+        quorum_bps: governance_config.quorum_bps,
+        threshold_simple_bps: governance_config.threshold_simple_bps,
+        threshold_treasury_bps: governance_config.threshold_treasury_bps,
+        threshold_upgrade_bps: governance_config.threshold_upgrade_bps,
+        quorum_upgrade_bps: governance_config.quorum_upgrade_bps,
+        deposit_amount: governance_config.deposit_amount,
+        forfeit_destination: governance_config.forfeit_destination,
+        vote_lock_secs: governance_config.vote_lock_secs,
+        timestamp: now,
+    });
     Ok(())
 }

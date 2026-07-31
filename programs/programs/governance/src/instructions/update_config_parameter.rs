@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, error::ErrorCode, state::*};
+use crate::{constants::*, error::ErrorCode, events::ConfigParameterChangeAuthorized, state::*};
 
 /// OFS-4200 §6: `update_config_parameter(target_program, parameter_key,
 /// new_value)`, callable only when the calling proposal is `Accepted`
@@ -31,10 +31,25 @@ pub struct UpdateConfigParameter<'info> {
 
 pub fn handle_update_config_parameter(
     ctx: Context<UpdateConfigParameter>,
-    _target_program: Pubkey,
-    _parameter_key: String,
-    _new_value: u64,
+    target_program: Pubkey,
+    parameter_key: String,
+    new_value: u64,
 ) -> Result<()> {
     ctx.accounts.proposal.executed = true;
+
+    // Named `ConfigParameterChangeAuthorized`, with an `authorized_value`
+    // rather than a `new_value`, because nothing was written: the three
+    // arguments were previously discarded entirely, so an accepted
+    // Parameter proposal left no on-chain record of *what* it had
+    // authorized. Recording them is the point; implying they took effect
+    // would be worse than the silence it replaces.
+    emit!(ConfigParameterChangeAuthorized {
+        proposal: ctx.accounts.proposal.key(),
+        proposal_id: ctx.accounts.proposal.id,
+        target_program,
+        parameter_key,
+        authorized_value: new_value,
+        timestamp: Clock::get()?.unix_timestamp,
+    });
     Ok(())
 }
