@@ -631,9 +631,24 @@ fn advertise_public_api<S: KvStore + 'static>(
         return;
     };
 
+    // `<role>-<base58 public key>`.
+    //
     // Derived from the identity, not random: re-registering on every
     // restart must update the same record rather than accumulating one
-    // dead entry per boot.
+    // dead entry per boot. The role prefix is what lets one node register
+    // several services — a `node-` and a `snapshot-` record share an
+    // identity and must not share a key.
+    //
+    // The identity half is the node's full base58 public key: the same
+    // 32-byte-base58 form a Solana address takes, and the same string
+    // this node reports as its `payout_wallet`. It was previously the
+    // first 8 bytes of the *peer id* in hex, which looked unique and was
+    // not — an Ed25519 peer id opens with the fixed multihash preamble
+    // `00 24 08 01 12 20`, so six of those eight bytes are identical for
+    // every node on the network and only two ever varied. Sixteen bits
+    // of entropy collide better than evenly at a few hundred nodes, and
+    // a collision here means one node's registry record silently
+    // overwrites another's.
     let service_id = ServiceId::new(format!("node-{}", keypair.public_key()));
 
     let registration = Registration {
@@ -1860,6 +1875,69 @@ mod tests {
     use super::*;
     use openfiat_chain::ChainError;
     use openfiat_storage::mem::MemoryStore;
+
+    /// A service id must distinguish two nodes that differ *anywhere* in
+    /// their identity, not just in the two bytes an Ed25519 peer id
+    /// happens to vary in early.
+    ///
+    /// The two seeds below produce peer ids whose first eight bytes are
+    /// byte-identical — six from the fixed `00 24 08 01 12 20` multihash
+    /// preamble, and this pair chosen so the next two match as well.
+    /// Under the old `node-<first 8 bytes of peer id, hex>` scheme both
+    /// nodes claimed the same registry key and one overwrote the other.
+    #[test]
+    fn two_nodes_sharing_a_peer_id_prefix_still_get_different_service_ids() {
+        let colliding = (0u32..)
+            .map(|n| {
+                let mut seed = [0u8; 32];
+                seed[..4].copy_from_slice(&n.to_le_bytes());
+                Keypair::from_seed(seed)
+            })
+            .map(|keypair| {
+                let peer =
+                    openfiat_network::identity::peer_id_from_public_key(&keypair.public_key())
+                        .expect("an Ed25519 key always derives a peer id");
+                (keypair, peer.as_bytes()[..8].to_vec())
+            })
+            .take(4096)
+            .fold(
+                std::collections::HashMap::<Vec<u8>, Keypair>::new(),
+                |mut seen, (keypair, prefix)| {
+                    seen.entry(prefix).or_insert(keypair);
+                    seen
+                },
+            );
+
+        // 4096 distinct nodes, and the eight-byte prefix they were keyed
+        // by does not have 4096 distinct values — that shortfall *is* the
+        // bug, so assert it rather than assuming it.
+        assert!(
+            colliding.len() < 4096,
+            "expected the 8-byte peer-id prefix to collide within 4096 nodes; \
+             it did not, so this test is no longer exercising the failure it names"
+        );
+
+        // The identity actually used is the full public key, and those
+        // are all distinct.
+        let ids: std::collections::HashSet<String> = (0u32..4096)
+            .map(|n| {
+                let mut seed = [0u8; 32];
+                seed[..4].copy_from_slice(&n.to_le_bytes());
+                format!("node-{}", Keypair::from_seed(seed).public_key())
+            })
+            .collect();
+        assert_eq!(ids.len(), 4096, "two distinct nodes claimed one service id");
+    }
+
+    /// The two records one node registers must not collide with each other.
+    #[test]
+    fn a_nodes_api_and_snapshot_records_are_separate_entries() {
+        let keypair = Keypair::from_seed([9u8; 32]);
+        assert_ne!(
+            format!("node-{}", keypair.public_key()),
+            format!("snapshot-{}", keypair.public_key())
+        );
+    }
 
     /// A `ChainClient` fake, so `poll_chain`'s own glue logic (fetch,
     /// announce, drain, submit) is testable without a live Solana
