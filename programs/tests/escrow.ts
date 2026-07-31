@@ -1436,6 +1436,135 @@ describe("escrow", () => {
       expect(caseAccount.round).to.equal(1);
       expect(caseAccount.arbitrators.length).to.equal(0);
       expect(caseAccount.commitments.length).to.equal(0);
+      // Both revealed — a tie is a disagreement, not a refusal to speak,
+      // so neither seat is retired.
+      expect(caseAccount.barred.length, "revealing must never cost a seat").to.equal(0);
+    });
+
+    it("bars a seat that committed and never revealed from the rest of the case", async () => {
+      // The attack the quorum floor opened. A party who expects to lose
+      // takes seats, commits, and stays silent: fewer than three reveals
+      // is not a decision, the round re-opens, and doing that until the
+      // rounds run out reaches the terminal even split — half an escrow
+      // they were going to lose entirely. Re-drawing the seed every round
+      // is necessary and not sufficient, because a stake large enough to
+      // qualify qualifies again.
+      const reservationId = 9013;
+      const amount = unit(700);
+      const { merchant, buyer } = await openFundedTradeEscrow(reservationId, amount);
+
+      const tradeEscrow = tradeEscrowSeed(reservationId);
+      const disputeCase = disputeCasePda(reservationId);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .openDisputeCase(new BN(60), new BN(60))
+          .accountsPartial({
+            signer: buyer.publicKey,
+            payer: admin.publicKey,
+            tradeEscrow,
+            disputeCase,
+            feeConfig,
+            depositMint: openMint,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+            arbitrationPool,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([buyer])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const honest = await setUpArbitrator(unit(40000));
+      const squatter = await setUpArbitrator(unit(90000));
+      const buyerAta = await ata(mint, buyer.publicKey);
+
+      const commit = (arb: Keypair, commitment: Buffer) =>
+        withBlockhashRetry(() =>
+          program.methods
+            .commitDisputeVote([...commitment])
+            .accountsPartial({
+              arbitrator: arb.publicKey,
+              disputeCase,
+              stakingConfig,
+              arbitratorStake: stakeAccountPda(arb.publicKey),
+            })
+            .signers([arb])
+            .rpc({ commitment: "confirmed" }),
+        );
+
+      const honestSalt = crypto.randomBytes(32);
+      await commit(honest, commitmentFor(OUTCOME_BYTE.buyerWins, honestSalt));
+      // The squatter's commitment is never opened. It does not matter what
+      // it says — the point is that it is never revealed.
+      await commit(squatter, commitmentFor(OUTCOME_BYTE.merchantWins, crypto.randomBytes(32)));
+
+      await new Promise((r) => setTimeout(r, 61000)); // past commit_deadline
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .revealDisputeVote(OUTCOME_BUYER_WINS, [...honestSalt])
+          .accountsPartial({
+            arbitrator: honest.publicKey,
+            disputeCase,
+            stakingConfig,
+            arbitratorStake: stakeAccountPda(honest.publicKey),
+          })
+          .signers([honest])
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      await new Promise((r) => setTimeout(r, 61000)); // past reveal_deadline
+      await withBlockhashRetry(() =>
+        program.methods
+          .executeDisputeOutcome()
+          .accountsPartial({
+            mint,
+            disputeCase,
+            tradeEscrow,
+            tradeEscrowTokenVault: tradeEscrowTokenVaultPda(reservationId),
+            liquidityVault: liquidityVaultPda(merchant.publicKey, mint),
+            liquidityTokenVault: liquidityTokenVaultPda(merchant.publicKey, mint),
+            buyerTokenAccount: buyerAta,
+            feeConfig,
+            devTreasury,
+            ecosystemTreasury,
+            infraTreasury,
+            emergencyReserve,
+            depositMint: openMint,
+            arbitrationPool,
+            merchantOpenVault: liquidityVaultPda(merchant.publicKey, openMint),
+            merchantOpenTokenVault: liquidityTokenVaultPda(merchant.publicKey, openMint),
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+            depositTokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .rpc({ commitment: "confirmed" }),
+      );
+
+      const reopened = await program.account.disputeCase.fetch(disputeCase);
+      expect(reopened.round, "the round must re-open").to.equal(1);
+      expect(
+        reopened.barred.map((k) => k.toBase58()),
+        "the silent seat is barred and the one that revealed is not",
+      ).to.deep.equal([squatter.publicKey.toBase58()]);
+
+      // And the bar is enforced, not merely recorded.
+      let refused = false;
+      try {
+        await commit(squatter, commitmentFor(OUTCOME_BYTE.merchantWins, crypto.randomBytes(32)));
+      } catch (err) {
+        refused = true;
+        expect(String(err)).to.match(/ArbitratorBarredFromCase|never revealed/);
+      }
+      expect(refused, "a barred arbitrator must not take another seat").to.equal(true);
+
+      // The honest arbitrator, who revealed, may serve again.
+      await commit(honest, commitmentFor(OUTCOME_BYTE.buyerWins, crypto.randomBytes(32)));
+      const round1 = await program.account.disputeCase.fetch(disputeCase);
+      expect(round1.arbitrators.map((k) => k.toBase58())).to.deep.equal([
+        honest.publicKey.toBase58(),
+      ]);
     });
 
     it("refuses to decide on fewer than three counted votes, however lopsided", async () => {

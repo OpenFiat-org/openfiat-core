@@ -494,6 +494,25 @@ fn handle_undecided_round(mut ctx: Context<ExecuteDisputeOutcome>, now: i64) -> 
         dispute_case.reservation_id,
         &dispute_case.trade_escrow,
     )?;
+    let mut barred_this_round: Vec<Pubkey> = Vec::new();
+    // Whoever took a seat and never revealed loses it for the rest of the
+    // case. Collected before the arrays are cleared, because after that
+    // there is no record of who was silent — and a fresh draw alone does
+    // not stop a stake large enough to qualify from qualifying again.
+    for (index, arbitrator) in dispute_case.arbitrators.iter().enumerate() {
+        let revealed = dispute_case
+            .revealed_outcomes
+            .get(index)
+            .is_some_and(|outcome| outcome.is_some());
+        if !revealed
+            && !dispute_case.barred.contains(arbitrator)
+            && dispute_case.barred.len() < MAX_BARRED_ARBITRATORS
+        {
+            barred_this_round.push(*arbitrator);
+        }
+    }
+    dispute_case.barred.extend(barred_this_round);
+
     dispute_case.arbitrators = Vec::new();
     dispute_case.commitments = Vec::new();
     dispute_case.revealed_outcomes = Vec::new();

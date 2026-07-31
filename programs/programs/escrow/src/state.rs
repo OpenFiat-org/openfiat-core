@@ -30,6 +30,13 @@ pub const MAX_ARBITRATORS: usize = 7;
 /// more than deciding would have.
 pub const MIN_ARBITRATORS: usize = 3;
 
+/// The most seats this case can retire for staying silent.
+///
+/// Every round but the last can bar a full bench — the last one ends the
+/// case either way, so nothing it bars would ever be consulted.
+pub const MAX_BARRED_ARBITRATORS: usize =
+    MAX_ARBITRATORS * (crate::constants::MAX_DISPUTE_ROUNDS as usize - 1);
+
 /// A merchant's pooled inventory for one stablecoin (OFS-4200 §4). Backs
 /// the Liquidity Vault Architecture (Whitepaper Ch.08) — `reserve_liquidity`
 /// only moves counters here; actual token movement happens when a trade
@@ -274,6 +281,27 @@ pub struct DisputeCase {
     /// decided the case can claim (OFS-4100 §9.3).
     #[max_len(MAX_ARBITRATORS)]
     pub reward_claimed: Vec<bool>,
+    /// Seats that committed in an earlier round of this case and never
+    /// revealed. They may not take a seat again in this case.
+    ///
+    /// Without this, the quorum floor is an attack surface rather than a
+    /// safeguard. A party who expects to lose takes seats, commits, and
+    /// stays silent: fewer than `MIN_ARBITRATORS` reveals is not a
+    /// decision, the round re-opens, and repeating it to
+    /// [`MAX_DISPUTE_ROUNDS`](crate::constants::MAX_DISPUTE_ROUNDS)
+    /// reaches the terminal even split — a guaranteed half of an escrow
+    /// they were going to lose entirely. The re-latched seed makes each
+    /// round a fresh draw, which is necessary and not sufficient: a stake
+    /// large enough to qualify qualifies again.
+    ///
+    /// So silence costs the seat. An attacker has to win the draw with a
+    /// *new* wallet every round, each funding and locking the minimum
+    /// stake, and the case runs out of rounds before that becomes cheap.
+    ///
+    /// Bounded by what the rounds can actually produce: every round but
+    /// the last can retire a full bench.
+    #[max_len(MAX_BARRED_ARBITRATORS)]
+    pub barred: Vec<Pubkey>,
     /// The merchant's OPEN liquidity vault the deposit was taken from, and
     /// where it returns if the merchant is not found at fault.
     ///

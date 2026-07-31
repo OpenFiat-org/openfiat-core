@@ -131,6 +131,15 @@ pub fn handle_commit_dispute_vote(
     // not qualify now may qualify later in the same round. That is
     // required for liveness on a small pool, and is the reason this cannot
     // be checked once and cached.
+    // A seat that went silent in an earlier round of this case does not
+    // get another. Taking seats and never revealing is how a losing party
+    // drives every round to no decision and collects the terminal even
+    // split — see `DisputeCase::barred`.
+    require!(
+        !dispute_case.barred.contains(&ctx.accounts.arbitrator.key()),
+        ErrorCode::ArbitratorBarredFromCase
+    );
+
     require!(
         openfiat_programs_shared::sortition::qualifies_for_seat(
             &dispute_case.case_seed,

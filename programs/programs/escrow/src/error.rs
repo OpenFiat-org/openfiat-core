@@ -6,6 +6,8 @@ pub enum ErrorCode {
     Unauthorized,
     #[msg("Fee treasury split basis points must sum to exactly 10_000")]
     InvalidFeeSplit,
+    #[msg("This arbitrator committed in an earlier round of this case and never revealed")]
+    ArbitratorBarredFromCase,
     #[msg("settlement_fee_bps must be between 0 and 10_000")]
     InvalidFeeBps,
     #[msg("timeout_secs must be greater than zero")]
