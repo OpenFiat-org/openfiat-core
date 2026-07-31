@@ -104,14 +104,19 @@ pub fn symbol_for_mint(mint: &MintAddress) -> Option<&'static str> {
         .map(|known| known.symbol)
 }
 
-/// The mint a symbol refers to on this deployment, if exactly one does.
+/// Everything this build knows about `mint` — its name *and* its scale.
 ///
-/// For the one direction that genuinely needs it: an oracle publishes
-/// exchange rates against a *symbol* (`USDC/KES`), because a rate is about
-/// an asset rather than about a particular cluster's mint of it. Pricing a
-/// floating advertisement therefore has to cross from the ad's mint to the
-/// oracle's symbol, and this is that crossing, in one place, rather than a
-/// string comparison scattered through the pricing path.
+/// [`symbol_for_mint`] answers the question a label asks. This answers the
+/// question a *quantity* asks, and the two are not the same call because
+/// the second one can be wrong in a way the first cannot: a caller that has
+/// base units and guesses the exponent prints a number off by a factor of
+/// a thousand, silently and plausibly. `decimals` is therefore taken from
+/// the same row as the symbol, so a build cannot know what to call a mint
+/// while assuming how to scale it.
+///
+/// `None` carries the same meaning as it does in [`symbol_for_mint`]: no
+/// nickname, not invalid. A caller totalling base units can still total
+/// them; what it must not do is decide where the decimal point goes.
 pub fn known(mint: &MintAddress) -> Option<&'static KnownMint> {
     KNOWN_MINTS.iter().find(|known| known.mint == mint.as_str())
 }
@@ -164,6 +169,38 @@ mod tests {
                 assert_ne!(a.symbol, b.symbol, "two mints named {}", a.symbol);
                 assert_ne!(a.mint, b.mint, "{} listed twice", a.mint);
             }
+        }
+    }
+
+    #[test]
+    fn the_name_lookup_and_the_scale_lookup_never_disagree_about_a_mint() {
+        // Two functions read this one table, and callers mix them: the
+        // advertisement view names a mint with `symbol_for_mint` while
+        // `getSettledVolume` takes name *and* decimals from `known`. If
+        // they ever answered differently, one response could name a mint
+        // that another said nothing about, and no test above would notice
+        // — both would still be internally consistent.
+        for entry in KNOWN_MINTS {
+            let mint = MintAddress::parse(entry.mint).expect("a listed mint parses");
+            assert_eq!(
+                symbol_for_mint(&mint),
+                known(&mint).map(|k| k.symbol),
+                "{} is named differently by the two lookups",
+                entry.mint
+            );
+        }
+    }
+
+    #[test]
+    fn a_scale_is_never_left_to_a_caller_to_guess() {
+        // Decimals ride with the symbol precisely so a caller cannot know
+        // what to call a mint while assuming how to scale it. wSOL is 9
+        // and the stablecoins are 6, so a build that defaulted to 6 would
+        // report SOL volume a thousand times too large — the failure
+        // `getSettledVolume`'s own doc calls out.
+        for entry in KNOWN_MINTS {
+            let mint = MintAddress::parse(entry.mint).expect("a listed mint parses");
+            assert_eq!(known(&mint).map(|k| k.decimals), Some(entry.decimals));
         }
     }
 
