@@ -1652,6 +1652,94 @@ async fn poll_vote_verifications<S: KvStore + 'static>(
     }
 }
 
+/// One tick of adopting governance outcomes from the chain.
+///
+/// The off-chain layer stopped tallying votes itself because a node only
+/// records votes whose weight it could verify against on-chain stake, so
+/// a local tally is a function of connectivity: an `RpcConnected` node
+/// and a `GossipOnly` node reach different answers about the same
+/// proposal, both correctly. The chain's `tally_and_finalize` is the
+/// authority, and this is where its answer is read.
+///
+/// Only proposals that are still `Voting` locally *and* claim an
+/// on-chain counterpart are fetched, so the workload shrinks as
+/// proposals settle rather than growing forever, and a purely
+/// informational proposal is never the subject of a chain query it was
+/// never put to.
+///
+/// Every failure is silent to local state and loud in the log. A chain
+/// read that fails, an account that is missing, one owned by another
+/// program, or one that does not decode all mean the same thing — this
+/// node cannot state an outcome — and none of them is a reason to invent
+/// one.
+async fn poll_proposal_resolutions<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    client: &dyn ChainClient,
+) {
+    use openfiat_governance::ChainAgreement;
+    use openfiat_governance::onchain::{decode_proposal, onchain_proposal_address};
+
+    for (proposal_id, onchain_id) in state.governance.pending_onchain_resolutions() {
+        let address = onchain_proposal_address(onchain_id);
+        let onchain = match client.get_account(&address).await {
+            Ok(Some((owner, data))) => match decode_proposal(&owner, &data) {
+                Ok(decoded) => Some(decoded),
+                Err(err) => {
+                    tracing::warn!(
+                        %address, ?err,
+                        "on-chain proposal account did not decode; leaving the proposal unresolved"
+                    );
+                    None
+                }
+            },
+            Ok(None) => {
+                // A claim on an account that does not exist. Reported at
+                // debug rather than warn: a proposal may legitimately
+                // name an on-chain id before the on-chain proposal has
+                // been created.
+                tracing::debug!(%address, "claimed on-chain proposal account does not exist yet");
+                None
+            }
+            Err(err) => {
+                tracing::warn!(%address, %err, "could not read the on-chain proposal account");
+                None
+            }
+        };
+
+        match state.governance.adopt_onchain_resolution(
+            &proposal_id,
+            onchain.as_ref(),
+            openfiat_types::Timestamp::now(),
+        ) {
+            Ok(ChainAgreement::LinkedAwaitingAdoption) => {
+                tracing::info!(
+                    proposal = proposal_id.as_str(),
+                    onchain_id,
+                    "adopted the chain's resolution for a proposal"
+                );
+            }
+            Ok(ChainAgreement::LinkedDisagreed) => {
+                // Logged rather than acted on. Local state has already
+                // left `Voting`, and letting a later read flip a settled
+                // outcome would make the record depend on poll ordering.
+                tracing::warn!(
+                    proposal = proposal_id.as_str(),
+                    onchain_id,
+                    "this node's governance record disagrees with the chain's"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(
+                    proposal = proposal_id.as_str(),
+                    ?err,
+                    "could not adopt a chain resolution"
+                );
+            }
+        }
+    }
+}
+
 /// What a `GossipOnly` node does with the votes it can never verify.
 ///
 /// Such a node has no RPC endpoint, so it cannot read a `StakeAccount` at
@@ -2200,6 +2288,7 @@ where
                             Some(client) => {
                                 poll_chain(&state, client).await;
                                 poll_vote_verifications(&state, client).await;
+                                poll_proposal_resolutions(&state, client).await;
                             }
                             None => discard_unverifiable_votes(&state),
                         }

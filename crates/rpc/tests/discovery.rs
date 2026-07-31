@@ -19,6 +19,30 @@ use openfiat_types::NodeRole;
 use serde_json::Value;
 use std::time::Duration;
 
+/// A UDP port nothing is currently listening on.
+///
+/// These tests need the port *known before the node starts* — peers are
+/// given an entrypoint address in advance, which is also the real
+/// deployment shape, since an entrypoint is published rather than
+/// discovered. That rules out binding `:0` and reading back what the OS
+/// chose, but it does not require the number to be a literal.
+///
+/// It used to be a literal, and the literals collided: this file failed
+/// under a full `cargo test --workspace` run and passed in isolation,
+/// which is the signature of a port already held by another test binary
+/// or — on a machine that runs real nodes, as the development box does —
+/// by an actual node. Asking the OS for a free port and immediately
+/// releasing it leaves a small race, but a small race is a different
+/// class of problem from a fixed number that is *guaranteed* to clash
+/// with anything else that picked the same one.
+fn free_udp_port() -> u16 {
+    std::net::UdpSocket::bind("127.0.0.1:0")
+        .expect("the loopback interface has a free UDP port")
+        .local_addr()
+        .expect("a bound socket has a local address")
+        .port()
+}
+
 fn start(port: u16, entrypoints: Vec<String>) -> RpcHandle {
     let mut config = NetworkConfig::for_test();
     config.listen_addr = format!("/ip4/127.0.0.1/udp/{port}/quic-v1")
@@ -76,19 +100,21 @@ async fn eventually(label: &str, mut condition: impl AsyncFnMut() -> bool) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_learns_a_peer_it_was_never_given() {
-    // Fixed ports, because B and C have to be told A's address before A is
-    // running and there is no side channel in this topology to learn an
-    // OS-assigned one through. That is also the real deployment shape: an
-    // entrypoint is a published address, not a discovered one.
-    let alpha = start(47801, Vec::new());
+    // Ports decided up front, because B and C have to be told A's address
+    // before A is running and there is no side channel in this topology to
+    // learn an OS-assigned one through. That is also the real deployment
+    // shape: an entrypoint is a published address, not a discovered one.
+    // Decided up front is not the same as hardcoded — see `free_udp_port`.
+    let alpha_port = free_udp_port();
+    let alpha = start(alpha_port, Vec::new());
     eventually("alpha binds a listen address", async || {
         !announced(&alpha).await.is_empty()
     })
     .await;
 
-    let entrypoint = "/ip4/127.0.0.1/udp/47801/quic-v1".to_string();
-    let beta = start(47802, vec![entrypoint.clone()]);
-    let gamma = start(47803, vec![entrypoint]);
+    let entrypoint = format!("/ip4/127.0.0.1/udp/{alpha_port}/quic-v1");
+    let beta = start(free_udp_port(), vec![entrypoint.clone()]);
+    let gamma = start(free_udp_port(), vec![entrypoint]);
 
     // Every node is now connected to alpha, and beta and gamma have never
     // heard of each other: neither was given the other's address, and
@@ -131,7 +157,9 @@ async fn a_node_announces_the_address_its_operator_declared_first() {
     // outside; only the operator can say what the public one is, and a
     // peer trying addresses in order must get the reachable one first.
     let mut config = NetworkConfig::for_test();
-    config.listen_addr = "/ip4/127.0.0.1/udp/47811/quic-v1".parse().unwrap();
+    config.listen_addr = format!("/ip4/127.0.0.1/udp/{}/quic-v1", free_udp_port())
+        .parse()
+        .unwrap();
     config.external_addresses = vec!["/ip4/203.0.113.7/udp/4001/quic-v1".parse().unwrap()];
     config.serve_content = false;
     let node = spawn_actor(MemoryStore::new, config);
