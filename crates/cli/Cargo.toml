@@ -27,13 +27,3 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "s
 clap = { version = "4.6.4", features = ["derive"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-
-[dev-dependencies]
-# Only for the `devnet_oracle` example: a devnet FX publisher that signs
-# with the protocol's own types and posts over the node's public RPC.
-openfiat-oracles = { path = "../oracles", version = "0.1.0" }
-openfiat-registry = { path = "../registry", version = "0.1.0" }
-openfiat-serialization = { path = "../serialization", version = "0.1.0" }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-serde_json = "1"
-base64 = "0.22"
