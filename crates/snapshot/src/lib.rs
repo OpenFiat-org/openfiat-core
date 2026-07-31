@@ -41,6 +41,7 @@ pub mod serve;
 pub mod service;
 pub mod state;
 pub mod store;
+pub mod trust;
 
 pub use config::SnapshotConfig;
 pub use error::SnapshotError;

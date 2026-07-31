@@ -14,6 +14,9 @@ openfiat-crypto = { path = "../crypto", version = "0.1.0" }
 openfiat-gossip = { path = "../gossip", version = "0.1.0" }
 openfiat-registry = { path = "../registry", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
+# Trust anchors are written as base58 public keys, the form a key is
+# actually exchanged in — see `src/trust.rs`.
+bs58 = "0.5"
 serde = { version = "1.0.229", features = ["derive"] }
 # The serving and fetching halves of §14. `axum` is the HTTP server this
 # node already runs (see `serve`'s module doc on why this merges into it

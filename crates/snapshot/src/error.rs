@@ -13,6 +13,16 @@ pub enum SnapshotError {
     /// §5/§24: the announcer isn't registered as a snapshot provider in
     /// `openfiat-registry`.
     Unauthorized,
+    /// This node holds no checkpoint of its own, and the snapshot offered
+    /// to it comes from a producer outside [`crate::trust::TrustAnchors`].
+    ///
+    /// Distinct from [`Self::Unauthorized`] because it says something
+    /// different and is fixed differently: the producer may be perfectly
+    /// well registered. What is missing is any basis for *this* node to
+    /// believe them, since it has no history to judge the snapshot
+    /// against — see `crate::trust` for why a first snapshot is the one
+    /// case where registration is not enough.
+    UntrustedFirstSnapshot,
     MalformedRecord,
     /// §24: a Snapshot ID that's already on file.
     DuplicateSnapshotId,
@@ -57,6 +67,11 @@ impl SnapshotError {
         match self {
             Self::InvalidSignature => ErrorCode::InvalidSignature,
             Self::Unauthorized => ErrorCode::InvalidRequest,
+            // Not InvalidRequest: the request is well formed and the
+            // producer may be properly registered. What is refused is this
+            // node trusting it, which is a state of the node rather than a
+            // fault in the message.
+            Self::UntrustedFirstSnapshot => ErrorCode::SnapshotVerificationFailed,
             Self::MalformedRecord => ErrorCode::DeserializationError,
             Self::DuplicateSnapshotId => ErrorCode::ResourceAlreadyExists,
             Self::UnsupportedCompression => ErrorCode::UnsupportedOperation,

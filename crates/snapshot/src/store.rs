@@ -8,6 +8,7 @@ use crate::error::SnapshotError;
 use crate::events::SignedSnapshotAnnounce;
 use crate::protocol;
 use crate::record::{SnapshotId, SnapshotMetadata};
+use crate::trust::TrustAnchors;
 use openfiat_registry::Registry;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
@@ -26,11 +27,26 @@ pub const RESERVED_COLUMN_FAMILIES: &[&str] = &[SNAPSHOTS_COLUMN_FAMILY, CHECKPO
 pub struct SnapshotIndex<S> {
     store: S,
     services: Rc<Registry<S>>,
+    /// Who this node will take a *first* snapshot from, when it has no
+    /// checkpoint of its own to judge one against.
+    anchors: TrustAnchors,
 }
 
 impl<S: KvStore> SnapshotIndex<S> {
     pub fn new(store: S, services: Rc<Registry<S>>) -> Self {
-        Self { store, services }
+        Self::with_anchors(store, services, TrustAnchors::pinned())
+    }
+
+    /// The pinned anchors plus whatever the operator added — see
+    /// `crate::trust`. Separate from `new` so the common case cannot
+    /// forget them: `new` is anchored too, and there is no constructor
+    /// that produces an unanchored index.
+    pub fn with_anchors(store: S, services: Rc<Registry<S>>, anchors: TrustAnchors) -> Self {
+        Self {
+            store,
+            services,
+            anchors,
+        }
     }
 
     pub fn get(&self, id: &SnapshotId) -> Option<SnapshotMetadata> {
@@ -139,6 +155,17 @@ impl<S: KvStore> SnapshotIndex<S> {
         if !self.is_registered_provider(&metadata.producer) {
             return Err(SnapshotError::Unauthorized);
         }
+        // A node with no checkpoint has no history to judge a snapshot
+        // against, so every check above passes on a well-formed forgery:
+        // they establish that the bytes are what the announcer said, not
+        // that the announcer is telling the truth. Nothing in the protocol
+        // establishes what the correct state root at a height IS. So the
+        // first snapshot — and only the first — must come from a pinned
+        // anchor. After this import the node has its own basis, and
+        // registration governs. See `crate::trust`.
+        if self.checkpoint_height().is_none() && !self.anchors.trusts(&metadata.producer) {
+            return Err(SnapshotError::UntrustedFirstSnapshot);
+        }
         // Only a node that has already imported something can be rolled
         // backwards. A node with no checkpoint has no state to lose and
         // must be able to import *any* height — including 0, which is
@@ -235,6 +262,27 @@ mod tests {
         (keypair, services)
     }
 
+    /// An index that trusts `provider` for a first snapshot.
+    ///
+    /// Most tests here are about the *import pipeline* — size, digest,
+    /// height ordering — not about who is trusted, and a randomly seeded
+    /// test provider is naturally not a pinned anchor. Adding it through
+    /// the real additive path keeps those tests aimed at what they mean to
+    /// assert, and keeps the anchor gate itself covered by the tests that
+    /// deliberately do NOT use this.
+    fn trusting(
+        store: TestStore,
+        services: Rc<Registry<TestStore>>,
+        provider: &Keypair,
+    ) -> SnapshotIndex<TestStore> {
+        let key = bs58::encode(provider.public_key().as_bytes()).into_string();
+        SnapshotIndex::with_anchors(
+            store,
+            services,
+            crate::trust::TrustAnchors::with_operator(&[key]).unwrap(),
+        )
+    }
+
     /// A one-entry state blob, so a test can name the state it expects a
     /// store to hold afterwards rather than an opaque byte string.
     fn state_blob(key: &str, value: &str) -> Vec<u8> {
@@ -287,7 +335,7 @@ mod tests {
     #[test]
     fn a_registered_provider_can_announce_and_it_is_queryable() {
         let (provider, services) = registered_provider(1);
-        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), services);
+        let index = trusting(Rc::new(MemoryStore::new()), services, &provider);
         let id = index
             .apply_announce(SignedSnapshotAnnounce::sign(
                 announce(&provider, "snap-1", 100, b"state"),
@@ -300,7 +348,7 @@ mod tests {
     #[test]
     fn latest_picks_the_highest_height() {
         let (provider, services) = registered_provider(1);
-        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), services);
+        let index = trusting(Rc::new(MemoryStore::new()), services, &provider);
         index
             .apply_announce(SignedSnapshotAnnounce::sign(
                 announce(&provider, "snap-1", 100, b"state-1"),
@@ -320,7 +368,7 @@ mod tests {
     fn importing_a_valid_snapshot_writes_the_state_and_advances_the_checkpoint() {
         let (provider, services) = registered_provider(1);
         let store = Rc::new(MemoryStore::new());
-        let index = SnapshotIndex::new(Rc::clone(&store), services);
+        let index = trusting(Rc::clone(&store), services, &provider);
         let blob = state_blob("ad-1", "the full marketplace state");
         let metadata = announce(&provider, "snap-1", 4217, &blob);
         seed(&index, &provider, &metadata);
@@ -338,7 +386,7 @@ mod tests {
     fn a_tampered_state_blob_fails_state_root_verification() {
         let (provider, services) = registered_provider(1);
         let store = Rc::new(MemoryStore::new());
-        let index = SnapshotIndex::new(Rc::clone(&store), services);
+        let index = trusting(Rc::clone(&store), services, &provider);
         let blob = state_blob("ad-1", "the real state");
         let metadata = announce(&provider, "snap-1", 100, &blob);
         seed(&index, &provider, &metadata);
@@ -364,7 +412,7 @@ mod tests {
     #[test]
     fn a_truncated_download_fails_the_size_check() {
         let (provider, services) = registered_provider(1);
-        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), services);
+        let index = trusting(Rc::new(MemoryStore::new()), services, &provider);
         let blob = state_blob("ad-1", "the full state");
         let metadata = announce(&provider, "snap-1", 100, &blob);
         seed(&index, &provider, &metadata);
@@ -419,7 +467,7 @@ mod tests {
     fn a_fresh_node_can_import_a_height_zero_snapshot() {
         let (provider, services) = registered_provider(1);
         let store = Rc::new(MemoryStore::new());
-        let index = SnapshotIndex::new(Rc::clone(&store), services);
+        let index = trusting(Rc::clone(&store), services, &provider);
         let blob = state_blob("ad-1", "genesis state");
         let metadata = announce(&provider, "snap-genesis", 0, &blob);
         seed(&index, &provider, &metadata);
@@ -435,7 +483,7 @@ mod tests {
     fn importing_an_older_snapshot_is_refused_outright() {
         let (provider, services) = registered_provider(1);
         let store = Rc::new(MemoryStore::new());
-        let index = SnapshotIndex::new(Rc::clone(&store), services);
+        let index = trusting(Rc::clone(&store), services, &provider);
 
         let newer_blob = state_blob("ad-1", "newer state");
         let newer = announce(&provider, "snap-2", 500, &newer_blob);

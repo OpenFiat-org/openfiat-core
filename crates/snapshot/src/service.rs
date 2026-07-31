@@ -25,8 +25,27 @@ pub struct SnapshotService<S> {
 impl<S: KvStore + 'static> SnapshotService<S> {
     /// `services` is the shared handle from `RegistryService::registry`
     /// on the same node — see `SnapshotIndex`.
-    pub fn new(mut gossip: GossipService<S>, store: S, services: Rc<Registry<S>>) -> Self {
-        let registry = Rc::new(SnapshotIndex::new(store, services));
+    pub fn new(gossip: GossipService<S>, store: S, services: Rc<Registry<S>>) -> Self {
+        Self::with_anchors(
+            gossip,
+            store,
+            services,
+            crate::trust::TrustAnchors::pinned(),
+        )
+    }
+
+    /// The pinned trust anchors plus whatever the operator added.
+    ///
+    /// Only the anchors decide whose snapshot a node with *no checkpoint*
+    /// will adopt; a node that already has history uses registration, as
+    /// before. See `crate::trust`.
+    pub fn with_anchors(
+        mut gossip: GossipService<S>,
+        store: S,
+        services: Rc<Registry<S>>,
+        anchors: crate::trust::TrustAnchors,
+    ) -> Self {
+        let registry = Rc::new(SnapshotIndex::with_anchors(store, services, anchors));
         let handler_registry = Rc::clone(&registry);
         gossip.add_event_handler(move |event| handler_registry.apply_event(event));
         Self { gossip, registry }

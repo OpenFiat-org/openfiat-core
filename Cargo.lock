@@ -3777,6 +3777,7 @@ name = "openfiat-snapshot"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bs58",
  "futures",
  "http-body-util",
  "libp2p",
@@ -3828,6 +3829,7 @@ name = "openfiat-types"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -19,7 +19,9 @@ use openfiat_network::identity::{peer_id, to_libp2p_keypair};
 use openfiat_network::{Multiaddr, Node};
 use openfiat_registry::{Registration, Registry, SignedRegistration};
 use openfiat_snapshot::config::SnapshotConfig;
+use openfiat_snapshot::events::SignedSnapshotAnnounce;
 use openfiat_snapshot::location::SnapshotLocation;
+use openfiat_snapshot::trust::TrustAnchors;
 use openfiat_snapshot::{SnapshotError, SnapshotService, fetch, serve};
 use openfiat_storage::mem::MemoryStore;
 use openfiat_types::{
@@ -71,6 +73,15 @@ fn registration(keypair: &Keypair, service_id: &str, service_type: ServiceType) 
 /// importable. Each node holds its own replica of that fact, over its own
 /// store, so the two stores start genuinely independent.
 fn make_node(seed: u8, producer: &Keypair) -> TestNode {
+    let anchor = bs58::encode(producer.public_key().as_bytes()).into_string();
+    make_node_with(
+        seed,
+        producer,
+        TrustAnchors::with_operator(&[anchor]).unwrap(),
+    )
+}
+
+fn make_node_with(seed: u8, producer: &Keypair, anchors: TrustAnchors) -> TestNode {
     let store: Store = Rc::new(MemoryStore::new());
     let services = Rc::new(Registry::new(Rc::clone(&store)));
     services
@@ -89,7 +100,13 @@ fn make_node(seed: u8, producer: &Keypair) -> TestNode {
     let event_store = EventStore::new(Rc::clone(&store));
     let gossip =
         openfiat_gossip::GossipService::new(node, event_store, keypair, vec![], Subscription::All);
-    let snapshots = SnapshotService::new(gossip, Rc::clone(&store), Rc::clone(&services));
+    // The producer is added as a trust anchor, because these tests are
+    // about the download-and-import pipeline rather than about who a
+    // fresh node believes. Without it every import here fails as
+    // `UntrustedFirstSnapshot` — which is the anchor gate working, and is
+    // asserted directly in `a_fresh_node_refuses_a_snapshot_from_a_stranger`.
+    let snapshots =
+        SnapshotService::with_anchors(gossip, Rc::clone(&store), Rc::clone(&services), anchors);
 
     TestNode {
         store,
@@ -476,4 +493,84 @@ async fn a_corrupted_download_is_rejected_and_changes_nothing() {
     );
 
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// A node that trusts only the pinned anchors — i.e. not this test's
+/// producer. Built by hand rather than through `make_node`, which anchors
+/// its producer so the download tests can reach the pipeline.
+fn make_untrusting_node(seed: u8, producer: &Keypair) -> TestNode {
+    make_node_with(seed, producer, TrustAnchors::pinned())
+}
+
+/// The case the trust anchors exist for: a node with no history is offered
+/// a snapshot that passes every other check, and refuses it.
+///
+/// The producer is registered, the announcement is signed, the bytes are
+/// the announced size and they hash to the announced state root. That is
+/// exactly the position an attacker occupies — those checks establish that
+/// the bytes are what the announcer *said*, not that the announcer is
+/// honest, and a node with no checkpoint has nothing to judge the claim
+/// against. Its entire worldview would come from this file.
+///
+/// Note what this test deliberately does not use: `make_node` adds the
+/// producer as a trust anchor, which is how every other test here gets to
+/// exercise the download pipeline instead of this gate. The untrusting
+/// node is built without that.
+#[tokio::test]
+async fn a_fresh_node_refuses_a_first_snapshot_from_a_stranger() {
+    let directory = temporary_directory("untrusted-first-snapshot");
+    let address = serve_directory(directory.clone()).await;
+    let producer_keypair = Keypair::from_seed([1u8; 32]);
+
+    let seeds: [u8; 2] = [1, 2];
+    let mut nodes: Vec<TestNode> = seeds
+        .iter()
+        .map(|&seed| make_node(seed, &producer_keypair))
+        .collect();
+    seed_producer_only_state(&nodes[0]);
+    connect(&mut nodes, &seeds).await;
+
+    let config = configured(&directory, address);
+    let producer_store = Rc::clone(&nodes[0].store);
+    let metadata = nodes[0]
+        .snapshots
+        .produce_and_announce(&producer_store, SNAPSHOT_COLUMN_FAMILIES, &config)
+        .expect("the producer is a registered snapshot provider");
+    drive_until(&mut nodes, |nodes| nodes[1].snapshots.latest().is_some()).await;
+
+    // The trusting node imports it, which establishes that everything
+    // except trust is in order — so the refusal below is attributable to
+    // the anchor gate and nothing else.
+    let client = reqwest::Client::new();
+    fetch::fetch_and_import(nodes[1].snapshots.index(), &client, &metadata.id)
+        .await
+        .expect("the pipeline itself is sound");
+
+    // The same announcement, into a node that holds no checkpoint and does
+    // not trust this producer.
+    let untrusting = make_untrusting_node(3, &producer_keypair);
+    assert_eq!(untrusting.snapshots.checkpoint_height(), None);
+    untrusting
+        .snapshots
+        .index()
+        .apply_announce(SignedSnapshotAnnounce::sign(
+            metadata.clone(),
+            &producer_keypair,
+        ))
+        .expect("the announcement is valid; it is the import that is refused");
+
+    let compressed =
+        std::fs::read(directory.join(format!("{}.snapshot", metadata.id.as_str()))).unwrap();
+    assert_eq!(
+        untrusting
+            .snapshots
+            .index()
+            .import(&metadata.id, &compressed),
+        Err(SnapshotError::UntrustedFirstSnapshot),
+        "a node with no history must not adopt a stranger's worldview, however well it verifies"
+    );
+    assert!(
+        untrusting.services.get(&merchant_service_id()).is_none(),
+        "nothing from the refused snapshot may reach the store"
+    );
 }
