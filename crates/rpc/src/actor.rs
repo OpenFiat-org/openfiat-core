@@ -163,6 +163,25 @@ pub struct NetworkConfig {
     /// nothing, answers no challenge, and earns the reduced
     /// `pinning_absent_bps` share rather than `pinning_serving_bps`.
     pub serve_content: bool,
+    /// Whether this node announces the content it holds on the public
+    /// IPFS DHT.
+    ///
+    /// **On by default when the node serves content at all**, because
+    /// serving without announcing is a guarantee only the peers this node
+    /// already talks to can use. A public gateway — which is what an
+    /// interface actually fetches attachments through — finds a provider
+    /// through the DHT or not at all, so this is the difference between
+    /// durable in principle and durable in fact.
+    ///
+    /// `false`, from `--no-content-announce`, means the node still holds
+    /// content, still serves it over bitswap to peers that ask, and never
+    /// publishes a record. What publishing discloses is this node's peer
+    /// id and dialable addresses, globally and to strangers — that is the
+    /// point of it, and an operator who would rather their node were
+    /// reachable only by peers that already know it is entitled to say
+    /// so. It costs them nothing in rewards: a challenge arrives over the
+    /// registered JSON-RPC endpoint, not the DHT.
+    pub announce_content: bool,
     /// Where this node fetches a block no peer has yet.
     ///
     /// Bitswap moves blocks between peers that have them; it does not
@@ -234,6 +253,10 @@ impl NetworkConfig {
             payout_wallet: None,
             region: None,
             serve_content: true,
+            // Off for a test node, unlike the shipped default: joining the
+            // public IPFS DHT dials four hostnames on the open internet,
+            // which a unit test must not do.
+            announce_content: false,
             content_gateway: openfiat_content::DEFAULT_GATEWAY.to_string(),
             ipfs_api_url: None,
             retention: openfiat_content::Retention::default(),
@@ -860,6 +883,7 @@ async fn poll_content<S: KvStore + 'static>(
     control: &libp2p_stream::Control,
     gateway: &openfiat_content::GatewayFetcher,
     retention: openfiat_content::Retention,
+    announce: bool,
 ) {
     let now = openfiat_types::Timestamp::now();
     let attachments = state.attachments.all();
@@ -963,6 +987,80 @@ async fn poll_content<S: KvStore + 'static>(
             "fetched content from a gateway"
         );
     }
+
+    if announce {
+        announce_held_content(state, &wanted);
+    }
+}
+
+/// Publishes, on the public IPFS DHT, what this node can actually serve.
+///
+/// # Roots, not every block
+///
+/// A chunked attachment is forty blocks and one record. Announcing each
+/// block would be forty DHT publishes per attachment, each a query across
+/// twenty peers, for content nobody looks up by leaf: a client resolves
+/// the CID in the record, which is the root. Having found this node it
+/// asks the same bitswap session for the children, because that is what
+/// every bitswap implementation does once a peer has answered — so the
+/// leaves are reachable without ever being advertised.
+///
+/// # Only what is complete
+///
+/// A node holding a root and half its leaves would answer a provider
+/// query and then fail to serve, which is worse for the client than not
+/// being found: it spends a connection and a round trip discovering it.
+///
+/// # Withdrawing is local, and that is not a gap
+///
+/// There is no message in the protocol for retracting a provider record;
+/// they expire on their own. Stopping is what ends the republishing that
+/// would otherwise keep renewing a claim about evicted content.
+///
+/// Returns how many records were newly announced and how many withdrawn,
+/// which is what a caller — and a test — can actually observe: the query
+/// itself is fire-and-forget and its outcome is the DHT's business.
+fn announce_held_content<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    wanted: &[openfiat_crypto::Cid],
+) -> (usize, usize) {
+    let complete: std::collections::HashSet<String> = wanted
+        .iter()
+        .filter(|cid| state.held_content.missing_blocks(cid).is_empty())
+        .map(|cid| cid.as_str().to_string())
+        .collect();
+
+    let mut provided = state.content_provided.borrow_mut();
+    if complete == *provided {
+        return (0, 0);
+    }
+
+    let mut gossip = state.gossip.borrow_mut();
+    let mut announced = 0usize;
+    for spelling in complete.difference(&provided) {
+        // Every string in this set was a `Cid` a moment ago.
+        let cid = openfiat_crypto::Cid::parse(spelling).expect("held content is parsed content");
+        if gossip.node.start_providing(&cid.multihash()) {
+            announced += 1;
+        }
+    }
+    let mut withdrawn = 0usize;
+    for spelling in provided.difference(&complete) {
+        let cid = openfiat_crypto::Cid::parse(spelling).expect("held content is parsed content");
+        gossip.node.stop_providing(&cid.multihash());
+        withdrawn += 1;
+    }
+
+    *provided = complete;
+    if announced > 0 || withdrawn > 0 {
+        tracing::info!(
+            announced,
+            withdrawn,
+            providing = provided.len(),
+            "announced content on the IPFS DHT"
+        );
+    }
+    (announced, withdrawn)
 }
 
 /// A bitswap message from `peer`, handled on the actor thread.
@@ -1564,6 +1662,14 @@ where
             }
             {
                 let mut gossip = state.gossip.borrow_mut();
+                // The same declarations, told to the swarm as well as to
+                // peer discovery. A provider record carries the addresses
+                // the swarm has confirmed, so a node that published
+                // without these would be telling the IPFS network it has
+                // content and giving nobody a way to fetch it.
+                for address in &network.external_addresses {
+                    gossip.node.announce_address(address.clone());
+                }
                 gossip
                     .node
                     .listen_on(network.listen_addr)
@@ -1613,8 +1719,27 @@ where
                     .expect("nothing else can already be serving bitswap on this node");
                 control
             });
+            // Joining the public IPFS DHT, which is what makes the content
+            // this node serves findable by anyone who has not heard of
+            // OpenFiat. Only when it serves content at all — a node with
+            // nothing to provide would publish an empty claim and answer
+            // no queries, which is a routing table's worth of memory for
+            // nothing.
+            let announce_content = network.serve_content && network.announce_content;
+            if announce_content {
+                let bootstrappers = state.gossip.borrow_mut().node.join_content_routing();
+                if bootstrappers == 0 {
+                    tracing::warn!(
+                        "no IPFS DHT bootstrapper resolved; this node's content will not be \
+                         findable outside its own peers"
+                    );
+                } else {
+                    tracing::info!(bootstrappers, "joined the public IPFS DHT");
+                }
+            }
             tracing::info!(
                 serving = network.serve_content,
+                announcing = announce_content,
                 retention = %retention.describe(),
                 "content serving"
             );
@@ -1695,7 +1820,14 @@ where
                     }
                     _ = pinning.tick() => {
                         if let Some(control) = content_control.as_ref() {
-                            poll_content(&state, control, &content_gateway, retention).await;
+                            poll_content(
+                                &state,
+                                control,
+                                &content_gateway,
+                                retention,
+                                announce_content,
+                            )
+                            .await;
                         }
                         if let Some(client) = pinning_client.as_ref() {
                             poll_daemon_pinning(&state, client, retention).await;
@@ -1847,6 +1979,113 @@ mod tests {
             state.held_content.missing_blocks(&cid).is_empty(),
             "a node with no links is a complete DAG"
         );
+    }
+
+    /// Announcing on the public IPFS DHT — the thing that makes content
+    /// this node holds findable by a gateway, a browser, or anyone who
+    /// never heard of OpenFiat.
+    ///
+    /// These run against a real swarm with an empty routing table, which
+    /// is what a node has before it bootstraps: `start_providing` records
+    /// the claim locally and the query to publish it finds nobody. That
+    /// is exactly the boundary worth testing here — *what* this node
+    /// decides to announce is ours, whether the query reaches Amsterdam
+    /// is not.
+    mod dht_announcements {
+        use super::*;
+
+        /// A dag-pb node linking to `children`, and its CID.
+        fn chunked(children: &[&openfiat_crypto::Cid]) -> (openfiat_crypto::Cid, Vec<u8>) {
+            let mut block = Vec::new();
+            for child in children {
+                let hash = child.to_binary();
+                let mut link = vec![0x0a, hash.len() as u8];
+                link.extend_from_slice(&hash);
+                block.push(0x12);
+                block.push(link.len() as u8);
+                block.extend_from_slice(&link);
+            }
+            block.extend_from_slice(&[0x0a, 0x02, 0x08, 0x02]);
+            let mut binary = vec![0x01, 0x70, 0x12, 0x20];
+            binary.extend_from_slice(&openfiat_crypto::hash::sha256(&block));
+            (openfiat_crypto::Cid::from_binary(&binary).unwrap(), block)
+        }
+
+        #[tokio::test]
+        async fn content_this_node_holds_is_announced_once_and_not_again() {
+            let state = NodeState::new_for_test(MemoryStore::new());
+            let cid = openfiat_crypto::Cid::parse(PROBE_CID).unwrap();
+            assert!(state.held_content.keep(&cid, PROBE_CONTENT));
+
+            assert_eq!(
+                announce_held_content(&state, std::slice::from_ref(&cid)),
+                (1, 0),
+                "a node serving content nobody can find is the whole problem"
+            );
+
+            // A second tick must not re-issue the claim: libp2p republishes
+            // on its own schedule, and re-announcing every tick would be a
+            // DHT query every pinning interval per attachment held.
+            assert_eq!(
+                announce_held_content(&state, std::slice::from_ref(&cid)),
+                (0, 0)
+            );
+            assert_eq!(state.content_provided.borrow().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn a_chunked_file_is_announced_only_once_every_block_is_here() {
+            // Announcing a root whose leaves are still missing would send
+            // a client a connection and a round trip to discover this node
+            // cannot serve what it advertised — worse for them than not
+            // being found at all.
+            let leaf = openfiat_crypto::Cid::parse(PROBE_CID).unwrap();
+            let (root, root_block) = chunked(&[&leaf]);
+
+            let state = NodeState::new_for_test(MemoryStore::new());
+            assert!(state.held_content.keep(&root, &root_block));
+
+            assert_eq!(
+                announce_held_content(&state, std::slice::from_ref(&root)),
+                (0, 0),
+                "the root is here and the file is not"
+            );
+
+            assert!(state.held_content.keep(&leaf, PROBE_CONTENT));
+            assert_eq!(
+                announce_held_content(&state, std::slice::from_ref(&root)),
+                (1, 0)
+            );
+            assert!(state.content_provided.borrow().contains(root.as_str()));
+        }
+
+        #[tokio::test]
+        async fn content_that_fell_out_of_the_window_stops_being_announced() {
+            // Otherwise the node keeps renewing a claim about content it
+            // evicted, and every renewal points clients at a node that
+            // will answer DontHave.
+            let state = NodeState::new_for_test(MemoryStore::new());
+            let cid = openfiat_crypto::Cid::parse(PROBE_CID).unwrap();
+            assert!(state.held_content.keep(&cid, PROBE_CONTENT));
+            assert_eq!(
+                announce_held_content(&state, std::slice::from_ref(&cid)),
+                (1, 0)
+            );
+
+            state.held_content.evict_outside(&[]);
+            assert_eq!(announce_held_content(&state, &[]), (0, 1));
+            assert!(state.content_provided.borrow().is_empty());
+        }
+
+        #[test]
+        fn the_dht_key_is_the_multihash_the_ipfs_network_looks_up() {
+            // Not the CID. A record filed under the full CID is findable
+            // only by a client that spelled the content the same way, and
+            // the two codecs are two spellings of the same bytes.
+            let cid = openfiat_crypto::Cid::parse(PROBE_CID).unwrap();
+            assert_eq!(cid.multihash(), cid.to_binary()[2..].to_vec());
+            assert_ne!(cid.multihash(), cid.to_binary());
+        }
     }
 
     #[tokio::test]

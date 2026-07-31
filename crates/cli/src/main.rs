@@ -220,6 +220,28 @@ pub struct Args {
     #[arg(long)]
     pub no_content_serving: bool,
 
+    /// Stop announcing held content on the public IPFS DHT.
+    ///
+    /// Announcing is ON whenever the node serves content, because serving
+    /// without announcing is a durability guarantee only peers that
+    /// already know this node can use. A gateway — which is what a
+    /// browser actually fetches an attachment through — finds a provider
+    /// through the DHT or not at all.
+    ///
+    /// What publishing discloses is this node's peer id and its dialable
+    /// addresses, globally, to anyone who asks the DHT for the content.
+    /// That is the entire point of it, and it is also a disclosure an
+    /// operator may not want: it makes the machine addressable by
+    /// strangers rather than only by peers it has been introduced to.
+    ///
+    /// Passing this costs no reward. A retrievability challenge arrives
+    /// over the node's registered JSON-RPC endpoint, not over the DHT, so
+    /// a node that holds content and declines to advertise it still
+    /// answers and still earns the full share. What it gives up is being
+    /// found by third parties.
+    #[arg(long)]
+    pub no_content_announce: bool,
+
     /// Where to fetch a block no peer has yet. Defaults to a public IPFS
     /// gateway.
     ///
@@ -564,6 +586,7 @@ async fn main() {
         external_addrs = args.external_addrs.len(),
         retention = %args.retention.describe(),
         content_serving = if args.no_content_serving { "off" } else { "on" },
+        content_announce = if args.no_content_serving || args.no_content_announce { "off" } else { "on" },
         public_url = args.public_rpc_url.as_deref().unwrap_or("(not advertised)"),
         "starting"
     );
@@ -596,6 +619,7 @@ async fn main() {
             payout_wallet: args.payout_wallet.clone(),
             region: args.region.clone(),
             serve_content: !args.no_content_serving,
+            announce_content: !args.no_content_announce,
             content_gateway: args.content_gateway.clone(),
             ipfs_api_url: args.ipfs_api_url.clone(),
             public_rpc_url: args.public_rpc_url.clone(),

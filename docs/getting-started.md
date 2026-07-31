@@ -151,6 +151,13 @@ What your node does, unprompted:
   only as long as the uploader kept paying.
 - Answers bitswap for it, so any IPFS peer — another node, a gateway, a
   browser running Helia — can fetch it from you.
+- **Announces it on the public IPFS DHT**, which is how any of them find
+  out you have it. Bitswap is what you speak *after* you know who holds
+  the content; a provider record is what makes your node the answer when
+  a gateway resolves an attachment CID. Your node joins as a DHT *client*
+  — it publishes its own records and answers no routing queries for the
+  rest of the IPFS network, which would be real bandwidth and memory for
+  nothing OpenFiat needs.
 - **Earns the full reward share.** Peers challenge each other by asking
   for content by CID and hashing what comes back; a content address is
   the hash of its content, so the right bytes cannot be produced without
@@ -183,6 +190,25 @@ That node stores nothing, cannot answer a retrievability challenge, and
 earns the reduced share — the honest outcome, since it is doing less for
 the network. It still challenges its peers either way: measuring who
 serves content costs nothing and is a service in itself.
+
+To keep holding and serving content but stop advertising it:
+
+```bash
+--no-content-announce
+```
+
+Publishing a provider record tells the whole IPFS network this node's
+peer id and the addresses it can be dialled at. That is the point of it,
+and it is also a disclosure an operator may not want — it makes the
+machine addressable by strangers rather than only by peers it has been
+introduced to. Declining costs no reward: a challenge arrives over the
+node's registered JSON-RPC endpoint, not the DHT. What it gives up is
+being found by third parties who never heard of OpenFiat, which is most
+of what the durability guarantee is for.
+
+For provider records to be useful the network has to be able to dial you.
+A node behind NAT should pass `--external-addr` — the same declaration
+peer discovery already uses is what a provider record carries.
 
 If you already run a Kubo cluster, `--ipfs-api-url http://127.0.0.1:5001`
 still works, and now means something narrower than it used to: protocol

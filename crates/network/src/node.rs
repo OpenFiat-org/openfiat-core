@@ -74,6 +74,77 @@ impl Node {
         self.swarm.behaviour().content.new_control()
     }
 
+    /// Joins the public IPFS DHT, so this node's provider records reach
+    /// peers other than the ones it already knows.
+    ///
+    /// Returns how many bootstrap addresses were added. Zero means every
+    /// bootstrapper failed to resolve, which is a node that will publish
+    /// nothing and should say so rather than look healthy.
+    ///
+    /// Separate from [`Node::new`] on purpose. Constructing the behaviour
+    /// commits a node to nothing — publishing announces its peer id and
+    /// addresses to the whole IPFS network, which is the point and also a
+    /// disclosure an operator is entitled to decline. The node calls this
+    /// only when they have not.
+    pub fn join_content_routing(&mut self) -> usize {
+        let mut added = 0;
+        for (peer, address) in crate::content_routing::resolved_bootstrappers() {
+            self.swarm
+                .behaviour_mut()
+                .content_routing
+                .add_address(&peer, address);
+            added += 1;
+        }
+        if added > 0 {
+            // Fails only with an empty routing table, which `added > 0`
+            // has just ruled out.
+            let _ = self.swarm.behaviour_mut().content_routing.bootstrap();
+        }
+        added
+    }
+
+    /// Announces `address` as somewhere this node can be reached.
+    ///
+    /// Provider records carry the addresses the swarm has confirmed, so a
+    /// node that publishes without one is telling the network it has
+    /// content and giving nobody a way to ask for it. The caller decides
+    /// what counts as confirmed — an operator's declaration, or an
+    /// address enough independent peers have reported — because this
+    /// layer cannot tell a genuine observation from a peer's suggestion.
+    pub fn announce_address(&mut self, address: Multiaddr) {
+        self.swarm.add_external_address(address);
+    }
+
+    /// Publishes that this node provides `key`, an IPFS multihash.
+    ///
+    /// A multihash rather than a CID: see `openfiat_crypto::Cid::multihash`
+    /// for why the DHT keys content that way and what announcing the full
+    /// CID would cost. The query runs in the background and republishes
+    /// itself until [`Node::stop_providing`]; `false` means the local
+    /// provider store is full, which is a node holding more than it can
+    /// announce rather than a failure to reach anyone.
+    pub fn start_providing(&mut self, key: &[u8]) -> bool {
+        self.swarm
+            .behaviour_mut()
+            .content_routing
+            .start_providing(libp2p::kad::RecordKey::new(&key))
+            .is_ok()
+    }
+
+    /// Withdraws this node's claim to provide `key`.
+    ///
+    /// Local only, and that is not a gap: a provider record expires from
+    /// the network on its own, and there is no message in the protocol
+    /// for taking one back. What this stops is the republishing that
+    /// would otherwise keep renewing a claim about content this node has
+    /// evicted.
+    pub fn stop_providing(&mut self, key: &[u8]) {
+        self.swarm
+            .behaviour_mut()
+            .content_routing
+            .stop_providing(&libp2p::kad::RecordKey::new(&key));
+    }
+
     pub fn listen_on(&mut self, addr: Multiaddr) -> Result<(), NetworkError> {
         self.swarm
             .listen_on(addr)

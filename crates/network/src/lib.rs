@@ -8,6 +8,7 @@
 //! any of it.
 
 pub mod behaviour;
+pub mod content_routing;
 pub mod envelope;
 pub mod error;
 pub mod heartbeat;

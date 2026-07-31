@@ -199,7 +199,7 @@ pub struct NodeState<S> {
     /// Content this node keeps a local copy of, so it can answer a
     /// retrievability challenge synchronously and serve the block to any
     /// IPFS peer that asks. See `openfiat_content::held` for why the copy
-    /// exists and why it is bounded at 256 KiB an item.
+    /// exists and why 256 KiB bounds a block rather than a file.
     pub held_content: Rc<HeldContent<Rc<S>>>,
     /// CIDs this node has asked its peers for and not yet received.
     ///
@@ -213,6 +213,20 @@ pub struct NodeState<S> {
     /// records on every pinning tick, so a restart rebuilds it from the
     /// records rather than trusting a stale copy.
     pub content_wants: RefCell<std::collections::HashSet<String>>,
+    /// The IPFS multihashes this node has announced itself as a provider
+    /// of, so a running announcement is renewed by libp2p rather than
+    /// re-issued on every tick.
+    ///
+    /// Multihashes rather than CIDs, because that is what the DHT is
+    /// keyed by — see `openfiat_crypto::Cid::multihash`. Held as the
+    /// CID's own spelling for readability and converted at the boundary,
+    /// since one multihash has exactly one canonical CID per codec and
+    /// this node only ever announces content it holds.
+    ///
+    /// In memory, like `content_wants`: a restarted node re-announces
+    /// from its records, which is also what re-establishes records the
+    /// network expired while it was down.
+    pub content_provided: RefCell<std::collections::HashSet<String>>,
     /// The identity-conflict count already reported, so a cloned wallet
     /// is announced when the count changes rather than on every tick.
     pub reported_identity_conflicts: std::cell::Cell<u64>,
@@ -472,6 +486,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             attachments,
             held_content,
             content_wants: RefCell::new(std::collections::HashSet::new()),
+            content_provided: RefCell::new(std::collections::HashSet::new()),
             reported_identity_conflicts: std::cell::Cell::new(0),
             reputation,
             governance,

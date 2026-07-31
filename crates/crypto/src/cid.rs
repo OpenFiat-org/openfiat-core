@@ -167,6 +167,25 @@ impl Cid {
         base32_lower_decode(&self.0[1..]).expect("a Cid was validated at parse time")
     }
 
+    /// The multihash alone: hash code, length, digest, with no version
+    /// or codec in front.
+    ///
+    /// This is the key IPFS's DHT files providers under, and it is not
+    /// the CID. Since 2020 both go-libp2p and Helia publish and look up
+    /// provider records by multihash precisely so that the same bytes
+    /// under a raw CID and under a dag-pb CID resolve to one record
+    /// rather than two — a node that announced the full CID would be
+    /// findable only by clients that happened to spell the content the
+    /// same way it did, which for a chunked file's leaves is nobody.
+    pub fn multihash(&self) -> Vec<u8> {
+        let binary = self.to_binary();
+        let mut cursor = binary.as_slice();
+        // Version and codec, both validated at parse time.
+        read_varint(&mut cursor).expect("a Cid was validated at parse time");
+        read_varint(&mut cursor).expect("a Cid was validated at parse time");
+        cursor.to_vec()
+    }
+
     /// Everything in the binary form except the digest.
     ///
     /// Bitswap sends a block as `prefix + data` rather than as a full CID,
@@ -478,6 +497,27 @@ mod tests {
         let mut forged = Cid::parse(REAL_CID).unwrap().prefix();
         forged.extend_from_slice(&crate::hash::sha256(b"substituted bytes"));
         assert_ne!(Cid::from_binary(&forged).unwrap().as_str(), REAL_CID);
+    }
+
+    #[test]
+    fn one_piece_of_content_has_one_multihash_whichever_codec_names_it() {
+        // What makes a provider record findable. The DHT is keyed by
+        // multihash, so a node announcing the full CID would be
+        // discoverable only by a client that spelled the content the same
+        // way — and the two codecs are the two spellings.
+        let raw = Cid::parse(REAL_CID).unwrap();
+        let mut dag_pb_binary = vec![0x01, 0x70];
+        dag_pb_binary.extend_from_slice(&raw.multihash());
+        let dag_pb = Cid::from_binary(&dag_pb_binary).unwrap();
+
+        assert_ne!(raw.as_str(), dag_pb.as_str(), "two different CIDs");
+        assert_eq!(raw.multihash(), dag_pb.multihash(), "one provider key");
+
+        // sha2-256, thirty-two bytes, then the digest itself — the
+        // multiformats framing, checked against the real CID's own bytes
+        // rather than against this method's output.
+        assert_eq!(&raw.multihash()[..2], &[0x12, 0x20]);
+        assert_eq!(&raw.multihash()[2..], &crate::hash::sha256(REAL_CONTENT));
     }
 
     #[test]
