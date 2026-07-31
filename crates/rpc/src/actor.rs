@@ -171,6 +171,22 @@ impl RpcHandle {
             .map_err(|_| RpcError::Internal("RPC actor dropped the response".to_string()))?
     }
 
+    /// Whether the actor thread is still there to answer.
+    ///
+    /// The actor owns the receiving half of this channel, so the channel
+    /// closing *is* the thread being gone — there is no separate liveness
+    /// flag to fall out of step with the thing it describes.
+    ///
+    /// This exists because the actor runs on its own thread, so a panic
+    /// inside it does not stop the process. Before this, a node whose
+    /// actor had died kept its HTTP listener bound and kept answering
+    /// `/health` with `ok`, while every JSON-RPC call failed — healthy to
+    /// every load balancer and supervisor watching it, useless to every
+    /// caller. See `handle_health` in `server.rs`.
+    pub fn is_running(&self) -> bool {
+        !self.sender.is_closed()
+    }
+
     /// A generic firehose of every successful `sendX` mutation's result,
     /// as `{"method": "...", "result": ...}` — the one working WebSocket
     /// subscription this crate's exit criterion asks for. Per-topic
@@ -2339,6 +2355,28 @@ where
 mod tests {
     use super::*;
     use openfiat_chain::ChainError;
+
+    impl RpcHandle {
+        /// A handle to an actor that is not there — what every real
+        /// handle becomes the moment the actor thread dies. Building one
+        /// directly is the only way to test that case without arranging
+        /// a genuine panic inside a running node.
+        ///
+        /// Deliberately down here rather than beside `is_running`, in the
+        /// only `#[cfg(test)]` block in this file: the reservation-sweep
+        /// guard test in `openfiat-reservations` reads this file as text
+        /// and stops at the first `#[cfg(test)]`, so a test-only item
+        /// placed above the event loop hides the loop from it. That test
+        /// caught this exact mistake when the helper was first written
+        /// higher up, which is the blunt-in-the-safe-direction behaviour
+        /// its own doc comment promises.
+        pub(crate) fn disconnected() -> Self {
+            let (sender, receiver) = mpsc::unbounded_channel::<RpcCommand>();
+            drop(receiver);
+            let (events, _) = broadcast::channel::<Value>(1);
+            Self { sender, events }
+        }
+    }
 
     /// The three registry timings are one design, not three numbers, and
     /// changing any of them in isolation breaks it.

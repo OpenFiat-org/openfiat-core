@@ -14,6 +14,7 @@ use crate::jsonrpc::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use openfiat_metrics::MetricsRegistry;
@@ -93,8 +94,29 @@ async fn handle_rpc(State(state): State<AppState>, body: axum::body::Bytes) -> R
     }
 }
 
-async fn handle_health() -> &'static str {
-    "ok"
+/// Answers for the node, not for the HTTP server.
+///
+/// This used to be a bare `"ok"`, which made it a test of whether axum
+/// was running — something the caller already knows, because they got a
+/// response. The actor lives on its own thread, so it can die while this
+/// listener stays bound: the node then reported itself healthy to every
+/// supervisor, load balancer and uptime check watching it, forever,
+/// while answering every actual JSON-RPC call with an internal error.
+///
+/// A health check that cannot fail is not a health check. 503 is the
+/// right code rather than 500: the process is up and the condition may
+/// clear, which is exactly what a load balancer should route around and
+/// a supervisor should restart.
+async fn handle_health(State(state): State<AppState>) -> Response {
+    if state.rpc.is_running() {
+        (StatusCode::OK, "ok").into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the RPC actor is not running",
+        )
+            .into_response()
+    }
 }
 
 async fn handle_metrics(State(state): State<AppState>) -> String {
@@ -198,6 +220,38 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&body[..], b"ok");
+    }
+
+    /// The failure this endpoint exists to catch, and the one it used to
+    /// be structurally incapable of catching.
+    ///
+    /// The actor runs on its own thread, so it can die — a ledger that
+    /// cannot be opened, a panic anywhere in the tick — while this HTTP
+    /// listener stays bound and keeps answering. A `/health` that returns
+    /// a constant reports such a node as healthy forever, which is worse
+    /// than no health check at all: it actively tells the supervisor that
+    /// would have restarted it not to.
+    #[tokio::test]
+    async fn health_fails_when_the_actor_is_not_running() {
+        let router = router(
+            RpcHandle::disconnected(),
+            Arc::new(MetricsRegistry::new()),
+            std::env::temp_dir().join("openfiat-rpc-test-snapshots"),
+        );
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "a node whose actor has died reported itself healthy"
+        );
     }
 
     #[tokio::test]

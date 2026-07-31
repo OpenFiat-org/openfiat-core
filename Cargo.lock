@@ -3386,7 +3386,6 @@ name = "openfiat-cli"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
  "clap",
  "openfiat-api",
  "openfiat-chain",
@@ -3395,15 +3394,10 @@ dependencies = [
  "openfiat-database",
  "openfiat-metrics",
  "openfiat-network",
- "openfiat-oracles",
- "openfiat-registry",
  "openfiat-rpc",
- "openfiat-serialization",
  "openfiat-snapshot",
  "openfiat-types",
  "openfiat-wallet",
- "reqwest",
- "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

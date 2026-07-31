@@ -54,6 +54,7 @@ use openfiat_rpc::NetworkConfig;
 use openfiat_types::NodeRole;
 use openfiat_wallet::Wallet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Every column family a domain registry composed into `NodeState`
 /// opens — see each crate's `store.rs` for its own `COLUMN_FAMILY`
@@ -525,6 +526,68 @@ fn chain_mode(args: &Args) -> NodeChainMode {
 /// All of these are operational under this module's own rule — they change
 /// what this node offers others, never what it believes. The state root
 /// decides that, whichever mirror the bytes came from.
+/// How long to keep trying to open the ledger before giving up on it.
+///
+/// Sized for the failure this exists for: a disk that filled up. Whatever
+/// is going to free space — a log rotation, a snapshot sweep, an operator
+/// deleting something — happens on the order of seconds to minutes, not
+/// hours, so five minutes is long enough to ride out the transient and
+/// short enough that a node which is never coming back says so while
+/// someone is still watching.
+const LEDGER_OPEN_RETRY_BUDGET: Duration = Duration::from_secs(300);
+
+/// The longest gap between attempts. Backoff doubles from one second up
+/// to this, so a directory that frees up early is picked up quickly and a
+/// directory that never does is not retried in a hot loop.
+const LEDGER_OPEN_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Opens the node's RocksDB directory, retrying while the failure still
+/// looks like it might pass.
+///
+/// This used to be a bare `.expect`, which made a full disk permanent:
+/// RocksDB fails to open, the closure panics, and the node never tries
+/// again even once the disk is empty again. Worse, it did not actually
+/// stop the node. This closure runs on the actor thread, so the panic
+/// took down that thread and left the process running with its HTTP
+/// listener bound — see `handle_health` in `crates/rpc/src/server.rs`
+/// for the other half of that fix.
+///
+/// Giving up exits the process rather than panicking, for the same
+/// reason: a panic here is invisible to anything watching the port, and
+/// a node that cannot open its ledger can serve nothing. Exiting is what
+/// lets a supervisor restart it, and what makes a crash-looping node
+/// visible as one.
+fn open_ledger(data_dir: &str, column_families: &[&str]) -> Database {
+    let deadline = Instant::now() + LEDGER_OPEN_RETRY_BUDGET;
+    let mut backoff = Duration::from_secs(1);
+
+    loop {
+        match Database::open(data_dir, column_families) {
+            Ok(database) => return database,
+            Err(error) => {
+                if Instant::now() >= deadline {
+                    tracing::error!(
+                        ledger = %data_dir,
+                        %error,
+                        budget_secs = LEDGER_OPEN_RETRY_BUDGET.as_secs(),
+                        "could not open the node's data directory; giving up so a supervisor \
+                         can restart this node"
+                    );
+                    std::process::exit(1);
+                }
+                tracing::warn!(
+                    ledger = %data_dir,
+                    %error,
+                    retry_in_secs = backoff.as_secs(),
+                    "could not open the node's data directory; retrying"
+                );
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(LEDGER_OPEN_MAX_BACKOFF);
+            }
+        }
+    }
+}
+
 fn snapshot_config(args: &Args, ledger: &str) -> openfiat_snapshot::SnapshotConfig {
     let directory = args
         .snapshot_dir
@@ -676,10 +739,7 @@ async fn main() {
     }
 
     let rpc_handle = openfiat_rpc::spawn_actor(
-        move || {
-            Database::open(&data_dir, &column_families())
-                .expect("failed to open the node's RocksDB data directory")
-        },
+        move || open_ledger(&data_dir, &column_families()),
         NetworkConfig {
             keypair: network_keypair,
             self_roles: gateway_roles(),
