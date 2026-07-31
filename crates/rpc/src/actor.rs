@@ -206,24 +206,29 @@ pub struct NetworkConfig {
     /// nothing, answers no challenge, and earns the reduced
     /// `pinning_absent_bps` share rather than `pinning_serving_bps`.
     pub serve_content: bool,
-    /// Whether this node announces the content it holds on the public
-    /// IPFS DHT.
+    /// Whether this node announces the content it holds on the OpenFiat
+    /// content DHT.
     ///
     /// **On by default when the node serves content at all**, because
     /// serving without announcing is a guarantee only the peers this node
-    /// already talks to can use. A public gateway — which is what an
-    /// interface actually fetches attachments through — finds a provider
-    /// through the DHT or not at all, so this is the difference between
-    /// durable in principle and durable in fact.
+    /// is already connected to can use. Another node resolving an
+    /// attachment finds a provider through the DHT or not at all, so this
+    /// is the difference between durable in principle and durable in
+    /// fact.
+    ///
+    /// The DHT is this network's own — `/openfiat/kad/1.0.0`, no public
+    /// bootstrappers. A browser therefore does not resolve an attachment
+    /// through a public IPFS gateway any more; it fetches it from the
+    /// node it already talks to, over [`crate::gateway`].
     ///
     /// `false`, from `--no-content-announce`, means the node still holds
     /// content, still serves it over bitswap to peers that ask, and never
     /// publishes a record. What publishing discloses is this node's peer
-    /// id and dialable addresses, globally and to strangers — that is the
-    /// point of it, and an operator who would rather their node were
-    /// reachable only by peers that already know it is entitled to say
-    /// so. It costs them nothing in rewards: a challenge arrives over the
-    /// registered JSON-RPC endpoint, not the DHT.
+    /// id and dialable addresses to every other node on the network —
+    /// that is the point of it, and an operator who would rather their
+    /// node were reachable only by peers that already know it is entitled
+    /// to say so. It costs them nothing in rewards: a challenge arrives
+    /// over the registered JSON-RPC endpoint, not the DHT.
     pub announce_content: bool,
     /// Where this node fetches a block no peer has yet.
     ///
@@ -564,6 +569,24 @@ async fn poll_chain<S: KvStore + 'static>(state: &NodeState<S>, client: &dyn Cha
 /// peer's score rests on. Faster would add load to every operator's IPFS
 /// daemon and to every peer's RPC for no better measurement.
 const PINNING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// How long an upload is held before the records have to justify it.
+///
+/// `[PROPOSED — NEEDS SIGN-OFF]` fifteen minutes. The window a real
+/// client needs is seconds — upload the blocks, publish the claim or the
+/// attachment that names them — and the sweep that would otherwise evict
+/// them runs every [`PINNING_INTERVAL`], so anything shorter than one
+/// sweep would be a coin toss. Fifteen minutes clears that with room for
+/// a user who starts an upload and finishes filling in a form.
+///
+/// It is also, exactly, how much disk a stranger can occupy through the
+/// open ingress without publishing anything: uploads for fifteen minutes,
+/// then the ordinary rule takes it all back. That is why it is a small
+/// number and why it is stated as a bound rather than a convenience.
+pub const INGRESS_GRACE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// [`INGRESS_GRACE`] against `Timestamp`, which counts milliseconds.
+const INGRESS_GRACE_MILLIS: u64 = INGRESS_GRACE.as_millis() as u64;
 
 /// How long the gossip event log keeps an event before dropping it.
 ///
@@ -919,11 +942,23 @@ async fn read_dispute_outcome(
 ///
 /// # What a node is committed to
 ///
-/// The content referenced by *accepted* attachment records inside this
-/// node's retention window. Not everything it has ever seen: an
-/// attachment needs a settlement and a settlement needs real escrow, so
-/// this set is bounded by the network's actual trading volume rather than
-/// by anyone's willingness to publish CIDs at it.
+/// Three things, and every one of them is bounded by a record somebody
+/// had to earn the right to publish rather than by anyone's willingness
+/// to publish CIDs at this node:
+///
+/// - the content referenced by *accepted* attachment records inside this
+///   node's retention window — an attachment needs a settlement and a
+///   settlement needs real escrow, so this set is bounded by the
+///   network's actual trading volume;
+/// - the avatar named by every valid identity claim. Not subject to the
+///   retention window: a retention window is about how much *history* a
+///   node keeps, and a current avatar is not history. A rolling node
+///   dropping a profile picture because the claim was made five weeks
+///   ago would be holding the trade record and losing the face beside
+///   it;
+/// - anything uploaded within the last [`INGRESS_GRACE`], referenced or
+///   not, because an interface uploads the bytes before it publishes the
+///   record naming them. See [`NodeState::content_ingress`].
 ///
 /// All of it, including the chunked files a node used to skip. A DAG is
 /// fetched block by block and every block is checked against its own CID
@@ -939,6 +974,61 @@ async fn read_dispute_outcome(
 /// no OpenFiat node holds yet enters the network at all. The one-tick
 /// delay is what keeps the gateway a fallback rather than the first
 /// thing every node reaches for.
+/// The roots this node is holding on to, and the only thing standing
+/// between held content and [`HeldContent::evict_outside`].
+///
+/// Separated from the tick because it is where every "my picture
+/// disappeared" bug lives, and a bug there is invisible in the tick: the
+/// sweep does exactly what it is told, and what it was told is the whole
+/// question.
+fn content_wanted<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    retention: openfiat_content::Retention,
+    now: openfiat_types::Timestamp,
+) -> Vec<openfiat_crypto::Cid> {
+    // Verifiable content inside this node's retention window, which for
+    // an archival node is everything and for a rolling node is its recent
+    // slice.
+    let mut wanted: Vec<openfiat_crypto::Cid> = state
+        .attachments
+        .all()
+        .iter()
+        .filter(|a| retention.keeps(a.created_at, now))
+        .map(|a| a.cid.clone())
+        .collect();
+
+    // Avatars. `ClaimType::Avatar` is validated as a CID at publication,
+    // so a claim that parses here is one this node accepted; one that
+    // does not is a record from a version that allowed something else,
+    // and is skipped rather than fatal.
+    wanted.extend(
+        state
+            .identity
+            .all()
+            .into_iter()
+            .filter(|claim| {
+                claim.claim_type == openfiat_identity::ClaimType::Avatar && claim.is_valid(now)
+            })
+            .filter_map(|claim| openfiat_crypto::Cid::parse(&claim.value).ok()),
+    );
+
+    // Uploads still inside their grace. Pruned as we go, so the map holds
+    // only what it is still keeping something alive for.
+    state
+        .content_ingress
+        .borrow_mut()
+        .retain(|_, at| now.as_millis().saturating_sub(at.as_millis()) < INGRESS_GRACE_MILLIS);
+    wanted.extend(
+        state
+            .content_ingress
+            .borrow()
+            .keys()
+            .filter_map(|cid| openfiat_crypto::Cid::parse(cid).ok()),
+    );
+
+    wanted
+}
+
 async fn poll_content<S: KvStore + 'static>(
     state: &NodeState<S>,
     control: &libp2p_stream::Control,
@@ -947,16 +1037,7 @@ async fn poll_content<S: KvStore + 'static>(
     announce: bool,
 ) {
     let now = openfiat_types::Timestamp::now();
-    let attachments = state.attachments.all();
-
-    // What this node is committed to holding: verifiable content inside
-    // its own retention window, which for an archival node is everything
-    // and for a rolling node is its recent slice.
-    let wanted: Vec<openfiat_crypto::Cid> = attachments
-        .iter()
-        .filter(|a| retention.keeps(a.created_at, now))
-        .map(|a| a.cid.clone())
-        .collect();
+    let wanted = content_wanted(state, retention, now);
 
     // Release what fell out of the window first, so a node that shrank
     // its retention frees disk on the next tick rather than only after it
@@ -1839,23 +1920,24 @@ where
                 }
             }
 
-            // Joining the public IPFS DHT, which is what makes the content
-            // this node serves findable by anyone who has not heard of
-            // OpenFiat. Only when it serves content at all — a node with
-            // nothing to provide would publish an empty claim and answer
-            // no queries, which is a routing table's worth of memory for
-            // nothing.
+            // Joining this network's own DHT, which is what makes the
+            // content a node serves findable by the other OpenFiat nodes.
+            // Only when it serves content at all — a node with nothing to
+            // provide would publish an empty claim and answer no queries,
+            // which is a routing table's worth of memory for nothing.
+            //
+            // There is nothing to warn about when this resolves no
+            // bootstrapper. It resolves none by construction: the list is
+            // empty because a public bootstrapper is precisely how this
+            // node used to end up on somebody else's DHT (see
+            // `openfiat_network::content_routing`), and the private DHT is
+            // seeded from `--entrypoint` peers instead. A node with no
+            // entrypoint has no peer of any kind yet, which the startup
+            // line above already says.
             let announce_content = network.serve_content && network.announce_content;
             if announce_content {
-                let bootstrappers = state.gossip.borrow_mut().node.join_content_routing();
-                if bootstrappers == 0 {
-                    tracing::warn!(
-                        "no IPFS DHT bootstrapper resolved; this node's content will not be \
-                         findable outside its own peers"
-                    );
-                } else {
-                    tracing::info!(bootstrappers, "joined the public IPFS DHT");
-                }
+                let seeded = state.gossip.borrow_mut().node.join_content_routing();
+                tracing::info!(seeded, "joined the OpenFiat content DHT");
             }
             tracing::info!(
                 serving = network.serve_content,
@@ -2172,6 +2254,94 @@ mod tests {
         assert!(
             !state.held_content.holds(&cid),
             "a node must not store content it never asked for, however valid"
+        );
+    }
+
+    /// Avatars were held and swept away on the next tick, because the
+    /// keep-list was built from attachment records alone — so every
+    /// profile picture on the network survived until the first sweep
+    /// after it arrived and no longer.
+    #[test]
+    fn an_avatar_named_by_a_valid_claim_is_kept() {
+        use openfiat_identity::events::{ClaimPublish, SignedClaimPublish};
+        use openfiat_identity::{ClaimId, ClaimType};
+
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let keypair = openfiat_crypto::Keypair::generate();
+        let cid = openfiat_crypto::Cid::parse(PROBE_CID).unwrap();
+
+        state
+            .identity
+            .apply_publish(SignedClaimPublish::sign(
+                ClaimPublish {
+                    id: ClaimId::new("avatar-1"),
+                    wallet: openfiat_network::identity::peer_id_from_public_key(
+                        &keypair.public_key(),
+                    )
+                    .unwrap(),
+                    wallet_public_key: keypair.public_key(),
+                    claim_type: ClaimType::Avatar,
+                    value: PROBE_CID.to_string(),
+                    verified: false,
+                    supersedes: None,
+                    expires_at: None,
+                    timestamp: openfiat_types::Timestamp::now(),
+                },
+                &keypair,
+            ))
+            .expect("an avatar naming a real CID is a valid claim");
+
+        assert!(
+            content_wanted(
+                &state,
+                openfiat_content::Retention::Archival,
+                openfiat_types::Timestamp::now()
+            )
+            .contains(&cid),
+            "a node that drops the avatar its own identity records name is holding \
+             the trade and losing the face beside it"
+        );
+    }
+
+    /// The upload/publish ordering. An interface puts the bytes in and
+    /// *then* signs the record naming them, so a sweep in between sees
+    /// content nothing references — and one runs at startup.
+    #[test]
+    fn a_fresh_upload_is_kept_before_any_record_names_it() {
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let cid = openfiat_crypto::Cid::parse(PROBE_CID).unwrap();
+        state
+            .content_ingress
+            .borrow_mut()
+            .insert(PROBE_CID.to_string(), openfiat_types::Timestamp::now());
+
+        assert!(
+            content_wanted(
+                &state,
+                openfiat_content::Retention::Archival,
+                openfiat_types::Timestamp::now()
+            )
+            .contains(&cid)
+        );
+    }
+
+    /// And the other half: the grace is a window, not a promise. Without
+    /// this, the open ingress is unbounded disk for anyone who never
+    /// publishes anything.
+    #[test]
+    fn an_upload_nothing_ever_referenced_stops_being_kept_once_its_grace_is_up() {
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let cid = openfiat_crypto::Cid::parse(PROBE_CID).unwrap();
+        let now = openfiat_types::Timestamp::now();
+        state.content_ingress.borrow_mut().insert(
+            PROBE_CID.to_string(),
+            openfiat_types::Timestamp::from_millis(now.as_millis() - INGRESS_GRACE_MILLIS - 1),
+        );
+
+        assert!(!content_wanted(&state, openfiat_content::Retention::Archival, now).contains(&cid));
+        assert!(
+            state.content_ingress.borrow().is_empty(),
+            "an expired entry must be dropped, not carried forever"
         );
     }
 

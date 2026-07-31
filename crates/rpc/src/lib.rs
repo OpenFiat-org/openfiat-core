@@ -10,6 +10,7 @@
 pub mod actor;
 pub mod dispatch;
 pub mod error;
+pub mod gateway;
 pub mod jsonrpc;
 pub mod methods;
 pub mod notify;

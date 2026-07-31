@@ -264,6 +264,27 @@ pub struct NodeState<S> {
     /// records on every pinning tick, so a restart rebuilds it from the
     /// records rather than trusting a stale copy.
     pub content_wants: RefCell<std::collections::HashSet<String>>,
+    /// Content handed to this node through `sendContentPut`, and when.
+    ///
+    /// The retention sweep keeps what the *records* reference, which is
+    /// the right rule and arrives in the wrong order: an interface
+    /// uploads an avatar's blocks and only then publishes the claim that
+    /// names them. Without this, a sweep landing in between evicts the
+    /// bytes and the claim points at content the node just threw away —
+    /// and since a sweep runs at startup, "in between" is not a narrow
+    /// window.
+    ///
+    /// So an upload is held for [`crate::actor::INGRESS_GRACE`] whether
+    /// or not anything references it yet, and after that the ordinary
+    /// rule resumes. Bounded on purpose: the ingress is open, so this is
+    /// exactly how much disk a stranger can occupy without publishing a
+    /// record, and it must stay a window rather than become a promise.
+    ///
+    /// In memory, like `content_wants`. A restart forgets the grace and
+    /// the next sweep applies the records' rule, which is the honest
+    /// answer — nothing on disk records an intention that was never
+    /// published.
+    pub content_ingress: RefCell<std::collections::HashMap<String, openfiat_types::Timestamp>>,
     /// The IPFS multihashes this node has announced itself as a provider
     /// of, so a running announcement is renewed by libp2p rather than
     /// re-issued on every tick.
@@ -538,6 +559,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             attachments,
             held_content,
             content_wants: RefCell::new(std::collections::HashSet::new()),
+            content_ingress: RefCell::new(std::collections::HashMap::new()),
             content_provided: RefCell::new(std::collections::HashSet::new()),
             reported_identity_conflicts: std::cell::Cell::new(0),
             reputation,

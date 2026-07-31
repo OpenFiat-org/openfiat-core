@@ -36,7 +36,10 @@ pub fn router(
     metrics: Arc<MetricsRegistry>,
     snapshot_directory: PathBuf,
 ) -> Router {
-    let state = AppState { rpc, metrics };
+    let state = AppState {
+        rpc: rpc.clone(),
+        metrics,
+    };
     Router::new()
         .route("/rpc", post(handle_rpc))
         .route("/ws", get(handle_ws))
@@ -44,6 +47,7 @@ pub fn router(
         .route("/metrics", get(handle_metrics))
         .with_state(state)
         .merge(openfiat_snapshot::serve::router(snapshot_directory))
+        .merge(crate::gateway::router(rpc))
         // A third-party browser UI calling this node directly from its own
         // origin (OFS-8200's whole point — a stable, third-party-facing RPC
         // surface) needs this node to actually allow that cross-origin

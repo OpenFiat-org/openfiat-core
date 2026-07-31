@@ -27,9 +27,28 @@
 //! links, fetch each linked block, hash each one. Every step is checked
 //! against a CID the client either brought with it or read out of a block
 //! it had already verified, so a dishonest node can withhold content but
-//! never substitute it. A `getAttachmentFile` returning assembled bytes
-//! would be one call instead of forty and unverifiable, which for
-//! evidence in a dispute is the wrong trade.
+//! never substitute it. That is the path evidence in a dispute travels,
+//! and it stays the only one that is checkable end to end.
+//!
+//! # `getContentFile`, and why an unverifiable read exists beside it
+//!
+//! `getContentFile` walks the DAG on this node and returns the assembled
+//! file: one call instead of forty, and the caller cannot check the
+//! result, because a dag-pb root's digest covers the root node and not
+//! the bytes. Everything the paragraph above says against that is still
+//! true. It exists because of who asks.
+//!
+//! A browser rendering `<img src="…">` performs no verification at any
+//! point, through any gateway, ever. It was previously pointed at a
+//! *public* IPFS gateway — a stranger, assembling the same DAG, with the
+//! same inability to be checked, plus the disclosure of which OpenFiat
+//! attachment is being looked at and by whom. Since this node's content
+//! is no longer published to the public DHT, that gateway cannot resolve
+//! it at all. So the choice is not between a verified read and an
+//! unverified one; it is between an unverified read from the node the
+//! client already selected and trusts for every other answer, and an
+//! unverified read from somebody else. [`crate::gateway`] is the HTTP
+//! shape of this method, and the reason it is worth having.
 
 use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, method_fn};
 use crate::error::RpcError;
@@ -82,6 +101,14 @@ pub struct HeldContentResponse {
     pub content: Option<String>,
 }
 
+#[derive(serde::Serialize)]
+pub struct ContentFileResponse {
+    /// Base64 of the whole file, chunks concatenated in DAG order.
+    /// Absent when any block of it is missing — half a file is not a
+    /// smaller file.
+    pub content: Option<String>,
+}
+
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
     table.register(
         "getHeldContent",
@@ -99,6 +126,30 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                         .get(&cid)
                         .map(|bytes| BASE64.encode(bytes)),
                 })
+            },
+        ),
+    );
+    table.register(
+        "getContentFile",
+        method_fn(
+            |state: &NodeState<S>, params: CidParams| -> Result<ContentFileResponse, RpcError> {
+                let cid = openfiat_crypto::Cid::parse(&params.cid)
+                    .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                match openfiat_content::dag::assemble(&cid, |block| state.held_content.get(block)) {
+                    Ok(file) => Ok(ContentFileResponse {
+                        content: Some(BASE64.encode(file)),
+                    }),
+                    // A block this node does not have. Ordinary — the same
+                    // answer `getHeldContent` gives, for the same reason.
+                    Err(openfiat_content::PinError::Unavailable(_)) => {
+                        Ok(ContentFileResponse { content: None })
+                    }
+                    // Not ordinary: the CID names something this node
+                    // holds and cannot honestly serve as a file. Saying
+                    // "not held" would blame the network for a fault in
+                    // the content.
+                    Err(e) => Err(RpcError::InvalidParams(e.to_string())),
+                }
             },
         ),
     );
@@ -137,6 +188,16 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                             .to_string(),
                     ));
                 }
+
+                // The retention sweep keeps what the records reference,
+                // and an interface uploads before it publishes the record
+                // that references. Without this note of when the bytes
+                // arrived, a sweep landing in between throws them away —
+                // see `NodeState::content_ingress`.
+                state
+                    .content_ingress
+                    .borrow_mut()
+                    .insert(cid.as_str().to_string(), openfiat_types::Timestamp::now());
 
                 Ok(PutContentResponse {
                     cid: cid.as_str().to_string(),

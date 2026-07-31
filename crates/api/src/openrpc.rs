@@ -103,14 +103,14 @@ fn params_schema_for(method: &str) -> Value {
             "required": ["id", "nonce", "signature"],
         });
     }
-    // The interface's fallback when a public gateway cannot produce an
-    // attachment. It takes a `cid`, not an `id`, and the fallback below
-    // published it as `id` for as long as the method has existed — a
-    // documented parameter name that no caller could have used.
-    if method == "getHeldContent" {
+    // The two content reads. They take a `cid`, not an `id`, and the
+    // fallback below published it as `id` for as long as `getHeldContent`
+    // has existed — a documented parameter name that no caller could have
+    // used.
+    if method == "getHeldContent" || method == "getContentFile" {
         return json!({
             "type": "object",
-            "properties": { "cid": { "type": "string", "description": "a CIDv1 base32 sha2-256 content address — the block to fetch, which for a chunked file means the root first and then each linked block in turn" } },
+            "properties": { "cid": { "type": "string", "description": "a CIDv1 base32 sha2-256 content address" } },
             "required": ["cid"],
         });
     }
@@ -150,6 +150,12 @@ fn result_schema_for(method: &str) -> Value {
             "properties": { "content": { "type": ["string", "null"], "description": "base64 of the block this CID names, or null when this node does not hold it — an ordinary answer, not an error" } },
         });
     }
+    if method == "getContentFile" {
+        return json!({
+            "type": "object",
+            "properties": { "content": { "type": ["string", "null"], "description": "base64 of the whole file, chunks concatenated in DAG order, or null when any block of it is missing — half a file is never returned" } },
+        });
+    }
     if method.starts_with("send") {
         json!({ "description": "the created/updated resource's ID, or nothing meaningful to return for a state-transition-only method" })
     } else if let Some(name) = method.strip_prefix("get")
@@ -168,12 +174,23 @@ fn result_schema_for(method: &str) -> Value {
 /// is meant to use the answer — which is one method so far.
 fn description_for(method: &str) -> Option<&'static str> {
     match method {
+        "getContentFile" => Some(
+            "Fetch a whole file this node holds, addressed by CID: the DAG is walked here and \
+             the chunks come back concatenated, one call instead of forty. The caller cannot \
+             check the result — above 256 KiB a CID names a dag-pb root whose digest covers \
+             the root node and not the file, so there is no check to perform even in \
+             principle. Use `getHeldContent` for anything that has to be verifiable, such as \
+             evidence in a dispute. This method exists for viewers that verify nothing \
+             regardless: `GET /ipfs/{cid}` on this same host is its HTTP shape, and is what \
+             an <img> tag should point at. Returns null if any block is missing — never a \
+             partial file.",
+        ),
         "getHeldContent" => Some(
             "Fetch one IPFS block this node holds, addressed by CID. This is the trustless \
-             fallback for an attachment a public gateway will not serve: the answer is bytes, \
-             and the caller checks them by hashing — sha2-256 of the block must equal the \
-             digest inside the CID it asked for. A node that returns anything else is caught \
-             by that check, so no trust in this node is required or implied. \
+             content read: the answer is bytes, and the caller checks them by hashing — \
+             sha2-256 of the block must equal the digest inside the CID it asked for. A node \
+             that returns anything else is caught by that check, so no trust in this node is \
+             required or implied. \
              Content at or under 256 KiB is a single block and this is the whole file. Above \
              that the CID names a dag-pb root: fetch it here, read its links (PBNode field 2, \
              each PBLink's field 1 being a binary CID), fetch each linked block by that CID, \

@@ -201,6 +201,74 @@ pub async fn fetch(
     Ok(blocks)
 }
 
+/// The file a DAG spells out, in link order.
+///
+/// [`fetch`]'s sibling, and the difference between them is the whole
+/// reason both exist. `fetch` collects the blocks a node must *hold*, so
+/// it walks breadth-first and deduplicates. This produces the bytes a
+/// browser must *see*, so it walks depth-first in the order each node
+/// lists its links — the order the file was chunked in — and a block
+/// linked twice contributes its bytes twice, because that is a file with
+/// a repeated chunk rather than a walk going round in circles.
+///
+/// Synchronous, over a lookup rather than a [`BlockFetcher`]: the caller
+/// is the node itself reading its own store, where every block is already
+/// present or is not coming. Each one is checked against the CID that
+/// named it anyway — the store is trusted to be a store, not to be
+/// uncorrupted.
+///
+/// Only a raw block contributes bytes. A dag-pb node's digest covers its
+/// own protobuf encoding, which is framing rather than content, so an
+/// interior node is followed and never concatenated. A dag-pb node with
+/// no links is therefore a leaf this cannot read — a unixfs file whose
+/// bytes live in its `Data` field — and it is refused rather than
+/// contributing nothing, because a file silently short by one chunk is
+/// worse than a file that failed to load.
+pub fn assemble<F>(root: &Cid, block: F) -> Result<Vec<u8>, PinError>
+where
+    F: Fn(&Cid) -> Option<Vec<u8>>,
+{
+    let mut file = Vec::new();
+    // Reverse-ordered stack rather than recursion, for the same reason
+    // `fetch` uses a queue: the depth of a DAG is chosen by whoever
+    // published it.
+    let mut pending = vec![root.clone()];
+    let mut visited = 0usize;
+
+    while let Some(cid) = pending.pop() {
+        visited += 1;
+        if visited > MAX_DAG_BLOCKS {
+            return Err(PinError::TooLarge);
+        }
+
+        let bytes = block(&cid).ok_or_else(|| {
+            PinError::Unavailable(format!("this node does not hold {}", cid.as_str()))
+        })?;
+        if !cid.matches(&bytes) {
+            return Err(PinError::ContentMismatch);
+        }
+
+        if !is_chunked(&cid) {
+            if file.len().saturating_add(bytes.len()) > MAX_DAG_BYTES {
+                return Err(PinError::TooLarge);
+            }
+            file.extend_from_slice(&bytes);
+            continue;
+        }
+
+        let links = links(&bytes).ok_or(PinError::ContentMismatch)?;
+        if links.is_empty() {
+            return Err(PinError::Unavailable(
+                "a dag-pb leaf carries its bytes in unixfs framing this protocol does not read"
+                    .to_string(),
+            ));
+        }
+        pending.extend(links.into_iter().rev());
+    }
+
+    Ok(file)
+}
+
 /// A protobuf cursor, returning `None` rather than panicking on anything
 /// malformed. The same shape as [`crate::bitswap::message`]'s, and for the
 /// same reason: every byte it reads came from a stranger.
@@ -307,6 +375,14 @@ pub(crate) mod test_support {
         Cid::from_binary(&binary).expect("a dag-pb sha2-256 CID is one this protocol accepts")
     }
 
+    /// The raw CID naming `block` — a leaf, whose digest covers the file
+    /// bytes themselves.
+    pub fn raw_cid(block: &[u8]) -> Cid {
+        let mut binary = vec![0x01, 0x55, 0x12, 0x20];
+        binary.extend_from_slice(&openfiat_crypto::hash::sha256(block));
+        Cid::from_binary(&binary).expect("a raw sha2-256 CID is one this protocol accepts")
+    }
+
     /// A fetcher over a fixed set of blocks.
     #[derive(Default)]
     pub struct MemoryBlocks {
@@ -373,7 +449,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{MemoryBlocks, dag_cid, node};
+    use super::test_support::{MemoryBlocks, dag_cid, node, raw_cid};
     use super::*;
     use crate::fixtures;
 
@@ -585,6 +661,131 @@ mod tests {
         let blocks = MemoryBlocks::holding(&held);
 
         assert_eq!(fetch(&blocks, &root).await, Err(PinError::TooLarge));
+    }
+
+    /// A lookup over a fixed set of blocks, for [`assemble`].
+    fn holding(entries: &[(&Cid, &[u8])]) -> impl Fn(&Cid) -> Option<Vec<u8>> + use<> {
+        let blocks: std::collections::HashMap<String, Vec<u8>> = entries
+            .iter()
+            .map(|(cid, bytes)| (cid.as_str().to_string(), bytes.to_vec()))
+            .collect();
+        move |cid: &Cid| blocks.get(cid.as_str()).cloned()
+    }
+
+    #[test]
+    fn a_raw_cid_assembles_to_its_own_bytes() {
+        let cid = fixtures::probe_cid();
+        assert_eq!(
+            assemble(&cid, holding(&[(&cid, PROBE_CONTENT)])),
+            Ok(PROBE_CONTENT.to_vec())
+        );
+    }
+
+    #[test]
+    fn leaves_are_concatenated_in_the_order_the_dag_lists_them() {
+        // The order is the file. Reading these two the other way round
+        // produces a byte string that is not the attachment anybody
+        // uploaded, and nothing downstream could tell.
+        let leaves = [fixtures::probe_cid(), fixtures::other_cid()];
+        let root_block = node(&[&leaves[0], &leaves[1]]);
+        let root = dag_cid(&root_block);
+        let blocks = holding(&[
+            (&root, &root_block),
+            (&leaves[0], PROBE_CONTENT),
+            (&leaves[1], OTHER_CONTENT),
+        ]);
+
+        let mut expected = PROBE_CONTENT.to_vec();
+        expected.extend_from_slice(OTHER_CONTENT);
+        assert_eq!(assemble(&root, blocks), Ok(expected));
+    }
+
+    #[test]
+    fn a_leaf_beside_an_interior_node_is_read_depth_first_not_level_by_level() {
+        // The shape that separates this walk from `fetch`'s. A root
+        // listing an interior node *before* a leaf is what unixfs's
+        // trickle layout produces, and a breadth-first walk would emit
+        // the shallow leaf first — a file whose chunks are in the wrong
+        // order, assembled without a single failed hash check.
+        let deep = raw_cid(PROBE_CONTENT);
+        let middle_block = node(&[&deep]);
+        let middle = dag_cid(&middle_block);
+        let shallow = raw_cid(OTHER_CONTENT);
+        let root_block = node(&[&middle, &shallow]);
+        let root = dag_cid(&root_block);
+
+        let blocks = holding(&[
+            (&root, &root_block),
+            (&middle, &middle_block),
+            (&deep, PROBE_CONTENT),
+            (&shallow, OTHER_CONTENT),
+        ]);
+
+        let mut expected = PROBE_CONTENT.to_vec();
+        expected.extend_from_slice(OTHER_CONTENT);
+        assert_eq!(assemble(&root, blocks), Ok(expected));
+    }
+
+    #[test]
+    fn a_block_linked_twice_contributes_its_bytes_twice() {
+        // The opposite of `fetch`'s deduplication, and deliberately: a
+        // file with two identical chunks stores one block and is still
+        // twice as long as that block.
+        let leaf = fixtures::probe_cid();
+        let root_block = node(&[&leaf, &leaf]);
+        let root = dag_cid(&root_block);
+
+        let mut expected = PROBE_CONTENT.to_vec();
+        expected.extend_from_slice(PROBE_CONTENT);
+        assert_eq!(
+            assemble(
+                &root,
+                holding(&[(&root, &root_block), (&leaf, PROBE_CONTENT)])
+            ),
+            Ok(expected)
+        );
+    }
+
+    #[test]
+    fn a_leaf_whose_bytes_are_not_what_its_cid_names_fails_the_whole_file() {
+        let leaf = fixtures::probe_cid();
+        let root_block = node(&[&leaf]);
+        let root = dag_cid(&root_block);
+        assert_eq!(
+            assemble(
+                &root,
+                holding(&[(&root, &root_block), (&leaf, b"substituted bytes")])
+            ),
+            Err(PinError::ContentMismatch)
+        );
+    }
+
+    #[test]
+    fn a_file_missing_one_chunk_fails_rather_than_coming_back_short() {
+        let leaves = [fixtures::probe_cid(), fixtures::other_cid()];
+        let root_block = node(&[&leaves[0], &leaves[1]]);
+        let root = dag_cid(&root_block);
+        assert!(matches!(
+            assemble(
+                &root,
+                holding(&[(&root, &root_block), (&leaves[0], PROBE_CONTENT)])
+            ),
+            Err(PinError::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn a_dag_pb_leaf_is_refused_rather_than_contributing_nothing() {
+        // `0a 02 08 01` is a well-formed dag-pb node with no links, so
+        // every hash check passes and the file it names is one this walk
+        // cannot read. Returning an empty body here would be a broken
+        // image that looks like a successful fetch.
+        let block = [0x0a, 0x02, 0x08, 0x01];
+        let cid = dag_cid(&block);
+        assert!(matches!(
+            assemble(&cid, holding(&[(&cid, &block)])),
+            Err(PinError::Unavailable(_))
+        ));
     }
 
     #[tokio::test]
