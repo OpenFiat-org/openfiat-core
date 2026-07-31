@@ -19,7 +19,7 @@ pub mod store;
 pub use error::ReservationError;
 pub use record::{Reservation, ReservationId, ReservationState};
 pub use service::ReservationService;
-pub use store::ReservationRegistry;
+pub use store::{ExpirySweep, ReservationRegistry};
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.
 pub fn version() -> &'static str {

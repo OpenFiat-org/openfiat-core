@@ -16,6 +16,28 @@ use std::time::Duration;
 
 const COLUMN_FAMILY: &str = "reservations";
 
+/// What one pass of [`ReservationRegistry::expire_stale`] did.
+///
+/// Two numbers rather than one because they mean opposite things to an
+/// operator: `expired` is the sweep working, `deferred` is the sweep
+/// finding a reservation it was unable to unwind and choosing to leave it
+/// locked rather than expire it without returning the liquidity. A single
+/// count would have hidden the second inside the first.
+///
+/// Both zero is the ordinary result — most passes find nothing — so a
+/// caller driving this on a timer should say nothing at all in that case
+/// rather than emit a line per tick that buries the passes that matter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExpirySweep {
+    /// Reservations moved to `Expired`, their liquidity returned to the
+    /// advertisement.
+    pub expired: usize,
+    /// Reservations past their deadline whose advertisement could not be
+    /// credited, left in `EscrowLocked` for the next sweep to retry.
+    /// Always zero on a healthy node.
+    pub deferred: usize,
+}
+
 pub struct ReservationRegistry<S> {
     store: S,
     advertisements: Rc<AdvertisementRegistry<S>>,
@@ -159,25 +181,60 @@ impl<S: KvStore> ReservationRegistry<S> {
     /// expire automatically, purely as local bookkeeping — every node
     /// computes this independently from timestamps it already has, no
     /// gossip event required.
-    pub fn expire_stale(&self, window: Duration) -> usize {
+    ///
+    /// **Node-local by construction, and deliberately not a gossip
+    /// event.** The deadline is a pure function of data every replica
+    /// already holds: `requested_at`, which the requester signed and which
+    /// travels inside the replicated `ReservationRequested` event, plus
+    /// this build's [`protocol::VALIDATION_WINDOW`]. An "expired" event
+    /// would carry no bit a receiving node could not derive, and would
+    /// make the outcome depend on delivery — a node that missed the
+    /// message would hold the liquidity forever, which is precisely the
+    /// failure this sweep exists to end. It also has no honest signer: the
+    /// requester will not sign away their own reservation, a merchant
+    /// signing it could expire reservations early, and a third party
+    /// signing it needs a quorum OFS-2200 does not have.
+    ///
+    /// Nodes therefore converge without agreeing on anything, bounded by
+    /// clock skew plus [`protocol::SWEEP_INTERVAL`] — see that constant
+    /// for why the bound is chosen as tightly as it is. Ordering against a
+    /// concurrent cancel converges too: whichever lands first moves the
+    /// reservation out of `EscrowLocked`, and the other is refused
+    /// (`apply_cancel` requires that state, this loop skips anything not
+    /// in it), so the liquidity is returned exactly once on every node.
+    ///
+    /// A reservation is only marked `Expired` if its liquidity actually
+    /// came back. Expiring one whose `release_liquidity` failed would
+    /// destroy the merchant's inventory silently — worse than leaving it
+    /// locked, because a locked reservation is swept again next tick and
+    /// heals itself if the missing advertisement later arrives. Those are
+    /// reported as [`ExpirySweep::deferred`] so the caller can say so out
+    /// loud rather than discovering it as a number that does not add up.
+    pub fn expire_stale(&self, window: Duration) -> ExpirySweep {
         let cutoff = Timestamp::now()
             .as_millis()
             .saturating_sub(window.as_millis() as u64);
-        let mut expired = 0;
+        let mut outcome = ExpirySweep::default();
         for mut reservation in self.all() {
-            if reservation.state == ReservationState::EscrowLocked
-                && reservation.requested_at.as_millis() < cutoff
+            if reservation.state != ReservationState::EscrowLocked
+                || reservation.requested_at.as_millis() >= cutoff
             {
-                let _ = self
-                    .advertisements
-                    .release_liquidity(&reservation.advertisement_id, reservation.amount);
-                reservation.state = ReservationState::Expired;
-                reservation.updated_at = Timestamp::now();
-                self.put(&reservation);
-                expired += 1;
+                continue;
             }
+            if self
+                .advertisements
+                .release_liquidity(&reservation.advertisement_id, reservation.amount)
+                .is_err()
+            {
+                outcome.deferred += 1;
+                continue;
+            }
+            reservation.state = ReservationState::Expired;
+            reservation.updated_at = Timestamp::now();
+            self.put(&reservation);
+            outcome.expired += 1;
         }
-        expired
+        outcome
     }
 
     pub fn apply_event(&self, event: &EventEnvelope) {
@@ -459,8 +516,14 @@ mod tests {
             .apply_request(SignedReservationRequest::sign(req, &buyer))
             .unwrap();
 
-        let expired = reservations.expire_stale(Duration::from_secs(60));
-        assert_eq!(expired, 1);
+        let sweep = reservations.expire_stale(Duration::from_secs(60));
+        assert_eq!(
+            sweep,
+            ExpirySweep {
+                expired: 1,
+                deferred: 0
+            }
+        );
         assert_eq!(
             reservations.get(&id).unwrap().state,
             ReservationState::Expired
@@ -468,6 +531,72 @@ mod tests {
         assert_eq!(
             advertisements.get(&ad_id).unwrap().available_liquidity,
             Amount::new(10_000_000, 6)
+        );
+    }
+
+    /// The failure mode that would make wiring the sweep worse than
+    /// leaving it off: marking a reservation `Expired` when the liquidity
+    /// it was holding did not actually come back. The merchant's inventory
+    /// would simply be gone, with a record saying the reservation was
+    /// unwound cleanly.
+    ///
+    /// Nothing in the node deletes an advertisement today, so this state
+    /// is reached here by removing the record underneath the registry —
+    /// which is exactly what a future retention policy, a partially
+    /// restored snapshot, or a corrupt value would look like from inside
+    /// this function.
+    #[test]
+    fn a_reservation_whose_liquidity_cannot_be_returned_stays_locked_for_the_next_sweep() {
+        let store = Rc::new(MemoryStore::new());
+        let advertisements = Rc::new(AdvertisementRegistry::new(Rc::clone(&store)));
+        let merchant = Keypair::generate();
+        let ad_id = AdvertisementId::new("ad-vanishing");
+        let create = AdvertisementCreate {
+            id: ad_id.clone(),
+            merchant: peer_id_from_public_key(&merchant.public_key()).unwrap(),
+            merchant_public_key: merchant.public_key(),
+            asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU").unwrap(),
+            direction: Direction::Sell,
+            fiat_currency: FiatCurrency::parse("KES").unwrap(),
+            min_trade: Amount::new(1_000_000, 6),
+            max_trade: Amount::new(5_000_000, 6),
+            initial_liquidity: Amount::new(10_000_000, 6),
+            pricing: PricingModel::Fixed {
+                price: Amount::new(129_000_000, 6),
+            },
+            payment_methods: vec!["Mobile Money".to_string()],
+            timestamp: Timestamp::now(),
+        };
+        advertisements
+            .apply_create(SignedAdvertisementCreate::sign(create, &merchant))
+            .unwrap();
+        let reservations =
+            ReservationRegistry::new(Rc::new(MemoryStore::new()), Rc::clone(&advertisements));
+
+        let buyer = Keypair::generate();
+        let mut req = request(&buyer, "res-orphan", &ad_id, 2_000_000);
+        req.timestamp = Timestamp::from_millis(0);
+        let id = reservations
+            .apply_request(SignedReservationRequest::sign(req, &buyer))
+            .unwrap();
+
+        store
+            .delete("advertisements", ad_id.as_str().as_bytes())
+            .unwrap();
+
+        let sweep = reservations.expire_stale(Duration::from_secs(60));
+        assert_eq!(
+            sweep,
+            ExpirySweep {
+                expired: 0,
+                deferred: 1
+            }
+        );
+        assert_eq!(
+            reservations.get(&id).unwrap().state,
+            ReservationState::EscrowLocked,
+            "a reservation the sweep could not unwind must stay locked, so the next sweep \
+             retries it once the advertisement is back"
         );
     }
 }

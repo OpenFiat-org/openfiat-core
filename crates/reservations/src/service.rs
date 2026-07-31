@@ -8,7 +8,7 @@ use crate::events::{
 };
 use crate::protocol;
 use crate::record::{Reservation, ReservationId};
-use crate::store::ReservationRegistry;
+use crate::store::{ExpirySweep, ReservationRegistry};
 use openfiat_advertisements::AdvertisementId;
 use openfiat_advertisements::AdvertisementRegistry;
 use openfiat_gossip::GossipService;
@@ -54,7 +54,11 @@ impl<S: KvStore + 'static> ReservationService<S> {
         Rc::clone(&self.registry)
     }
 
-    pub fn expire_stale(&self) -> usize {
+    /// One maintenance pass, at the protocol's own window — the caller
+    /// picks *when*, never *how long*. Drive it from a timer at
+    /// [`protocol::SWEEP_INTERVAL`]; see that constant for why the cadence
+    /// is part of the guarantee rather than a tuning knob.
+    pub fn expire_stale(&self) -> ExpirySweep {
         self.registry.expire_stale(protocol::VALIDATION_WINDOW)
     }
 
