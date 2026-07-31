@@ -32,6 +32,7 @@ use openfiat_notifications::{HttpGateway, NotificationProvider};
 /// `openfiat-node` binary, or anyone embedding this actor — does not have
 /// to depend on `openfiat-registry` just to name the type of one field.
 pub use openfiat_registry::ServiceBranding;
+use openfiat_reservations::protocol as reservation_protocol;
 use openfiat_serialization::wire;
 use openfiat_snapshot::SnapshotConfig;
 use openfiat_storage::KvStore;
@@ -904,20 +905,56 @@ fn register_as_snapshot_provider<S: KvStore + 'static>(
     }
 }
 
-/// One sweep of the record families that expire.
+/// Everything a node holds, and what actually bounds each of it.
 ///
-/// Only oracle, risk and session records. Every one of them carries an
-/// `expires_at`, is already refused by readers once past it, and — the
-/// part that matters — has no aggregate derived by scanning its history.
+/// Written down here, beside the sweep, because `--retention` reads like
+/// a whole-node setting and is not one. It governs held content blocks
+/// and nothing else, and a node advertising `retention:rolling 30d` while
+/// keeping every settlement it has ever seen would be a rolling node in
+/// name only if the rest of this list were unaccounted for. It is not,
+/// but each entry needs its own reason:
 ///
-/// The marketplace records are deliberately not here. `ReputationView`
-/// and `CounterpartyView` both answer by scanning `settlements.all()` on
+/// | State | Bounded by | Why not `--retention` |
+/// |---|---|---|
+/// | `pinned_content` | `--retention`, swept in [`poll_content`] | It *is* the retention window. |
+/// | `oracle_records`, `risk_records`, `sessions` | their own `expires_at`, swept below | Each record states its own lifetime and readers already refuse it past that; a node keeping one longer would be keeping something nobody will read. |
+/// | `gossip_events` | [`GOSSIP_LOG_RETENTION`], a flat week | A replication buffer, not state — it is the history a snapshot exists to replace. See that constant for the two floors that fix the week. |
+/// | `snapshot_metadata` | newest announcement per producer, swept below | Superseded announcements name files their producer has already deleted. |
+/// | `peers` | last-seen age, swept on the registry tick | Who this node is connected to now, not history. |
+/// | `registry_services` | health-update age, swept on the registry tick | A registration is a live claim that lapses when it stops being refreshed. |
+/// | reward observations | [`REWARD_OBSERVATION_EPOCHS`], swept below | In memory; see that constant for what pruning costs. |
+/// | `advertisements`, `reservations`, `settlements`, `disputes`, `attachments`, `identity_claims`, `governance_proposals`, `notification_*` | **nothing** | Kept regardless of retention, deliberately — see below. |
+///
+/// # Why the marketplace records are kept whatever the operator asked
+///
+/// Not an oversight and not laziness. `ReputationView` and
+/// `CounterpartyView` both answer by scanning `settlements.all()` on
 /// every call, so deleting an old settlement would silently reduce a
-/// wallet's trade count and reputation, and two nodes with different
-/// retention would give different answers to the same question while both
-/// looked authoritative. Worse, it is unrecoverable: once the settlements
-/// are gone the figure cannot be recomputed. Those families can only be
-/// pruned after their aggregates are materialised — see #108.
+/// wallet's trade count and its reputation. Two nodes running different
+/// `--retention` would then give different answers to the same question
+/// while both looked authoritative, and the divergence is unrecoverable:
+/// once the settlements are gone the figure cannot be recomputed from
+/// anything the node still holds. `attachments` is in the same position
+/// for a different reason — it is what tells [`content_wanted`] which
+/// blocks to keep, so pruning it would evict content by a side effect
+/// rather than by the retention rule.
+///
+/// What this costs is bounded and worth stating: these are records, not
+/// blobs. A settlement is a few hundred bytes and arrives only behind
+/// real escrow, so the family grows with the network's actual trading
+/// volume rather than with time — unlike `gossip_events`, which carries
+/// every event's full payload and is why *that* one is swept. The bulk on
+/// a busy node is content, and content is exactly what `--retention`
+/// governs.
+///
+/// They can be pruned once their aggregates are materialised rather than
+/// derived by a scan — see #108, which this note does not claim to close.
+///
+/// # One sweep of the record families that *do* expire
+///
+/// Oracle, risk and session records: every one carries an `expires_at`,
+/// is already refused by readers once past it, and has no aggregate
+/// derived by scanning its history.
 fn poll_expired_records<S: KvStore + 'static>(state: &NodeState<S>) {
     let now = openfiat_types::Timestamp::now();
     let dropped = state.oracles.prune_expired(now)
@@ -925,6 +962,76 @@ fn poll_expired_records<S: KvStore + 'static>(state: &NodeState<S>) {
         + state.sessions.prune_expired(now);
     if dropped > 0 {
         tracing::info!(dropped, "pruned long-expired records");
+    }
+}
+
+/// How many *completed* reward epochs of liveness observations a node
+/// keeps, on top of the one in flight.
+///
+/// `[PROPOSED — NEEDS SIGN-OFF]` seven, against a 24-hour epoch — a week
+/// of history plus today.
+///
+/// # What pruning costs, since this is reward-path state
+///
+/// `getRewardObservations` answers from this ledger, so an epoch dropped
+/// here can no longer be reported by this node, and nothing can rebuild
+/// it: observations are local by construction (a node can only speak to
+/// what it heard itself), never gossiped and never written to disk. A
+/// caller recomputing a reward schedule for a swept epoch gets an empty
+/// answer from this node.
+///
+/// A week is chosen so that is not a real loss. The default epoch is a
+/// day and `getRewardObservations` asks about the last completed one, so
+/// a client is normally reading yesterday; a week gives an operator or an
+/// auditor room to look back without making the node an archive of a
+/// measurement it takes continuously.
+///
+/// It is also generous relative to what actually survives. The ledger is
+/// in memory — a restart already discards every epoch, including the one
+/// in flight — so this bounds a node that stays up for months, which is
+/// exactly the node whose memory would otherwise grow by one entry per
+/// peer per day forever.
+const REWARD_OBSERVATION_EPOCHS: u64 = 7;
+
+/// One sweep of the in-memory liveness ledger.
+///
+/// `LivenessLedger::prune_through` was written with a doc comment saying
+/// it exists "so a long-running node's ledger does not grow without
+/// bound", and nothing called it. Every signed envelope from every origin
+/// inserts into it, so the bound was aspirational and the growth was real.
+fn poll_reward_observation_pruning<S: KvStore + 'static>(state: &NodeState<S>) {
+    let current = state
+        .reward_params
+        .epoch_index(openfiat_types::Timestamp::now());
+    // `prune_through` retains strictly-newer epochs, so the argument is
+    // the last epoch to *drop*. A node younger than the window has
+    // nothing to drop and must not underflow into dropping everything.
+    let Some(cutoff) = current.checked_sub(REWARD_OBSERVATION_EPOCHS + 1) else {
+        return;
+    };
+    let held = state.reward_observations.borrow().epochs_held().len();
+    state.reward_observations.borrow_mut().prune_through(cutoff);
+    let dropped = held - state.reward_observations.borrow().epochs_held().len();
+    if dropped > 0 {
+        tracing::info!(
+            dropped,
+            retained_epochs = REWARD_OBSERVATION_EPOCHS + 1,
+            "pruned liveness observations for epochs already past reporting"
+        );
+    }
+}
+
+/// One sweep of the snapshot announcement index.
+///
+/// See `SnapshotIndex::prune_superseded` for why the newest announcement
+/// per producer is the whole of what is worth keeping.
+fn poll_snapshot_index_pruning<S: KvStore + 'static>(state: &NodeState<S>) {
+    let dropped = state.snapshots.prune_superseded();
+    if dropped > 0 {
+        tracing::info!(
+            dropped,
+            "forgot snapshot announcements a newer one replaced"
+        );
     }
 }
 
@@ -1745,7 +1852,23 @@ async fn poll_snapshot_bootstrap<S: KvStore + 'static>(
     if state.snapshots.checkpoint_slot().is_some() {
         return;
     }
-    let mut candidates = state.snapshots.all();
+    // Never this node's own announcements. A node that produces
+    // snapshots and has no checkpoint would otherwise pick its own every
+    // tick, fetch over HTTP from itself, and be refused by the
+    // trust-anchor gate — correctly, since a node is not its own pinned
+    // anchor. The refusal is right and the log line is not: `SNAPSHOT_
+    // VERIFICATION_FAILED` naming this very node, once every thirty
+    // seconds, forever. The wasted round trip is nothing. The cost is
+    // that an operator learns to read that line as noise, and then the
+    // one that matters — a producer arranging for this node to import
+    // somebody else's bytes — scrolls past unread.
+    let local = state.gossip.borrow().node.local_peer_id();
+    let mut candidates: Vec<_> = state
+        .snapshots
+        .all()
+        .into_iter()
+        .filter(|candidate| candidate.producer != local)
+        .collect();
     candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.slot));
 
     for candidate in candidates {
@@ -1909,6 +2032,15 @@ where
             // Unconditional, unlike `chain_poll`: a GossipOnly node replicates
             // the registry just the same and must expire stale entries too.
             let mut registry_sweep = tokio::time::interval(REGISTRY_SWEEP_INTERVAL);
+            // Deliberately not `reset()` like `registry_heartbeat` below:
+            // the first tick firing immediately is wanted here. A node
+            // that has just restarted is holding whatever reservations
+            // went stale while it was down, and their liquidity with
+            // them; sweeping at loop entry returns it before the node
+            // starts answering `getAdvertisements` with an understated
+            // balance.
+            let mut reservation_sweep =
+                tokio::time::interval(reservation_protocol::SWEEP_INTERVAL);
             // Unconditional, like `registry_sweep`: notifications are
             // driven by gossiped protocol events, which a `GossipOnly`
             // node sees just as well as an `RpcConnected` one.
@@ -2069,6 +2201,47 @@ where
                             tracing::debug!(dropped, "dropped peers not seen recently");
                         }
                     }
+                    // OFS-2200 §12/§12a. Unconditional, like
+                    // `registry_sweep` above: every node replicates
+                    // reservations, so every node holds liquidity it has
+                    // to give back, and a `GossipOnly` node skipping this
+                    // would serve a permanently understated balance for
+                    // advertisements it did not originate.
+                    //
+                    // Node-local, and not a gossip event: the deadline is
+                    // already inside the replicated record, so each node
+                    // reaches the same answer on its own clock without
+                    // anyone announcing anything. See
+                    // `ReservationRegistry::expire_stale`.
+                    _ = reservation_sweep.tick() => {
+                        let sweep = state
+                            .reservations
+                            .expire_stale(reservation_protocol::VALIDATION_WINDOW);
+                        // Most minutes expire nothing. Logging the empty
+                        // pass would be a line a minute forever, which is
+                        // how the two lines that matter get missed.
+                        if sweep.expired > 0 {
+                            tracing::info!(
+                                expired = sweep.expired,
+                                "released liquidity from reservations past their validation window"
+                            );
+                        }
+                        if sweep.deferred > 0 {
+                            // Left in `EscrowLocked` on purpose: their
+                            // advertisement could not be credited, and
+                            // expiring them anyway would erase the
+                            // merchant's inventory with a record claiming
+                            // it was returned. The next tick retries. Not
+                            // routine — a node reporting this has lost an
+                            // advertisement it is still holding liquidity
+                            // against.
+                            tracing::warn!(
+                                deferred = sweep.deferred,
+                                "reservations past their window still hold liquidity: their \
+                                 advertisement is missing from this replica"
+                            );
+                        }
+                    }
                     _ = registry_heartbeat.tick() => {
                         // Re-announced unconditionally rather than only
                         // when a new peer appears: a peer that connects
@@ -2118,9 +2291,15 @@ where
                     _ = snapshot_bootstrap.tick() => {
                         poll_snapshot_bootstrap(&state, &snapshot_client).await;
                     }
+                    // Everything a node keeps that is bounded by age
+                    // rather than by a record's own lifetime, swept
+                    // together on one timer — see `poll_expired_records`
+                    // for the whole list and for what each is bounded by.
                     _ = gossip_sweep.tick() => {
                         poll_gossip_pruning(&state);
                         poll_expired_records(&state);
+                        poll_snapshot_index_pruning(&state);
+                        poll_reward_observation_pruning(&state);
                     }
                     // Only polled when this node serves content: a
                     // `None` control means no accept loop was started, so
@@ -2366,6 +2545,98 @@ mod tests {
         );
     }
 
+    /// #163, at the level where both halves of it are visible: a node
+    /// restored from a snapshot must *serve* the content it received and
+    /// must still be holding it after the first retention sweep.
+    ///
+    /// Two separate failures hide behind "the blocks are in the snapshot".
+    /// The blocks can land in the store and be unreachable through
+    /// `held_content`, which is the only thing `GET /ipfs/{cid}` and a
+    /// retrievability challenge ever read. Or they can be reachable and
+    /// then swept ten minutes later, because the sweep keeps what the
+    /// *records* reference and nothing told the joining node why it has
+    /// them — which would be a node that serves and earns for one pinning
+    /// interval and then quietly stops.
+    ///
+    /// Both are closed by the same fact, and this test is here to keep it
+    /// true: the record that justifies the content travels in the same
+    /// snapshot as the content.
+    #[test]
+    fn a_node_restored_from_a_snapshot_serves_the_content_and_still_holds_it_after_a_sweep() {
+        use openfiat_identity::events::{ClaimPublish, SignedClaimPublish};
+        use openfiat_identity::{ClaimId, ClaimType};
+
+        let cid = openfiat_crypto::Cid::parse(PROBE_CID).unwrap();
+        let now = openfiat_types::Timestamp::now();
+
+        let producer = NodeState::new_for_test(MemoryStore::new());
+        let keypair = openfiat_crypto::Keypair::generate();
+        producer
+            .identity
+            .apply_publish(SignedClaimPublish::sign(
+                ClaimPublish {
+                    id: ClaimId::new("avatar-in-a-snapshot"),
+                    wallet: openfiat_network::identity::peer_id_from_public_key(
+                        &keypair.public_key(),
+                    )
+                    .unwrap(),
+                    wallet_public_key: keypair.public_key(),
+                    claim_type: ClaimType::Avatar,
+                    value: PROBE_CID.to_string(),
+                    verified: false,
+                    supersedes: None,
+                    expires_at: None,
+                    timestamp: now,
+                },
+                &keypair,
+            ))
+            .expect("an avatar naming a real CID is a valid claim");
+        assert!(producer.held_content.keep(&cid, PROBE_CONTENT));
+
+        // The shipped list, not a list this test chose — a column family
+        // dropped from it is exactly the regression worth catching.
+        let blob = openfiat_snapshot::state::serialize(
+            &producer.store,
+            crate::state::SNAPSHOT_COLUMN_FAMILIES,
+        )
+        .expect("a node can always serialize its own state");
+
+        let joining = NodeState::new_for_test(MemoryStore::new());
+        assert!(
+            !joining.held_content.holds(&cid),
+            "this test is void if the joining node already had it"
+        );
+        openfiat_snapshot::state::restore(
+            &joining.store,
+            &blob,
+            openfiat_snapshot::store::RESERVED_COLUMN_FAMILIES,
+            crate::state::verify_snapshot_entry,
+        )
+        .expect("a snapshot of honest state imports");
+
+        // It serves: `held_content` is what the HTTP gateway and every
+        // challenge answer read, and it must answer without a fetch.
+        assert_eq!(
+            joining.held_content.get(&cid).as_deref(),
+            Some(PROBE_CONTENT)
+        );
+        assert!(
+            joining.held_content.missing_blocks(&cid).is_empty(),
+            "a complete file, not a root with nothing under it"
+        );
+
+        // And it keeps: the sweep it will run within one pinning interval
+        // has a reason to hold on, because the claim came with the bytes.
+        let wanted = content_wanted(&joining, openfiat_content::Retention::default(), now);
+        assert!(wanted.contains(&cid));
+        assert_eq!(
+            joining.held_content.evict_outside(&wanted),
+            0,
+            "a node that throws away what it just imported freeloads for a pinning \
+             interval and then goes back to freeloading"
+        );
+    }
+
     /// The upload/publish ordering. An interface puts the bytes in and
     /// *then* signs the record naming them, so a sweep in between sees
     /// content nothing references — and one runs at startup.
@@ -2385,6 +2656,68 @@ mod tests {
                 openfiat_types::Timestamp::now()
             )
             .contains(&cid)
+        );
+    }
+
+    /// `LivenessLedger::prune_through` was written to stop a long-running
+    /// node's observation ledger growing without bound, and nothing called
+    /// it — the same shape as `PeerCache::expire_stale` before it. Every
+    /// signed envelope from every origin inserts here, so the sweep has to
+    /// be wired, not merely implemented.
+    #[test]
+    fn liveness_observations_older_than_the_reporting_window_are_dropped() {
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let params = state.reward_params;
+        let now = openfiat_types::Timestamp::now();
+        let day = params.epoch_millis;
+        let peer = openfiat_types::PeerId::from_bytes(vec![7u8; 8]);
+
+        // One observation a month back, one yesterday, one today.
+        for days_ago in [30u64, 1, 0] {
+            state.reward_observations.borrow_mut().observe(
+                &params,
+                &peer,
+                openfiat_types::Timestamp::from_millis(now.as_millis() - days_ago * day),
+                false,
+            );
+        }
+        assert_eq!(state.reward_observations.borrow().epochs_held().len(), 3);
+
+        poll_reward_observation_pruning(&state);
+
+        let held = state.reward_observations.borrow().epochs_held();
+        let current = params.epoch_index(now);
+        assert!(
+            held.iter()
+                .all(|e| current - e <= REWARD_OBSERVATION_EPOCHS),
+            "an epoch past the reporting window survived the sweep: {held:?}"
+        );
+        assert!(
+            held.contains(&current) && held.contains(&(current - 1)),
+            "the epoch in flight and the one getRewardObservations answers for by \
+             default must both survive: {held:?}"
+        );
+    }
+
+    /// A node younger than the retention window must not underflow into
+    /// discarding everything it has observed so far.
+    #[test]
+    fn a_node_with_less_history_than_the_window_loses_none_of_it() {
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let params = state.reward_params;
+        let now = openfiat_types::Timestamp::now();
+        state.reward_observations.borrow_mut().observe(
+            &params,
+            &openfiat_types::PeerId::from_bytes(vec![3u8; 8]),
+            now,
+            false,
+        );
+
+        poll_reward_observation_pruning(&state);
+
+        assert_eq!(
+            state.reward_observations.borrow().epochs_held(),
+            vec![params.epoch_index(now)]
         );
     }
 
@@ -2897,6 +3230,9 @@ mod tests {
             category: ProposalCategory::Protocol,
             author: peer_id_from_public_key(&author.public_key()).unwrap(),
             author_public_key: author.public_key(),
+            // This fixture exercises vote-weight verification, which has
+            // nothing to do with the chain's own proposal record.
+            onchain_proposal_id: None,
             timestamp: openfiat_types::Timestamp::now(),
         };
         state

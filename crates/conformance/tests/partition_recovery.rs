@@ -110,6 +110,9 @@ async fn an_offline_node_recovers_events_from_two_domains_at_once_on_reconnect()
         category: ProposalCategory::Protocol,
         author: author_peer.clone(),
         author_public_key: author.public_key(),
+        // Gossip convergence across a partition, not chain agreement:
+        // this proposal has no on-chain counterpart to claim.
+        onchain_proposal_id: None,
         timestamp: Timestamp::now(),
     };
     let signed_proposal = SignedProposalCreate::sign(proposal, &author);
