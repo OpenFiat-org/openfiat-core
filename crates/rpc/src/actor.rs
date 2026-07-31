@@ -1506,6 +1506,7 @@ where
                 network.keypair,
                 network.self_roles,
                 network.chain_mode,
+                network.snapshot.trusted_providers.clone(),
             );
             {
                 // Declared before listening, so the first peer to connect
@@ -2713,6 +2714,7 @@ mod tests {
                 Keypair::from_seed([33u8; 32]),
                 Vec::new(),
                 NodeChainMode::GossipOnly,
+                openfiat_snapshot::trust::TrustAnchors::pinned(),
             );
             let producer =
                 openfiat_network::identity::peer_id_from_public_key(&keypair.public_key()).unwrap();
@@ -2786,7 +2788,16 @@ mod tests {
                 .await;
             });
 
-            let state = NodeState::new_for_test(MemoryStore::new());
+            // The producer is trusted explicitly. This test is about the
+            // fall-through when the best-looking snapshot is unreachable,
+            // not about who a fresh node believes — that gate is covered
+            // in `openfiat_snapshot`'s own suite.
+            let anchor =
+                bs58::encode(Keypair::from_seed([21u8; 32]).public_key().as_bytes()).into_string();
+            let state = NodeState::new_for_test_trusting(
+                MemoryStore::new(),
+                openfiat_snapshot::trust::TrustAnchors::with_operator(&[anchor]).unwrap(),
+            );
             let keypair = provider(&state);
             // Port 1 is reserved and nothing listens there, so the first
             // candidate is refused rather than left to time out.

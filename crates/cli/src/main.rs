@@ -169,6 +169,23 @@ pub struct Args {
     #[arg(long, value_name = "SECS")]
     pub snapshot_interval_secs: Option<u64>,
 
+    /// Additionally trust this base58 public key to supply this node's
+    /// FIRST snapshot. Repeat for several.
+    ///
+    /// Only ever needed by a node with no history of its own. Every check
+    /// on an import — signature, registration, size, state root —
+    /// establishes that the bytes are what the announcer said, not that
+    /// the announcer is honest, and a node with no checkpoint has nothing
+    /// to judge that against. So a first snapshot must come from a pinned
+    /// anchor; after it, any registered provider will do.
+    ///
+    /// This ADDS to the pinned anchors and cannot remove them. Trust your
+    /// own infrastructure with it; nothing you can set here un-trusts the
+    /// keys compiled in, which is the first thing a tampered
+    /// configuration would try.
+    #[arg(long = "trusted-snapshot-provider", value_name = "PUBKEY")]
+    pub trusted_snapshot_providers: Vec<String>,
+
     /// Stop producing snapshots.
     ///
     /// Production is ON by default: a network where nobody snapshots is a
@@ -449,6 +466,10 @@ fn snapshot_config(args: &Args, ledger: &str) -> openfiat_snapshot::SnapshotConf
         // answer as any other address it cannot reason about.
         rpc_bind: args.rpc_bind_address.parse().ok(),
         retain: openfiat_snapshot::config::DEFAULT_RETAIN,
+        trusted_providers: openfiat_snapshot::trust::TrustAnchors::with_operator(
+            &args.trusted_snapshot_providers,
+        )
+        .unwrap_or_else(|e| panic!("invalid --trusted-snapshot-provider: {e}")),
     }
 }
 

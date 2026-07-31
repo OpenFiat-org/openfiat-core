@@ -198,6 +198,7 @@ fn configured(directory: &Path, address: SocketAddr) -> SnapshotConfig {
         public_urls: vec![SnapshotLocation::parse(format!("http://{address}")).unwrap()],
         rpc_bind: None,
         retain: 3,
+        trusted_providers: TrustAnchors::pinned(),
     }
 }
 

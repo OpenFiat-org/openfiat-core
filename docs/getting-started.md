@@ -223,6 +223,75 @@ can be asked by declaring a smaller window.
 
 [OFS-4100 §9.2]: https://github.com/OpenFiat-org/openfiat-specs
 
+## 5b. Snapshots, which are also already on
+
+A node that joins with no history would otherwise replay every event the
+network has ever gossiped. A snapshot is the shortcut: one file carrying a
+node's whole state at a height, plus a `state_root` that lets the receiver
+check it got what was advertised.
+
+**Consuming one needs no configuration at all.** A joining node learns
+which snapshots exist from gossip, picks the highest it can verify, and
+downloads it from the URL in the announcement.
+
+**Producing them is on by default too**, and also needs no configuration —
+the node works out its own download URL from the addresses it has learned
+it is reachable at, and serves the file from the RPC port it is already
+listening on.
+
+### Where they go, and how often
+
+| | Default | Change it with |
+|---|---|---|
+| Directory | `<ledger>/snapshots` — so `./openfiat-data/snapshots` unless you moved `--ledger` | `--snapshot-dir <DIR>` |
+| Interval | **one hour** | `--snapshot-interval-secs <SECS>` |
+| Kept on disk | the **3** newest | *not configurable* — see below |
+| Served at | `GET /snapshot/{id}` on `--rpc-bind-address` | — |
+
+```bash
+--snapshot-dir /var/lib/openfiat/snapshots   # a bigger disk
+--snapshot-interval-secs 21600               # every six hours instead
+--no-snapshot-production                     # stop producing; still consumes
+```
+
+Three retained is a deliberate floor rather than a tuning knob, and it is
+worth knowing why it is not a flag: it gives a mirror something to serve
+while the newest file is still being written, and leaves a fallback if the
+newest turns out to be unreachable — while stopping an unattended archival
+node from filling its own disk over months. If you need a different number,
+that is a change to `DEFAULT_RETAIN`, not a flag we have and did not
+document.
+
+Size follows your `--retention` window, since a snapshot carries the state
+the node actually holds. An archival node's snapshots grow without bound;
+a 30-day node's do not.
+
+### What a node will accept
+
+A snapshot is the importing node's **entire worldview**, so accepting a bad
+one is worse than failing to start. Before a single byte reaches the store,
+the node checks the announcement was signed, the producer is a registered
+snapshot provider, the download is the announced size, and the decompressed
+bytes hash to the announced `state_root`.
+
+Those checks establish that the bytes are what the announcer *said* they
+were — not that the announcer is honest. Nothing in the protocol
+establishes what the correct state root at a height *is*. So a node with
+**no checkpoint of its own** additionally requires its first snapshot to
+come from a pinned trust anchor, because it has no history to judge a claim
+against and would otherwise have no basis for preferring an honest producer
+over a well-formed fabrication.
+
+That restriction applies once. After the first import the node has its own
+history, and any registered provider will do.
+
+```bash
+--trusted-snapshot-provider <PUBKEY>   # repeatable; ADDS to the pinned set
+```
+
+The flag can only add. Nothing an operator configures removes a pinned
+anchor, which is the first thing a tampered configuration would try.
+
 ## 6. Joining the devnet cluster
 
 A node joins by dialing an entrypoint, and finds the rest of the network
@@ -476,7 +545,7 @@ discovering which flags to leave out.
 | Peer discovery | nothing — it is not optional | A node that announced no address and learned no peer is how this network spent its first months, and it looked healthy the whole time. |
 | Content serving | `--no-content-serving` | Node stores no attachment content and cannot answer a retrievability challenge, so it earns the reduced share (0.7x). It still challenges its peers. |
 | Keeping old content | `--retention 30` (the default) | Nothing, unless you were relying on this node to serve older-than-30-day content. Use `--retention archival` if you intend to run an archive. |
-| Producing snapshots | `--no-snapshot-production` | Node produces no snapshots for others to bootstrap from. It still *consumes* them, which needs no configuration. Production is on by default and needs none either — the node derives its own download URL from the addresses it has learned it is reachable at. |
+| Producing snapshots | `--no-snapshot-production` | Node produces no snapshots for others to bootstrap from. It still *consumes* them, which needs no configuration. Production is on by default and needs none either — see [§5b](#5b-snapshots-which-are-also-already-on) for where they are written, how often, and how many are kept. |
 | Log volume | `--log warn` | Routine INFO lines, including the addresses the node is reachable at. Errors and warnings still appear. |
 
 Two things you cannot turn off, and should not want to: signature

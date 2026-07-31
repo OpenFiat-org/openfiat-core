@@ -283,6 +283,7 @@ impl<S: KvStore + 'static> NodeState<S> {
         keypair: Keypair,
         self_roles: Vec<NodeRole>,
         chain_mode: NodeChainMode,
+        trusted_snapshot_providers: openfiat_snapshot::trust::TrustAnchors,
     ) -> Self {
         let store = Rc::new(store);
         let event_store = EventStore::new(Rc::clone(&store));
@@ -329,7 +330,11 @@ impl<S: KvStore + 'static> NodeState<S> {
         ));
         let oracles = Rc::new(OracleIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let risk = Rc::new(RiskIndex::new(Rc::clone(&store), Rc::clone(&services)));
-        let snapshots = Rc::new(SnapshotIndex::new(Rc::clone(&store), Rc::clone(&services)));
+        let snapshots = Rc::new(SnapshotIndex::with_anchors(
+            Rc::clone(&store),
+            Rc::clone(&services),
+            trusted_snapshot_providers,
+        ));
         let sessions = Rc::new(SessionRegistry::new(Rc::clone(&store)));
         let is_rpc_connected = chain_mode.is_rpc_connected();
         let chain = Rc::new(ChainState::new(chain_mode));
@@ -548,10 +553,40 @@ impl<S: KvStore + 'static> NodeState<S> {
     /// `tests/` and link against a normal build, so a gated constructor
     /// would be invisible to exactly the tests that exercise the shipped
     /// dispatch table end to end.
+    /// A test node that additionally trusts `anchors` for a first
+    /// snapshot.
+    ///
+    /// Separate from `new_for_test` on purpose. Making the plain test
+    /// constructor trust everything would disable the anchor gate across
+    /// the whole suite without anyone choosing that — a test asking to
+    /// exercise the bootstrap pipeline should have to say so.
+    pub fn new_for_test_trusting(
+        store: S,
+        anchors: openfiat_snapshot::trust::TrustAnchors,
+    ) -> Self {
+        let keypair = Keypair::generate();
+        let node = Node::new(&keypair).expect("a fresh keypair always builds a node");
+        Self::new(
+            node,
+            store,
+            keypair,
+            Vec::new(),
+            NodeChainMode::GossipOnly,
+            anchors,
+        )
+    }
+
     pub fn new_for_test(store: S) -> Self {
         let keypair = Keypair::generate();
         let node = Node::new(&keypair).expect("loopback node construction cannot fail");
-        Self::new(node, store, keypair, Vec::new(), NodeChainMode::GossipOnly)
+        Self::new(
+            node,
+            store,
+            keypair,
+            Vec::new(),
+            NodeChainMode::GossipOnly,
+            openfiat_snapshot::trust::TrustAnchors::pinned(),
+        )
     }
 }
 

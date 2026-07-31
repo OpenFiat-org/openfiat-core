@@ -66,6 +66,13 @@ pub struct SnapshotConfig {
     /// composition root always sets it.
     pub rpc_bind: Option<SocketAddr>,
     pub retain: usize,
+    /// Who this node will take a *first* snapshot from, when it holds no
+    /// checkpoint of its own to judge one against.
+    ///
+    /// Configuration only in the additive sense — see [`crate::trust`].
+    /// The pinned anchors are always present; an operator can add to them
+    /// and cannot remove them.
+    pub trusted_providers: crate::trust::TrustAnchors,
 }
 
 impl SnapshotConfig {
@@ -112,6 +119,7 @@ impl Default for SnapshotConfig {
             public_urls: Vec::new(),
             rpc_bind: None,
             retain: DEFAULT_RETAIN,
+            trusted_providers: crate::trust::TrustAnchors::pinned(),
         }
     }
 }
