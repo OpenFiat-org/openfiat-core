@@ -120,7 +120,7 @@ fn ungzip_tar(compressed: &[u8]) -> Result<Vec<u8>, SnapshotError> {
         .map_err(|_| SnapshotError::UnsupportedCompression)?;
 
     for entry in entries {
-        let mut entry = entry.map_err(|_| SnapshotError::UnsupportedCompression)?;
+        let entry = entry.map_err(|_| SnapshotError::UnsupportedCompression)?;
         let is_state = entry
             .path()
             .map(|path| path.to_string_lossy() == STATE_MEMBER)
