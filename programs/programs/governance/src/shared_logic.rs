@@ -124,6 +124,37 @@ pub fn require_within_emergency_window(authority: &EmergencyAuthority, now: i64)
     Ok(())
 }
 
+/// The whole of the sunset's effect on `update_governance_config`, as one
+/// testable function (OFS-4100 §5.1).
+///
+/// Extracted rather than written inline in the instruction so the *rule*
+/// can be tested past the deadline, not just the clock comparison it
+/// rests on. A `solana-test-validator` cannot be moved a year forward, so
+/// an on-validator test can only ever exercise the inside of the window;
+/// leaving the rule inline would have meant the branch that actually
+/// takes the power away was never executed by anything.
+///
+/// Only a *change* is refused, never the field's presence. `vote_lock_secs`
+/// stays in the params struct after the sunset and a caller may keep
+/// echoing it back unchanged, so every other parameter remains
+/// governance-configurable for ever — the exception lapsing must not
+/// freeze the whole config.
+pub fn require_vote_lock_change_allowed(
+    authority: &EmergencyAuthority,
+    now: i64,
+    current_vote_lock_secs: i64,
+    requested_vote_lock_secs: i64,
+) -> Result<()> {
+    if emergency_powers_available(authority, now) {
+        return Ok(());
+    }
+    require!(
+        requested_vote_lock_secs == current_vote_lock_secs,
+        ErrorCode::EmergencyPowersExpired
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,8 +220,54 @@ mod tests {
         // — the only thing a caller influences is when it starts.
         for start in [0, 1, 1_700_000_000, i64::MAX - FIRST_YEAR_SECS] {
             let authority = authority_initialized_at(start);
-            assert_eq!(authority.expires_at - authority.initialized_at, FIRST_YEAR_SECS);
+            assert_eq!(
+                authority.expires_at - authority.initialized_at,
+                FIRST_YEAR_SECS
+            );
         }
+    }
+
+    #[test]
+    fn the_delay_power_still_works_inside_the_window() {
+        // The control. A sunset that closes a power which never worked
+        // proves nothing, so the "before" case is asserted as
+        // deliberately as the "after".
+        let authority = authority_initialized_at(1_000);
+        assert!(
+            require_vote_lock_change_allowed(&authority, 1_000, 604_800, 30 * 24 * 60 * 60).is_ok(),
+            "vote_lock_secs must be writable while the exception is open"
+        );
+    }
+
+    #[test]
+    fn the_delay_power_is_gone_once_the_exception_lapses() {
+        // The point of #121, executed rather than described. This is the
+        // branch a validator test can never reach, because a test
+        // validator's clock cannot be moved a year forward.
+        let authority = authority_initialized_at(1_000);
+        let after = 1_000 + FIRST_YEAR_SECS;
+        assert!(
+            require_vote_lock_change_allowed(&authority, after, 604_800, 604_801).is_err(),
+            "a one-second increase is still a change, and changes are over"
+        );
+        assert!(
+            require_vote_lock_change_allowed(&authority, after, 604_800, 1).is_err(),
+            "shortening the delay is a change too — the field is frozen, not capped"
+        );
+    }
+
+    #[test]
+    fn a_lapsed_exception_freezes_only_the_delay_and_not_the_whole_config() {
+        // `vote_lock_secs` stays in the params struct after the sunset, so
+        // an admin correcting quorum or a fee has to send *something* in
+        // that field. Echoing the stored value back must keep working, or
+        // the exception lapsing would freeze every parameter with it.
+        let authority = authority_initialized_at(1_000);
+        let after = 1_000 + FIRST_YEAR_SECS * 3;
+        assert!(
+            require_vote_lock_change_allowed(&authority, after, 604_800, 604_800).is_ok(),
+            "an unchanged value must remain acceptable for ever"
+        );
     }
 
     /// The addresses OFS-4100 §5.1 signed off, transcribed from the

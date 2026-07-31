@@ -107,12 +107,12 @@ pub fn handle_update_governance_config(
     // After the deadline `vote_lock_secs` is frozen at whatever value it
     // held when the exception lapsed.
     let now = Clock::get()?.unix_timestamp;
-    if !crate::shared_logic::emergency_powers_available(&ctx.accounts.emergency_authority, now) {
-        require!(
-            params.vote_lock_secs == ctx.accounts.governance_config.vote_lock_secs,
-            ErrorCode::EmergencyPowersExpired
-        );
-    }
+    crate::shared_logic::require_vote_lock_change_allowed(
+        &ctx.accounts.emergency_authority,
+        now,
+        ctx.accounts.governance_config.vote_lock_secs,
+        params.vote_lock_secs,
+    )?;
 
     let admin = ctx.accounts.admin.key();
     let forfeit_destination = ctx.accounts.forfeit_destination.key();
