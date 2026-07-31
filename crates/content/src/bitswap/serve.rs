@@ -19,7 +19,7 @@
 //! sockets. The async functions around it move bytes and nothing else.
 
 use super::message::{MAX_MESSAGE_BYTES, Message, Presence, WantType};
-use crate::held::{HeldContent, MAX_HELD_BYTES};
+use crate::held::{HeldContent, MAX_BLOCK_BYTES};
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use libp2p_swarm::StreamProtocol;
 use openfiat_crypto::Cid;
@@ -43,7 +43,7 @@ pub const PROTOCOL: StreamProtocol = StreamProtocol::new("/ipfs/bitswap/1.2.0");
 /// memory this node assembles. Bitswap wantlists are resent, so a peer
 /// whose request is only partly answered asks again and gets the rest —
 /// truncating costs a round trip, not the content.
-pub const MAX_RESPONSE_BYTES: usize = 4 * MAX_HELD_BYTES;
+pub const MAX_RESPONSE_BYTES: usize = 4 * MAX_BLOCK_BYTES;
 
 /// Somewhere blocks can be read from by CID.
 ///
@@ -329,7 +329,7 @@ mod tests {
         // A peer must not be able to choose how much this node assembles
         // in one message. It is still told the content is here, so it
         // comes back rather than concluding this node has nothing.
-        let big = vec![0u8; MAX_HELD_BYTES];
+        let big = vec![0u8; MAX_BLOCK_BYTES];
         let cid = {
             let mut binary = vec![0x01u8, 0x55, 0x12, 0x20];
             binary.extend_from_slice(&openfiat_crypto::hash::sha256(&big));

@@ -30,7 +30,7 @@ use openfiat_crypto::Cid;
 ///
 /// go-bitswap's own ceiling is 4 MiB; this is lower because nothing this
 /// protocol serves approaches it — a held block is capped at
-/// [`crate::held::MAX_HELD_BYTES`] (256 KiB) and a wantlist of any sane
+/// [`crate::held::MAX_BLOCK_BYTES`] (256 KiB) and a wantlist of any sane
 /// size fits many times over. The cap exists because the length prefix
 /// arrives before the body: without one, a peer sending a 4-byte varint
 /// claiming 4 GiB would have this node allocate it.

@@ -143,6 +143,12 @@ What your node does, unprompted:
   inside its retention window, so evidence stays retrievable after the
   uploader stops paying for it — which matters, because a dispute can
   open weeks after a trade.
+- **Whatever their size.** Past IPFS's 256 KiB chunk size a file is not
+  one block but a tree of them, and your node fetches every block and
+  checks each against its own content address before keeping it. A
+  photographed receipt or a bank statement PDF is as durable as a small
+  avatar; before, anything over 256 KiB was held by nobody and survived
+  only as long as the uploader kept paying.
 - Answers bitswap for it, so any IPFS peer — another node, a gateway, a
   browser running Helia — can fetch it from you.
 - **Earns the full reward share.** Peers challenge each other by asking
@@ -150,7 +156,10 @@ What your node does, unprompted:
   the hash of its content, so the right bytes cannot be produced without
   having them. A node that answers keeps its full multiplier, and one
   that cannot is scaled to 0.7 (`[PROPOSED — NEEDS SIGN-OFF]`). See
-  [OFS-4100 §9.2] and `crates/rewards`.
+  [OFS-4100 §9.2] and `crates/rewards`. Challenges are drawn only from
+  single-block content: for a chunked file the CID names the tree rather
+  than the bytes, so no hash of what comes back can decide the question,
+  and a node is never scored on one either way.
 
 Where the first copy comes from: bitswap moves blocks between peers that
 already have them, and does not create the first one. Content enters the

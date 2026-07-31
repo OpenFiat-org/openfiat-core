@@ -787,11 +787,16 @@ fn poll_gossip_pruning<S: KvStore + 'static>(state: &NodeState<S>) {
 ///
 /// A node that has just joined, or one whose retention window just
 /// widened, can be missing a great deal at once. Fetching it all in one
-/// tick would open that many simultaneous requests to someone else's
-/// gateway and hold that much in memory; spreading it over ticks costs
-/// only time, and the content is not urgent — a challenge that arrives
-/// before the fetch is answered by whoever already has it.
-const MAX_GATEWAY_FETCHES_PER_TICK: usize = 8;
+/// tick would open that many requests to someone else's gateway and hold
+/// that much in memory; spreading it over ticks costs only time, and the
+/// content is not urgent — a challenge that arrives before the fetch is
+/// answered by whoever already has it.
+///
+/// A budget rather than a count of attachments, because one attachment is
+/// now one block or forty of them depending on its size. It is checked
+/// between DAGs and not inside one: a partially fetched DAG is not a
+/// smaller file, so a walk that started finishes.
+const MAX_GATEWAY_BLOCKS_PER_TICK: usize = 64;
 
 /// What the chain decided about a dispute case, read from the case
 /// account itself.
@@ -830,15 +835,17 @@ async fn read_dispute_outcome(
 ///
 /// # What a node is committed to
 ///
-/// The verifiable content referenced by *accepted* attachment records
-/// inside this node's retention window. Not everything it has ever seen:
-/// an attachment needs a settlement and a settlement needs real escrow,
-/// so this set is bounded by the network's actual trading volume rather
-/// than by anyone's willingness to publish CIDs at it.
+/// The content referenced by *accepted* attachment records inside this
+/// node's retention window. Not everything it has ever seen: an
+/// attachment needs a settlement and a settlement needs real escrow, so
+/// this set is bounded by the network's actual trading volume rather than
+/// by anyone's willingness to publish CIDs at it.
 ///
-/// Only the challengeable subset is held — see `openfiat_content::held`
-/// for why that bound falls out of what a challenge can decide rather
-/// than being a separate policy.
+/// All of it, including the chunked files a node used to skip. A DAG is
+/// fetched block by block and every block is checked against its own CID
+/// — see `openfiat_content::dag` — so nothing here is taken on trust that
+/// was not before. What a *challenge* can decide is unchanged and still
+/// narrower; `poll_content_challenges` draws from `challengeable`.
 ///
 /// # Peers first, gateway second
 ///
@@ -862,7 +869,7 @@ async fn poll_content<S: KvStore + 'static>(
     // and for a rolling node is its recent slice.
     let wanted: Vec<openfiat_crypto::Cid> = attachments
         .iter()
-        .filter(|a| a.cid.is_verifiable() && retention.keeps(a.created_at, now))
+        .filter(|a| retention.keeps(a.created_at, now))
         .map(|a| a.cid.clone())
         .collect();
 
@@ -878,9 +885,16 @@ async fn poll_content<S: KvStore + 'static>(
         );
     }
 
+    // What is still needed, block by block. For a raw CID that is the CID
+    // itself; for a chunked file it is the root until the root arrives and
+    // then whichever leaves that root turned out to name, which is why
+    // this cannot be a `holds` check — a node with the root and none of
+    // the leaves holds nothing anyone can read.
+    let mut seen = std::collections::HashSet::new();
     let missing: Vec<openfiat_crypto::Cid> = wanted
-        .into_iter()
-        .filter(|cid| !state.held_content.holds(cid))
+        .iter()
+        .flat_map(|root| state.held_content.missing_blocks(root))
+        .filter(|cid| seen.insert(cid.as_str().to_string()))
         .collect();
 
     // Anything asked for last tick and still absent has had its round
@@ -917,12 +931,22 @@ async fn poll_content<S: KvStore + 'static>(
     }
 
     let mut kept = 0usize;
-    for cid in unanswered.iter().take(MAX_GATEWAY_FETCHES_PER_TICK) {
-        match gateway.block(cid).await {
-            Ok(bytes) => {
-                if state.held_content.keep(cid, &bytes) {
-                    state.content_wants.borrow_mut().remove(cid.as_str());
-                    kept += 1;
+    let mut fetched = 0usize;
+    for cid in &unanswered {
+        if fetched >= MAX_GATEWAY_BLOCKS_PER_TICK {
+            break;
+        }
+        // The whole DAG under this CID, not one block of it. A gateway
+        // round trip per tick per block would take forty ticks to assemble
+        // one receipt, during which the node holds a file it cannot serve.
+        match openfiat_content::dag::fetch(gateway, cid).await {
+            Ok(blocks) => {
+                fetched += blocks.len();
+                for (block, bytes) in blocks {
+                    if state.held_content.keep(&block, &bytes) {
+                        state.content_wants.borrow_mut().remove(block.as_str());
+                        kept += 1;
+                    }
                 }
             }
             // Ordinary rather than alarming: the content may genuinely
@@ -1789,6 +1813,39 @@ mod tests {
             !state.content_wants.borrow().contains(PROBE_CID),
             "content that arrived must stop being asked for, or every peer \
              is asked for it again on every tick for ever"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dag_pb_block_a_peer_supplies_is_kept_like_any_other() {
+        // What #161 changed. This node used to refuse every block of a
+        // chunked file, so an attachment over 256 KiB was held by nobody
+        // once its pinning service stopped paying. `0a 02 08 01` is the
+        // unixfs empty directory — a real dag-pb block IPFS has served
+        // since 2015, under the CID below.
+        const DAG_PB_CID: &str = "bafybeiczsscdsbs7ffqz55asqdf3smv6klcw3gofszvwlyarci47bgf354";
+        let block: &[u8] = &[0x0a, 0x02, 0x08, 0x01];
+
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let control = state.gossip.borrow().node.content_control();
+        let cid = openfiat_crypto::Cid::parse(DAG_PB_CID).unwrap();
+        assert!(!cid.is_verifiable(), "a dag-pb CID, not a raw one");
+        state
+            .content_wants
+            .borrow_mut()
+            .insert(DAG_PB_CID.to_string());
+
+        on_bitswap(
+            &state,
+            libp2p_identity::PeerId::random(),
+            block_message(DAG_PB_CID, block),
+            &control,
+        );
+
+        assert_eq!(state.held_content.get(&cid).as_deref(), Some(block));
+        assert!(
+            state.held_content.missing_blocks(&cid).is_empty(),
+            "a node with no links is a complete DAG"
         );
     }
 

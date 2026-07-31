@@ -27,7 +27,7 @@
 //! operator can point at their own, and why a node prefers its peers —
 //! this is the fallback, not the first choice.
 
-use crate::held::MAX_HELD_BYTES;
+use crate::held::MAX_BLOCK_BYTES;
 use crate::pinning::PinError;
 use openfiat_crypto::Cid;
 
@@ -56,21 +56,20 @@ impl GatewayFetcher {
     /// Retrieves the single block `cid` names.
     ///
     /// `?format=raw` asks for the block itself rather than the file a
-    /// gateway would otherwise reconstruct — which matters, because what
-    /// this node serves over bitswap is blocks. Requesting the assembled
-    /// file and storing it under a block's CID would produce something
-    /// that fails verification for every peer that checked.
+    /// gateway would otherwise reconstruct — which matters twice over.
+    /// What this node serves over bitswap is blocks, so storing an
+    /// assembled file under a block's CID would produce something that
+    /// fails verification for every peer that checked. And it is what
+    /// makes a dag-pb CID fetchable at all: the *node's* bytes do hash to
+    /// the root CID even though the file's do not, so the block comes back
+    /// checkable while a reassembled file would not.
     ///
-    /// Only meaningful for a verifiable CID. A dag-pb root names a DAG
-    /// this code cannot walk, so fetching one would produce bytes nothing
-    /// could check — refused up front rather than stored unverified.
+    /// Every codec, therefore, and no `is_verifiable` gate. That predicate
+    /// answers "does this CID's digest cover a file", which is the
+    /// question [`crate::challenge`] asks and not the question here.
+    /// Walking from a root to its leaves is [`crate::dag::fetch`]'s job;
+    /// this fetches one block and checks it.
     pub async fn block(&self, cid: &Cid) -> Result<Vec<u8>, PinError> {
-        if !cid.is_verifiable() {
-            return Err(PinError::Unavailable(
-                "a chunked CID names a DAG this node cannot verify".into(),
-            ));
-        }
-
         // `cid` is a validated `Cid` — base32 lowercase with no character
         // that could alter a path or query — which is the property
         // `openfiat_crypto::cid`'s parser exists to guarantee, and the
@@ -102,17 +101,31 @@ impl GatewayFetcher {
             .await
             .map_err(|e| PinError::Unavailable(e.to_string()))?
         {
-            if body.len() + chunk.len() > MAX_HELD_BYTES {
+            if body.len() + chunk.len() > MAX_BLOCK_BYTES {
                 return Err(PinError::TooLarge);
             }
             body.extend_from_slice(&chunk);
         }
 
         // The line that makes the gateway untrusted rather than believed.
+        // True of a dag-pb node exactly as of a raw block: a block is
+        // named by the hash of the bytes that make it up.
         if !cid.matches(&body) {
             return Err(PinError::ContentMismatch);
         }
         Ok(body)
+    }
+}
+
+/// The gateway as a source of blocks for a DAG walk.
+///
+/// One request per block. A gateway that could serve a whole DAG in one
+/// response would be a gateway serving a reassembled file, which is
+/// exactly the thing that cannot be checked block by block.
+#[async_trait::async_trait(?Send)]
+impl crate::dag::BlockFetcher for GatewayFetcher {
+    async fn block(&self, cid: &Cid) -> Result<Vec<u8>, PinError> {
+        GatewayFetcher::block(self, cid).await
     }
 }
 
@@ -135,17 +148,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chunked_cid_is_refused_before_any_request_is_made() {
-        // Port 1 is reserved and nothing listens there, so a request
-        // would fail with `Unavailable`. Getting the refusal instead
-        // proves the check happened first — which matters, because the
-        // failure mode being avoided is storing bytes nothing can check.
+    async fn a_dag_pb_cid_is_fetched_rather_than_refused_out_of_hand() {
+        // It used to be refused here, on the grounds that its digest does
+        // not cover the file. It does cover the block, which is what
+        // `?format=raw` returns and what this node serves — so the request
+        // must actually be attempted. Port 1 is reserved and nothing
+        // listens there, so reaching `Unavailable` is the evidence that
+        // the fetch was tried rather than declined.
         let chunked =
             Cid::parse("bafybeig3ci7io2duyknu34co3zw42oodnfyamwazsus42vpgnvq2hpzodm").unwrap();
         let fetcher = GatewayFetcher::new("http://127.0.0.1:1");
         assert!(matches!(
             fetcher.block(&chunked).await,
-            Err(PinError::Unavailable(detail)) if detail.contains("DAG")
+            Err(PinError::Unavailable(detail)) if !detail.contains("DAG")
         ));
     }
 

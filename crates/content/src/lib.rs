@@ -34,9 +34,18 @@
 //! identity, a second runtime, and an unauthenticated control port — and
 //! it is what lets content serving be on by default rather than something
 //! an operator had to install Go to opt into.
+//!
+//! Because bitswap's unit is the block, so is a node's. A file past
+//! IPFS's chunk size arrives as a tree of blocks, each named by the hash
+//! of its own bytes; [`dag`] walks it and [`held`] keeps what the walk
+//! produced. What did not widen along with it is [`challenge`], which can
+//! still only decide a CID whose digest covers a file — holding content
+//! and proving by hash that you hold it are different claims, and running
+//! them together would let a node pass a challenge it should fail.
 
 pub mod bitswap;
 pub mod challenge;
+pub mod dag;
 pub mod error;
 pub mod events;
 pub mod gateway;
@@ -56,7 +65,7 @@ pub use challenge::{ChallengeOutcome, challengeable, judge};
 pub use error::ContentError;
 pub use events::SignedAttachmentPublish;
 pub use gateway::{DEFAULT_GATEWAY, GatewayFetcher};
-pub use held::{HeldContent, MAX_HELD_BYTES};
+pub use held::{HeldContent, MAX_BLOCK_BYTES};
 pub use kubo::KuboClient;
 pub use openfiat_crypto::Cid;
 pub use pinning::{PinError, PinningClient};
