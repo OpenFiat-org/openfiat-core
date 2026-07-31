@@ -209,17 +209,13 @@ mod tests {
     #[test]
     fn uncompressed_snapshots_are_still_importable() {
         let state = b"produced before this change".to_vec();
-        assert_eq!(
-            decompress(&state, CompressionMethod::None).unwrap(),
-            state
-        );
+        assert_eq!(decompress(&state, CompressionMethod::None).unwrap(), state);
     }
 
     #[test]
     fn a_gzip_stream_that_is_not_a_tar_is_refused_rather_than_returned_raw() {
         use std::io::Write;
-        let mut encoder =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(b"gzipped, but not an archive").unwrap();
         let bare_gzip = encoder.finish().unwrap();
 
