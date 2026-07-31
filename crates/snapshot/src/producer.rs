@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct ProducedSnapshot {
     /// Ready to sign — [`SnapshotMetadata::locations`] is already filled
-    /// in from the producing node's configured public URLs.
+    /// in from the base URLs the producing node was reachable at.
     pub metadata: SnapshotMetadata,
     pub path: PathBuf,
 }
@@ -35,17 +35,26 @@ pub struct ProducedSnapshot {
 /// see [`SnapshotMetadata::height`] for why that is the workspace's
 /// answer to a quantity OFS-1300 §9 never defines.
 ///
-/// Fails rather than producing anything if the node has no public URL
-/// configured: see [`SnapshotConfig::produces`].
+/// `base_urls` is where the caller has determined peers can reach this
+/// node — [`SnapshotConfig::locations`] computes it from what the node has
+/// learned about itself. It is a parameter rather than a config field
+/// because it is a *runtime fact* that changes as the node learns its own
+/// addresses, and a snapshot must be announced under the addresses that
+/// were true when it was written.
+///
+/// An empty `base_urls` fails before anything is written, rather than
+/// producing a file that would be announced with nowhere to fetch it —
+/// precisely the state this crate exists to be out of.
 pub fn produce<S: KvStore>(
     store: &S,
     column_families: &[&str],
     config: &SnapshotConfig,
+    base_urls: &[crate::location::SnapshotLocation],
     height: u64,
     producer: PeerId,
     producer_public_key: PublicKey,
 ) -> Result<ProducedSnapshot, SnapshotError> {
-    if config.public_urls.is_empty() {
+    if base_urls.is_empty() {
         return Err(SnapshotError::NoLocationConfigured);
     }
 
@@ -67,8 +76,7 @@ pub fn produce<S: KvStore>(
     write_atomically(&path, &compressed)?;
     prune(&config.directory, config.retain);
 
-    let locations = config
-        .public_urls
+    let locations = base_urls
         .iter()
         .map(|base| base.join(&serve::download_path(&id)))
         .collect::<Result<Vec<_>, _>>()?;
@@ -161,10 +169,13 @@ mod tests {
     fn config(directory: &Path) -> SnapshotConfig {
         SnapshotConfig {
             directory: directory.to_path_buf(),
-            interval: Some(crate::config::DEFAULT_INTERVAL),
-            public_urls: vec![SnapshotLocation::parse("http://archive.example:7080").unwrap()],
             retain: 2,
+            ..SnapshotConfig::default()
         }
+    }
+
+    fn base_urls() -> Vec<SnapshotLocation> {
+        vec![SnapshotLocation::parse("http://archive.example:7080").unwrap()]
     }
 
     fn temporary_directory(name: &str) -> PathBuf {
@@ -180,6 +191,7 @@ mod tests {
             store,
             &["advertisements"],
             &config(directory),
+            &base_urls(),
             height,
             peer_id_from_public_key(&keypair.public_key()).unwrap(),
             keypair.public_key(),
@@ -212,17 +224,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
     }
 
+    /// A node that has not yet learned where it is reachable writes
+    /// nothing. Producing anyway would leave a file on disk announced
+    /// under no URL — the undownloadable snapshot this crate exists to
+    /// stop.
     #[test]
-    fn production_refuses_without_a_public_url() {
+    fn production_refuses_with_nowhere_to_be_fetched_from() {
         let directory = temporary_directory("no-url");
         let keypair = Keypair::from_seed([9u8; 32]);
         let result = produce(
             &MemoryStore::new(),
             &["advertisements"],
-            &SnapshotConfig {
-                directory: directory.clone(),
-                ..SnapshotConfig::default()
-            },
+            &config(&directory),
+            &[],
             1,
             peer_id_from_public_key(&keypair.public_key()).unwrap(),
             keypair.public_key(),

@@ -21,6 +21,11 @@ pub use error::NetworkError;
 pub use lifecycle::ConnectionState;
 pub use node::Node;
 
+/// The components a `Multiaddr` is made of, for a crate that needs to read
+/// a host out of one rather than merely pass it along — see
+/// `openfiat_snapshot::reachable`, which turns a learned address into the
+/// URL this node serves snapshots at.
+pub use libp2p::multiaddr::Protocol;
 /// The swarm event a caller routes on, and the request-response types an
 /// envelope arrives in.
 ///

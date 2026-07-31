@@ -14,6 +14,9 @@
 //!   [`producer`] writes it to disk under [`config::SnapshotConfig`].
 //! - [`location`] carries where those bytes can be fetched, inside the
 //!   signed announcement — see [`events`] for why inside and not beside.
+//! - [`reachable`] works out what that location should be, from the
+//!   addresses the node has learned it answers on, so production needs no
+//!   configuration at all.
 //! - [`serve`] answers `GET /snapshot/{id}` from that directory,
 //!   merged into the node's existing HTTP server.
 //! - [`fetch`] downloads from an announced location and hands the bytes
@@ -32,6 +35,7 @@ pub mod fetch;
 pub mod location;
 pub mod producer;
 pub mod protocol;
+pub mod reachable;
 pub mod record;
 pub mod serve;
 pub mod service;

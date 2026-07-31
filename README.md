@@ -219,8 +219,9 @@ INFO openfiat_node: peers can reach this node at this address …
 | `--solana-rpc-url <URL>` | none | Repeatable. Any value puts the node in `RpcConnected` mode |
 | `--solana-ws-url <URL>` | none | Recorded on the chain mode; nothing subscribes yet |
 | `--snapshot-dir <DIR>` | `<ledger>/snapshots` | Where produced snapshots are written and served from |
-| `--snapshot-public-url <URL>` | none | Repeatable. **Omitting it disables snapshot production** |
-| `--snapshot-interval-secs <SECS>` | 3600 | Ignored without `--snapshot-public-url` |
+| `--snapshot-public-url <URL>` | derived | Repeatable **override**. Only needed behind a reverse proxy on a different port or hostname |
+| `--snapshot-interval-secs <SECS>` | 3600 | How often this node writes and announces a snapshot |
+| `--no-snapshot-production` | off | Stop producing snapshots. Consuming them still needs no configuration |
 | `--no-content-serving` | off | Stop holding and serving IPFS content. Costs the retrievability share of rewards |
 | `--content-gateway <URL>` | Filebase | Where to fetch a block no peer has yet. Untrusted transport — bytes are checked against the CID |
 | `--ipfs-api-url <URL>` | none | An existing Kubo cluster to pin content into *as well*. No longer how a node serves content |
@@ -246,6 +247,22 @@ Two behaviours worth knowing before you deploy:
   `--external-addr /ip4/<public-ip>/udp/4001/quic-v1` and it is announced
   ahead of the bound addresses, so a dialing peer reaches you first try
   instead of timing out on `172.17.0.2`.
+- **Snapshot production is on by default, and needs no configuration.**
+  A node writes a snapshot of its own state every hour, serves it at
+  `GET /snapshot/{id}` on its RPC port, and announces where to fetch it —
+  working the URL out from the addresses it has learned it is reachable
+  at, the same two sources `getPeers` reports. It used to require
+  `--snapshot-public-url`, and omitting that silently disabled production
+  altogether, which is how a network ends up where no new node can join
+  without replaying all history.
+
+  Set `--snapshot-public-url` only if this node's HTTP server is reached
+  on a hostname or port it cannot observe — a reverse proxy terminating
+  TLS on 443, say. Fetching a snapshot has never needed configuration:
+  a node with no checkpoint tries the announced snapshots it has verified,
+  highest first, and imports the first whose bytes match the announced
+  state root. A mirror that serves anything else is refused, which is why
+  plain HTTP from an arbitrary host is fine here.
 - **A node is a bounded storage commitment by default.** `--retention`
   keeps a rolling 30-day window and evicts past it; `--retention archival`
   keeps everything and is a deliberate choice. Not every node should carry

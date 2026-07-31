@@ -94,6 +94,11 @@ impl<S: KvStore + 'static> SnapshotService<S> {
     /// the composition root that knows them all supplies it (see
     /// `openfiat_rpc::state::SNAPSHOT_COLUMN_FAMILIES`).
     ///
+    /// Where peers are told to fetch it comes from
+    /// [`SnapshotConfig::locations`], applied to the addresses this node's
+    /// own gossip transport has learned it is reachable at — so a node
+    /// announces a downloadable snapshot without being configured to.
+    ///
     /// `height` is `[PROPOSED — NEEDS SIGN-OFF]`'d to this node's local
     /// gossip event count at generation time; see
     /// `record::SnapshotMetadata::height`.
@@ -105,10 +110,12 @@ impl<S: KvStore + 'static> SnapshotService<S> {
     ) -> Result<SnapshotMetadata, SnapshotError> {
         let height = self.gossip.event_count() as u64;
         let (producer, producer_public_key) = self.identity();
+        let base_urls = config.locations(&self.gossip.reachable_addresses());
         let produced = crate::producer::produce(
             store,
             column_families,
             config,
+            &base_urls,
             height,
             producer,
             producer_public_key,

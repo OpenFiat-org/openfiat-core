@@ -27,7 +27,7 @@ use openfiat_types::{
 };
 use std::future::Future;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
@@ -158,11 +158,9 @@ async fn connect(nodes: &mut [TestNode], seeds: &[u8]) {
 }
 
 /// Starts the producer's archival endpoint on an ephemeral port and
-/// returns the base URL to announce. The port has to be known *before*
-/// the snapshot is produced, since the announced location embeds it —
-/// which is exactly the ordering a real operator's configured public URL
-/// removes the need to think about.
-async fn serve_directory(directory: PathBuf) -> SnapshotLocation {
+/// returns the socket it bound. The port has to be known *before* the
+/// snapshot is produced, since the announced location embeds it.
+async fn serve_directory(directory: PathBuf) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -170,7 +168,20 @@ async fn serve_directory(directory: PathBuf) -> SnapshotLocation {
             .await
             .unwrap();
     });
-    SnapshotLocation::parse(format!("http://{address}")).unwrap()
+    address
+}
+
+/// The configuration of a node whose operator declared its public URL by
+/// hand — the arrangement that used to be the only one, kept for the tests
+/// that are about the transfer itself rather than where the URL came from.
+fn configured(directory: &Path, address: SocketAddr) -> SnapshotConfig {
+    SnapshotConfig {
+        directory: directory.to_path_buf(),
+        interval: Some(Duration::from_secs(60)),
+        public_urls: vec![SnapshotLocation::parse(format!("http://{address}")).unwrap()],
+        rpc_bind: None,
+        retain: 3,
+    }
 }
 
 fn temporary_directory(name: &str) -> PathBuf {
@@ -213,7 +224,7 @@ fn seed_producer_only_state(node: &TestNode) {
 #[tokio::test]
 async fn a_joining_node_downloads_verifies_and_imports_a_real_snapshot() {
     let directory = temporary_directory("happy-path");
-    let base_url = serve_directory(directory.clone()).await;
+    let address = serve_directory(directory.clone()).await;
     let producer_keypair = Keypair::from_seed([1u8; 32]);
 
     let seeds: [u8; 2] = [1, 2]; // producer + a joining node
@@ -232,12 +243,7 @@ async fn a_joining_node_downloads_verifies_and_imports_a_real_snapshot() {
     );
     assert_eq!(nodes[1].snapshots.checkpoint_height(), None);
 
-    let config = SnapshotConfig {
-        directory: directory.clone(),
-        interval: Some(Duration::from_secs(60)),
-        public_urls: vec![base_url],
-        retain: 3,
-    };
+    let config = configured(&directory, address);
     let producer_store = Rc::clone(&nodes[0].store);
     let metadata = nodes[0]
         .snapshots
@@ -279,6 +285,145 @@ async fn a_joining_node_downloads_verifies_and_imports_a_real_snapshot() {
     let _ = std::fs::remove_dir_all(&directory);
 }
 
+/// The `--snapshot-public-url` flag's replacement, end to end: nothing is
+/// configured but the directory, and a joining node still downloads and
+/// imports a real snapshot over real HTTP.
+///
+/// The producer's location comes from `SnapshotConfig::locations` applied
+/// to an address of the kind a node learns about itself — a listen address
+/// libp2p reported, or the `observed_addr` a peer sent back. `localhost`
+/// stands in for the learned host because it is the only name that
+/// resolves to the interface a test can actually bind: the derivation
+/// itself does not care which host it is handed, as
+/// `openfiat_snapshot::reachable`'s own tests cover, and what this test is
+/// for is that the derived URL is one an HTTP client genuinely fetches
+/// from.
+#[tokio::test]
+async fn a_node_given_no_public_url_still_announces_a_downloadable_snapshot() {
+    let directory = temporary_directory("derived");
+    let address = serve_directory(directory.clone()).await;
+    let producer_keypair = Keypair::from_seed([5u8; 32]);
+
+    let seeds: [u8; 2] = [5, 6];
+    let mut nodes: Vec<TestNode> = seeds
+        .iter()
+        .map(|&seed| make_node(seed, &producer_keypair))
+        .collect();
+    seed_producer_only_state(&nodes[0]);
+    connect(&mut nodes, &seeds).await;
+
+    let config = SnapshotConfig {
+        directory: directory.clone(),
+        // The default bind. Unspecified rather than loopback, so the
+        // server answers on every interface and any learned host is a
+        // host a peer can ask.
+        rpc_bind: Some(format!("0.0.0.0:{}", address.port()).parse().unwrap()),
+        ..SnapshotConfig::default()
+    };
+    assert!(
+        config.public_urls.is_empty(),
+        "this test is void if anything was configured"
+    );
+
+    let learned: Vec<Multiaddr> = vec!["/dns4/localhost/udp/4001/quic-v1".parse().unwrap()];
+    let base_urls = config.locations(&learned);
+    assert_eq!(
+        base_urls.iter().map(|l| l.to_string()).collect::<Vec<_>>(),
+        [format!("http://localhost:{}", address.port())],
+        "the node works out its own base URL from what it learned"
+    );
+
+    let (producer, producer_public_key) = nodes[0].snapshots.identity();
+    let produced = openfiat_snapshot::producer::produce(
+        &Rc::clone(&nodes[0].store),
+        SNAPSHOT_COLUMN_FAMILIES,
+        &config,
+        &base_urls,
+        7,
+        producer,
+        producer_public_key,
+    )
+    .expect("a derived location is a location");
+    let metadata = produced.metadata.clone();
+    nodes[0]
+        .snapshots
+        .announce_produced(produced.metadata)
+        .expect("the producer is a registered snapshot provider");
+
+    drive_until(&mut nodes, |nodes| nodes[1].snapshots.latest().is_some()).await;
+    let discovered = nodes[1].snapshots.latest().unwrap();
+    assert_eq!(discovered.locations, metadata.locations);
+
+    let client = reqwest::Client::new();
+    fetch::fetch_and_import(nodes[1].snapshots.index(), &client, &discovered.id)
+        .await
+        .expect("the derived URL must be one a peer can actually fetch from");
+    assert!(
+        nodes[1].services.get(&merchant_service_id()).is_some(),
+        "the joining node holds state it never saw a gossip event for"
+    );
+
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// A producer announces every address it believes it is reachable at, and
+/// on a multi-homed or NAT'd host some of them will not be — that is the
+/// price of deriving them rather than being told. So the first location
+/// that fails must cost a retry, not the snapshot.
+#[tokio::test]
+async fn a_dead_mirror_does_not_stop_the_next_location_from_working() {
+    let directory = temporary_directory("dead-mirror");
+    let live = serve_directory(directory.clone()).await;
+    // A port nothing is listening on: bound to learn a free one, then
+    // released. Refused outright, so the test does not wait on a timeout.
+    let dead = {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        listener.local_addr().unwrap()
+    };
+    let producer_keypair = Keypair::from_seed([7u8; 32]);
+
+    let seeds: [u8; 2] = [7, 8];
+    let mut nodes: Vec<TestNode> = seeds
+        .iter()
+        .map(|&seed| make_node(seed, &producer_keypair))
+        .collect();
+    seed_producer_only_state(&nodes[0]);
+    connect(&mut nodes, &seeds).await;
+
+    let config = SnapshotConfig {
+        directory: directory.clone(),
+        ..SnapshotConfig::default()
+    };
+    let (producer, producer_public_key) = nodes[0].snapshots.identity();
+    let produced = openfiat_snapshot::producer::produce(
+        &Rc::clone(&nodes[0].store),
+        SNAPSHOT_COLUMN_FAMILIES,
+        &config,
+        &[
+            SnapshotLocation::parse(format!("http://{dead}")).unwrap(),
+            SnapshotLocation::parse(format!("http://{live}")).unwrap(),
+        ],
+        11,
+        producer,
+        producer_public_key,
+    )
+    .unwrap();
+    let id = produced.metadata.id.clone();
+    nodes[0]
+        .snapshots
+        .announce_produced(produced.metadata)
+        .unwrap();
+    drive_until(&mut nodes, |nodes| nodes[1].snapshots.latest().is_some()).await;
+
+    let client = reqwest::Client::new();
+    fetch::fetch_and_import(nodes[1].snapshots.index(), &client, &id)
+        .await
+        .expect("the second location must be tried after the first refuses");
+    assert!(nodes[1].services.get(&merchant_service_id()).is_some());
+
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
 /// A mirror is untrusted by design (see `openfiat_snapshot::location`),
 /// so the digest is the only thing standing between a joining node and a
 /// forged worldview. One flipped byte on the wire must stop the import
@@ -286,7 +431,7 @@ async fn a_joining_node_downloads_verifies_and_imports_a_real_snapshot() {
 #[tokio::test]
 async fn a_corrupted_download_is_rejected_and_changes_nothing() {
     let directory = temporary_directory("corrupted");
-    let base_url = serve_directory(directory.clone()).await;
+    let address = serve_directory(directory.clone()).await;
     let producer_keypair = Keypair::from_seed([3u8; 32]);
 
     let seeds: [u8; 2] = [3, 4];
@@ -297,12 +442,7 @@ async fn a_corrupted_download_is_rejected_and_changes_nothing() {
     seed_producer_only_state(&nodes[0]);
     connect(&mut nodes, &seeds).await;
 
-    let config = SnapshotConfig {
-        directory: directory.clone(),
-        interval: Some(Duration::from_secs(60)),
-        public_urls: vec![base_url],
-        retain: 3,
-    };
+    let config = configured(&directory, address);
     let producer_store = Rc::clone(&nodes[0].store);
     let metadata = nodes[0]
         .snapshots

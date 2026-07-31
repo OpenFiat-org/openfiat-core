@@ -65,11 +65,14 @@ pub struct SnapshotMetadata {
     /// joining node could verify a hash it had no way to obtain and every
     /// announced snapshot was undownloadable by construction.
     ///
-    /// Ordered by the producer's preference; a consumer tries them in
-    /// order and any one of them that verifies is as good as any other.
-    /// Never empty in a snapshot this implementation produced — see
-    /// [`crate::config::SnapshotConfig::produces`] for why a node with no
-    /// public URL declines to announce rather than announcing without one.
+    /// Ordered by the producer's preference — globally reachable hosts
+    /// before private ones (see [`crate::reachable`]) — and a consumer
+    /// tries them in that order. Any one of them that verifies is as good
+    /// as any other.
+    ///
+    /// Never empty in a snapshot this implementation produced: a node with
+    /// nowhere to be fetched from declines to write one at all, rather
+    /// than announcing a snapshot with no way to obtain it.
     pub locations: Vec<SnapshotLocation>,
     pub producer: PeerId,
     pub producer_public_key: PublicKey,

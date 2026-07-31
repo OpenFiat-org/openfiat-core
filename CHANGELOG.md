@@ -19,14 +19,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a configured interval, writes it to `--snapshot-dir`, serves it at
   `GET /snapshot/{id}` on its existing HTTP port, and — when it has no
   checkpoint — bootstraps itself from an announced snapshot instead of
-  replaying all history. Configured with `--snapshot-public-url`
-  (required to produce; a node consumes snapshots with no configuration),
-  `--snapshot-dir`, and `--snapshot-interval-secs`.
+  replaying all history. Configured with `--snapshot-dir` and
+  `--snapshot-interval-secs`; neither is required, and a node consumes
+  snapshots with no configuration at all.
 - Initial repository scaffold: directory layout, CI, developer tooling,
   and community health files.
 
 ### Changed
 
+- **Snapshot production is on by default and derives its own location.**
+  A node works out where peers should fetch its snapshots from — the
+  addresses it has learned it is reachable at (libp2p listen addresses per
+  interface, and identify's `observed_addr`, which is the only thing that
+  sees through NAT) plus its `--rpc-bind-address` port, which already
+  serves `GET /snapshot/{id}`. Globally reachable hosts are announced
+  ahead of private ones, and a fetching node tries them in that order.
+
+  `--snapshot-public-url` survives as an override for a node whose HTTP
+  server is reached on a hostname or port it cannot observe — a reverse
+  proxy — and `--public-rpc-url`, if set, serves as that override by
+  default, being the same fact about the same server. `--no-snapshot-production`
+  turns production off for an operator who cannot spare the disk or the
+  read. Previously the flag *gated* the feature: omitting it disabled
+  snapshot production silently, so the common node contributed nothing to
+  anyone else's bootstrap. Location is no longer configuration; frequency
+  still is.
+- Bootstrapping tries every snapshot it has verified, highest height
+  first, rather than only the highest. A single unreachable or corrupt
+  producer at the top of the list used to stall a joining node
+  indefinitely — it re-asked the same dead host every thirty seconds —
+  while a usable snapshot one height down went unfetched.
+- The first snapshot is written one interval after startup rather than
+  immediately, so it describes state the node has accumulated or imported
+  rather than the empty store it booted with.
 - **Breaking: node configuration is command-line flags only.** Every
   `CLI_*` environment variable is gone, replaced by the flags documented in
   the README's "Running a node": `--ledger`, `--identity`,

@@ -660,6 +660,80 @@ fn advertise_public_api<S: KvStore + 'static>(
     }
 }
 
+/// What this node says about itself as a snapshot provider, decided once
+/// from the configuration as given — the same discipline
+/// [`PublicApiAdvert`] follows, and for the same reason.
+struct SnapshotProviderAdvert {
+    region: Option<String>,
+    payout_wallet: String,
+    capabilities: Vec<String>,
+}
+
+/// Puts this node on file as an `Infrastructure/SnapshotProvider`
+/// (OFS-1300 §5/§24), serving snapshots at `endpoints`.
+///
+/// **Why the node does this itself.** The registry is what authorizes a
+/// snapshot announcement: `SnapshotIndex::apply_announce` rejects one from
+/// a producer that is not registered, and so does every peer. A node that
+/// produced snapshots but never registered would announce into universal
+/// rejection — production would be "on by default" and do nothing, which
+/// is the failure mode `--snapshot-public-url` already demonstrated. On by
+/// default has to include being allowed to.
+///
+/// **Why here rather than at startup.** The registration names where the
+/// snapshots can be fetched, and at startup this node does not yet know:
+/// its addresses arrive as libp2p binds and as peers report back. Running
+/// it each production cycle also refreshes `last_health_update`, so the
+/// record survives `expire_stale` for as long as the node keeps producing
+/// — and lapses on its own once it stops, which is the honest outcome.
+fn register_as_snapshot_provider<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    advert: &SnapshotProviderAdvert,
+    keypair: &Keypair,
+    endpoints: &[openfiat_snapshot::SnapshotLocation],
+) {
+    use openfiat_registry::{Registration, SignedRegistration};
+    use openfiat_types::{InfrastructureService, ServiceId, ServiceType};
+
+    let Ok(provider) = openfiat_network::identity::peer_id_from_public_key(&keypair.public_key())
+    else {
+        return;
+    };
+
+    let registration = Registration {
+        // Derived from the identity, like the public-API record's, so a
+        // restart updates one entry instead of leaving a dead one per boot.
+        service_id: ServiceId::new(format!("snapshot-{}", hex_peer(&provider))),
+        service_type: ServiceType::Infrastructure(InfrastructureService::SnapshotProvider),
+        provider: provider.clone(),
+        provider_public_key: keypair.public_key(),
+        endpoints: endpoints.iter().map(|url| url.to_string()).collect(),
+        supported_ofs: vec![openfiat_snapshot::protocol::OFS_SPEC],
+        region: advert.region.clone(),
+        capabilities: advert.capabilities.clone(),
+        // Serving a snapshot is not something this node charges for.
+        pricing: None,
+        payout_wallet: Some(advert.payout_wallet.clone()),
+        timestamp: openfiat_types::Timestamp::now(),
+    };
+
+    let signed = SignedRegistration::sign(registration, keypair);
+    match state.services.apply_registration(signed.clone()) {
+        Ok(_) => {
+            let gossip_bytes =
+                wire::to_bytes(&signed).expect("SignedRegistration always serializes");
+            crate::dispatch::originate(
+                state,
+                openfiat_registry::protocol::EVENT_REGISTERED,
+                openfiat_registry::protocol::OFS_SPEC,
+                openfiat_types::Priority::Reputation,
+                gossip_bytes,
+            );
+        }
+        Err(err) => tracing::warn!(?err, "could not register this node as a snapshot provider"),
+    }
+}
+
 fn hex_peer(peer: &openfiat_types::PeerId) -> String {
     peer.as_bytes()
         .iter()
@@ -1166,18 +1240,43 @@ fn discard_unverifiable_votes<S: KvStore + 'static>(state: &NodeState<S>) {
 /// timer wakeup for the rest of the process's life and nothing else.
 const SNAPSHOT_BOOTSTRAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Every address this node currently believes it can be reached at, most
+/// likely to work first.
+///
+/// Two sources, because neither alone is complete. Discovery holds what
+/// the operator declared (`--external-addr`) followed by what libp2p
+/// actually bound, which is the answer for a host whose interface address
+/// is its real one. Gossip additionally holds identify's `observed_addr` —
+/// what a *peer* saw the connection arrive from — which is the only thing
+/// that can see through a NAT, and so the only source that answers for the
+/// deployment this used to need a flag for.
+///
+/// Duplicates are expected and harmless: both sources report the bound
+/// addresses, and `openfiat_snapshot::reachable` collapses them by host.
+fn reachable_addresses<S: KvStore + 'static>(state: &NodeState<S>) -> Vec<Multiaddr> {
+    state
+        .discovery
+        .borrow()
+        .announced_addresses()
+        .iter()
+        .filter_map(|address| address.parse().ok())
+        .chain(state.gossip.borrow().reachable_addresses())
+        .collect()
+}
+
 /// Writes and announces a snapshot of this node's own state (OFS-1300
-/// §11). No-op unless the operator configured both an interval and a
-/// public URL — see [`SnapshotConfig::produces`].
+/// §11). On by default — see [`SnapshotConfig::produces`], which now turns
+/// only on the interval.
 ///
 /// Every failure is reported and contained. A node that cannot produce a
 /// snapshot is a node that is not helping others bootstrap; it is not a
-/// node that should stop serving, so nothing here is fatal. The one
-/// failure worth naming loudly is `Unauthorized`, which means this node
-/// is not registered as a snapshot provider and so its announcements
-/// would be dropped by every peer — a configuration problem an operator
-/// can only fix if they are told about it.
-fn poll_snapshot_production<S: KvStore + 'static>(state: &NodeState<S>, config: &SnapshotConfig) {
+/// node that should stop serving, so nothing here is fatal.
+fn poll_snapshot_production<S: KvStore + 'static>(
+    state: &NodeState<S>,
+    config: &SnapshotConfig,
+    advert: &SnapshotProviderAdvert,
+    keypair: &Keypair,
+) {
     if !config.produces() {
         return;
     }
@@ -1188,17 +1287,36 @@ fn poll_snapshot_production<S: KvStore + 'static>(state: &NodeState<S>, config: 
         (gossip.node.local_peer_id(), gossip.public_key())
     };
 
-    // Checked before serializing anything, not after: an unregistered
-    // node's announcement is rejected by its own index and by every peer,
-    // so producing first would write a file every interval that nothing
-    // can ever fetch — filling the disk with snapshots whose only reader
-    // would have to have heard an announcement that was never made.
-    if !state.snapshots.is_registered_provider(&producer) {
+    // Recomputed every cycle rather than resolved once at startup. The
+    // set grows as the node learns about itself — a listen address is
+    // known within milliseconds of binding, but the public address behind
+    // a NAT only arrives once a peer has connected and identify has run.
+    // A snapshot must be announced under the addresses that were true when
+    // it was written, not the ones known at boot.
+    let base_urls = config.locations(&reachable_addresses(state));
+    if base_urls.is_empty() {
         eprintln!(
-            "openfiat-node: snapshot production is configured, but this node is not registered \
-             as an Infrastructure/SnapshotProvider service, so its announcements would be \
-             rejected by every peer. Register the service (sendServiceRegistration) to start \
-             producing; nothing is being written until then."
+            "openfiat-node: no snapshot written — this node has not learned an address peers \
+             could fetch one from yet. It normally learns one within seconds of its first peer \
+             connection; if this node is behind a reverse proxy, pass --snapshot-public-url."
+        );
+        return;
+    }
+
+    // Before serializing anything: an announcement from a producer the
+    // registry does not vouch for is rejected by this node's own index and
+    // by every peer, so producing first would write a file every interval
+    // that nothing can ever fetch.
+    register_as_snapshot_provider(state, advert, keypair, &base_urls);
+    if !state.snapshots.is_registered_provider(&producer) {
+        // Reached only if the registration this node just made for itself
+        // did not land — a corrupt store, or a service id already held by
+        // another identity. Neither is something an operator can be
+        // expected to infer from silence.
+        eprintln!(
+            "openfiat-node: no snapshot written — this node could not register itself as an \
+             Infrastructure/SnapshotProvider service, so its announcements would be rejected by \
+             every peer. Check the preceding registry warning."
         );
         return;
     }
@@ -1207,6 +1325,7 @@ fn poll_snapshot_production<S: KvStore + 'static>(state: &NodeState<S>, config: 
         &store,
         crate::state::SNAPSHOT_COLUMN_FAMILIES,
         config,
+        &base_urls,
         height,
         producer,
         producer_public_key,
@@ -1266,13 +1385,21 @@ fn poll_snapshot_production<S: KvStore + 'static>(state: &NodeState<S>, config: 
 /// overwrite newer state with older — which `SnapshotIndex::import`
 /// refuses anyway, but there is no reason to ask.
 ///
-/// The chosen snapshot is the highest-height one this node has a
-/// *verified* announcement for. Every announcement in that index already
-/// passed a signature check and a service-registry authorization check,
-/// and the bytes fetched against it are verified again before anything is
-/// written, so choosing by height alone is safe: the worst a hostile
-/// producer can do by claiming an enormous height is waste this node one
-/// download that then fails to verify.
+/// Candidates are every *verified* announcement this node holds, highest
+/// height first, and they are tried in turn until one imports. Every
+/// announcement in that index already passed a signature check and a
+/// service-registry authorization check, and the bytes fetched against it
+/// are verified again before anything is written, so ordering by height
+/// alone is safe: the worst a hostile producer can do by claiming an
+/// enormous height is waste this node one download that then fails to
+/// verify.
+///
+/// Trying more than one is the point. A single unreachable or corrupt
+/// producer at the top of the list used to stall bootstrap indefinitely —
+/// every thirty seconds this node would ask the same dead mirror the same
+/// question — while a perfectly good snapshot one height lower sat
+/// unfetched. Falling through costs at most a few failed requests, all of
+/// them bounded by `fetch::download`'s own timeout and size cap.
 async fn poll_snapshot_bootstrap<S: KvStore + 'static>(
     state: &NodeState<S>,
     client: &reqwest::Client,
@@ -1280,28 +1407,35 @@ async fn poll_snapshot_bootstrap<S: KvStore + 'static>(
     if state.snapshots.checkpoint_height().is_some() {
         return;
     }
-    let Some(candidate) = state.snapshots.latest() else {
-        return;
-    };
+    let mut candidates = state.snapshots.all();
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.height));
 
-    match openfiat_snapshot::fetch::fetch_and_import(&state.snapshots, client, &candidate.id).await
-    {
-        Ok(restored) => println!(
-            "openfiat-node: bootstrapped from snapshot {} at height {} — {restored} state \
-             entries imported, gossip catch-up resumes from there instead of full replay",
-            candidate.id.as_str(),
-            candidate.height
-        ),
-        // Loud, and specifically not fatal: the next tick tries again,
-        // and a snapshot that fails verification has changed nothing.
-        // Starting without state is recoverable; starting with someone
-        // else's forged state is not.
-        Err(error) => eprintln!(
-            "openfiat-node: refused snapshot {} from {:?}: {error}. Continuing without a \
-             checkpoint; will retry.",
-            candidate.id.as_str(),
-            candidate.producer
-        ),
+    for candidate in candidates {
+        match openfiat_snapshot::fetch::fetch_and_import(&state.snapshots, client, &candidate.id)
+            .await
+        {
+            Ok(restored) => {
+                println!(
+                    "openfiat-node: bootstrapped from snapshot {} at height {} — {restored} \
+                     state entries imported, gossip catch-up resumes from there instead of \
+                     full replay",
+                    candidate.id.as_str(),
+                    candidate.height
+                );
+                return;
+            }
+            // Loud, and specifically not fatal: the next candidate is
+            // tried, the next tick tries again from the top, and a
+            // snapshot that fails verification has changed nothing.
+            // Starting without state is recoverable; starting with someone
+            // else's forged state is not.
+            Err(error) => eprintln!(
+                "openfiat-node: refused snapshot {} from {:?}: {error}. Trying the next \
+                 announced snapshot; continuing without a checkpoint until one verifies.",
+                candidate.id.as_str(),
+                candidate.producer
+            ),
+        }
     }
 }
 
@@ -1342,6 +1476,18 @@ where
                 payout_wallet: payout_wallet(&network, &advertise_keypair),
                 url,
             });
+            let snapshot_advert = SnapshotProviderAdvert {
+                region: network.region.clone(),
+                payout_wallet: payout_wallet(&network, &advertise_keypair),
+                // What a snapshot from this node *contains*, which is not
+                // the same question as whether it verifies. An archival
+                // node ships its whole history and a rolling one its
+                // window, so a node fetching for a specific height needs
+                // to be able to prefer a provider whose retention covers
+                // it. Declared here so that choice is possible without
+                // changing the announcement shape again.
+                capabilities: vec![format!("retention:{}", network.retention.describe())],
+            };
             let chain_client: Option<Box<dyn ChainClient>> = match &network.chain_mode {
                 NodeChainMode::RpcConnected { rpc_urls, .. } => {
                     Some(Box::new(RpcChainClient::new(rpc_urls.clone())))
@@ -1428,10 +1574,19 @@ where
                 retention = %retention.describe(),
                 "content serving"
             );
-            let mut snapshot_produce = tokio::time::interval(
-                snapshot_config
-                    .interval
-                    .unwrap_or(openfiat_snapshot::config::DEFAULT_INTERVAL),
+            // One interval *after* startup, not immediately. `interval`
+            // fires its first tick at once, which would snapshot the store
+            // this node booted with — for a fresh node, an empty one, at
+            // height zero, announced to the cluster as something to
+            // bootstrap from. It also fires before the node has heard from
+            // any peer, so it would have had no address to announce a
+            // location under either.
+            let produce_every = snapshot_config
+                .interval
+                .unwrap_or(openfiat_snapshot::config::DEFAULT_INTERVAL);
+            let mut snapshot_produce = tokio::time::interval_at(
+                tokio::time::Instant::now() + produce_every,
+                produce_every,
             );
             let mut snapshot_bootstrap = tokio::time::interval(SNAPSHOT_BOOTSTRAP_INTERVAL);
             let mut pinning = tokio::time::interval(PINNING_INTERVAL);
@@ -1474,7 +1629,12 @@ where
                         poll_notifications(&state, &notification_provider).await;
                     }
                     _ = snapshot_produce.tick() => {
-                        poll_snapshot_production(&state, &snapshot_config);
+                        poll_snapshot_production(
+                            &state,
+                            &snapshot_config,
+                            &snapshot_advert,
+                            &advertise_keypair,
+                        );
                     }
                     _ = snapshot_bootstrap.tick() => {
                         poll_snapshot_bootstrap(&state, &snapshot_client).await;
@@ -2427,6 +2587,232 @@ mod tests {
             assert_eq!(
                 challenge_peer("http://127.0.0.1:1", &probe_cid()).await,
                 ChallengeOutcome::Failed
+            );
+        }
+    }
+
+    /// Bootstrapping from the cluster, when the best-looking snapshot is
+    /// not the one that works.
+    mod snapshot_bootstrap {
+        use super::*;
+        use openfiat_registry::{Registration, SignedRegistration};
+        use openfiat_snapshot::events::SignedSnapshotAnnounce;
+        use openfiat_snapshot::location::SnapshotLocation;
+        use openfiat_snapshot::record::{CompressionMethod, SnapshotId, SnapshotMetadata};
+        use openfiat_types::{InfrastructureService, ServiceId, ServiceType, Timestamp};
+
+        /// The one column family these snapshots carry. Real domain state
+        /// with a real query behind it, and one of
+        /// `SNAPSHOT_COLUMN_FAMILIES`.
+        const CARRIED: &str = "registry_services";
+
+        fn provider(state: &NodeState<MemoryStore>) -> Keypair {
+            let keypair = Keypair::from_seed([21u8; 32]);
+            state
+                .services
+                .apply_registration(SignedRegistration::sign(
+                    Registration {
+                        service_id: ServiceId::new("snapshot-provider"),
+                        service_type: ServiceType::Infrastructure(
+                            InfrastructureService::SnapshotProvider,
+                        ),
+                        provider: openfiat_network::identity::peer_id_from_public_key(
+                            &keypair.public_key(),
+                        )
+                        .unwrap(),
+                        provider_public_key: keypair.public_key(),
+                        endpoints: vec![],
+                        supported_ofs: vec![1300],
+                        region: None,
+                        capabilities: vec![],
+                        pricing: None,
+                        payout_wallet: None,
+                        timestamp: Timestamp::now(),
+                    },
+                    &keypair,
+                ))
+                .unwrap();
+            keypair
+        }
+
+        /// A snapshot blob carrying one registry entry, so an import is
+        /// visible as state rather than only as a checkpoint.
+        fn blob() -> Vec<u8> {
+            let source = MemoryStore::new();
+            source
+                .put(CARRIED, b"svc-from-snapshot", b"payload")
+                .unwrap();
+            openfiat_snapshot::state::serialize(&source, &[CARRIED]).unwrap()
+        }
+
+        /// Announces `id` at `height`, fetchable at `location`, through the
+        /// real signed path — so nothing here reaches `import` by a route a
+        /// gossiped announcement could not take.
+        fn announce(
+            state: &NodeState<MemoryStore>,
+            keypair: &Keypair,
+            id: &str,
+            height: u64,
+            location: &str,
+            bytes: &[u8],
+        ) -> SnapshotId {
+            let metadata = SnapshotMetadata {
+                id: SnapshotId::new(id),
+                snapshot_version: 1,
+                protocol_version: openfiat_snapshot::protocol::SUPPORTED_PROTOCOL_VERSION,
+                height,
+                created_at: Timestamp::now(),
+                state_root: openfiat_snapshot::codec::state_root(bytes),
+                size_bytes: bytes.len() as u64,
+                compression: CompressionMethod::None,
+                locations: vec![SnapshotLocation::parse(location).unwrap()],
+                producer: openfiat_network::identity::peer_id_from_public_key(
+                    &keypair.public_key(),
+                )
+                .unwrap(),
+                producer_public_key: keypair.public_key(),
+            };
+            state
+                .snapshots
+                .apply_announce(SignedSnapshotAnnounce::sign(metadata, keypair))
+                .unwrap()
+        }
+
+        /// "On by default" has to include being *allowed* to. The registry
+        /// is what authorizes a snapshot announcement, so a node that
+        /// produced without registering would announce into rejection by
+        /// every peer, itself included — production would be on and do
+        /// nothing, which is the state the removed flag already produced
+        /// once.
+        #[test]
+        fn a_node_that_was_never_registered_registers_itself_and_produces() {
+            let directory = std::env::temp_dir().join(format!(
+                "openfiat-actor-produce-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&directory);
+
+            // Built from a key the test holds, because the registration
+            // this node makes for itself has to be under the identity it
+            // signs its announcements with. Registering some other key
+            // would authorize a producer that is not this node — which is
+            // exactly what the assertions below would then fail to notice
+            // if `NodeState`'s own keypair were used to produce and a
+            // second one to register.
+            let keypair = Keypair::from_seed([33u8; 32]);
+            let state = NodeState::new(
+                Node::new(&keypair).unwrap(),
+                MemoryStore::new(),
+                Keypair::from_seed([33u8; 32]),
+                Vec::new(),
+                NodeChainMode::GossipOnly,
+            );
+            let producer =
+                openfiat_network::identity::peer_id_from_public_key(&keypair.public_key()).unwrap();
+            assert!(
+                !state.snapshots.is_registered_provider(&producer),
+                "the node starts as nobody's snapshot provider"
+            );
+
+            let config = SnapshotConfig {
+                directory: directory.clone(),
+                // Stands in for a learned address: `new_for_test` never
+                // listened, so nothing has been learned to derive from,
+                // and this test is about the registration rather than the
+                // derivation (covered by `openfiat_snapshot::reachable`).
+                public_urls: vec![
+                    openfiat_snapshot::SnapshotLocation::parse("http://203.0.113.9:7080").unwrap(),
+                ],
+                ..SnapshotConfig::default()
+            };
+            let advert = SnapshotProviderAdvert {
+                region: None,
+                payout_wallet: "11111111111111111111111111111111".to_string(),
+                capabilities: vec!["retention:archival".to_string()],
+            };
+
+            poll_snapshot_production(&state, &config, &advert, &keypair);
+
+            assert!(
+                state.snapshots.is_registered_provider(&producer),
+                "the node must put itself on file rather than wait to be registered by hand"
+            );
+            let announced = state
+                .snapshots
+                .latest()
+                .expect("a registered producer's announcement lands in its own index");
+            assert_eq!(
+                announced.locations[0].as_str(),
+                format!("http://203.0.113.9:7080/snapshot/{}", announced.id.as_str())
+            );
+            assert!(
+                openfiat_snapshot::producer::snapshot_path(&directory, &announced.id).exists(),
+                "the bytes must be on disk before they are announced"
+            );
+
+            let _ = std::fs::remove_dir_all(&directory);
+        }
+
+        /// The stall this closes: the highest-height announcement came from
+        /// a producer that had gone away, and every thirty seconds this
+        /// node asked that same dead host the same question while a
+        /// perfectly good snapshot one height down sat unfetched.
+        #[tokio::test]
+        async fn a_dead_producer_at_the_top_does_not_block_the_next_candidate() {
+            let directory = std::env::temp_dir().join(format!(
+                "openfiat-actor-bootstrap-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&directory);
+            std::fs::create_dir_all(&directory).unwrap();
+
+            let bytes = blob();
+            std::fs::write(directory.join("snap-usable.snapshot"), &bytes).unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let live = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let _ = axum::serve(
+                    listener,
+                    openfiat_snapshot::serve::router(directory.clone()),
+                )
+                .await;
+            });
+
+            let state = NodeState::new_for_test(MemoryStore::new());
+            let keypair = provider(&state);
+            // Port 1 is reserved and nothing listens there, so the first
+            // candidate is refused rather than left to time out.
+            announce(
+                &state,
+                &keypair,
+                "snap-gone",
+                900,
+                "http://127.0.0.1:1/snapshot/snap-gone",
+                &bytes,
+            );
+            let usable = announce(
+                &state,
+                &keypair,
+                "snap-usable",
+                100,
+                &format!("http://{live}/snapshot/snap-usable"),
+                &bytes,
+            );
+
+            poll_snapshot_bootstrap(&state, &reqwest::Client::new()).await;
+
+            assert_eq!(
+                state.snapshots.checkpoint_height(),
+                Some(100),
+                "the lower, reachable snapshot must be what this node bootstrapped from"
+            );
+            assert_eq!(state.snapshots.get(&usable).unwrap().height, 100);
+            assert_eq!(
+                state.store.get(CARRIED, b"svc-from-snapshot").unwrap(),
+                Some(b"payload".to_vec()),
+                "the fallback candidate's state must actually have landed"
             );
         }
     }

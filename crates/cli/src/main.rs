@@ -151,19 +151,37 @@ pub struct Args {
     #[arg(long, value_name = "DIR")]
     pub snapshot_dir: Option<String>,
 
-    /// Public URL other nodes should fetch this node's snapshots from.
+    /// Override where other nodes fetch this node's snapshots from.
     /// Repeat for several.
     ///
-    /// A node cannot work this out for itself — it sees a bind address, not
-    /// what a proxy or NAT makes of it — so omitting this disables snapshot
-    /// PRODUCTION entirely. Consuming snapshots needs no configuration.
+    /// Not normally needed. The node derives this from the addresses it
+    /// learns it is reachable at — its bound interfaces, and the address a
+    /// peer reports seeing it from, which is what sees through NAT — plus
+    /// the `--rpc-bind-address` port that already serves `GET /snapshot`.
+    ///
+    /// Set it when the node genuinely cannot: an RPC port reached through
+    /// a reverse proxy on a different port or hostname, where what the node
+    /// observes about itself is not what a peer must ask for.
     #[arg(long = "snapshot-public-url", value_name = "URL")]
     pub snapshot_public_urls: Vec<String>,
 
-    /// Seconds between snapshots. Ignored without --snapshot-public-url,
-    /// since an interval alone would produce snapshots nobody can fetch.
+    /// Seconds between snapshots. Defaults to an hour.
     #[arg(long, value_name = "SECS")]
     pub snapshot_interval_secs: Option<u64>,
+
+    /// Stop producing snapshots.
+    ///
+    /// Production is ON by default: a network where nobody snapshots is a
+    /// network no new node can join without replaying all history, and a
+    /// feature every operator has to opt into is a feature most of them
+    /// will not. The cost is one full read of this node's state per
+    /// interval and a few files on disk (`--snapshot-dir`, three retained).
+    ///
+    /// Pass this if that disk or that read genuinely is not there. This
+    /// node then still *consumes* snapshots — bootstrapping from a peer
+    /// has never needed configuration.
+    #[arg(long)]
+    pub no_snapshot_production: bool,
 
     /// Stop holding and serving protocol content.
     ///
@@ -383,9 +401,15 @@ fn chain_mode(args: &Args) -> NodeChainMode {
 
 /// Snapshot production settings.
 ///
-/// `--snapshot-public-url` is what an operator opts in with, not the
-/// interval: an interval without a URL would produce snapshots nobody can
-/// fetch. See `SnapshotConfig::produces`.
+/// Production is on unless `--no-snapshot-production` turns it off; what
+/// used to gate it — knowing this node's public URL — the node now works
+/// out for itself from the addresses it learns it is reachable at (see
+/// `openfiat_snapshot::reachable`).
+///
+/// `--public-rpc-url` doubles as the snapshot override when no explicit
+/// one is given. It is the same fact: an operator who has already declared
+/// where this node's HTTP API is publicly reachable has declared where its
+/// snapshots are, because they are served by that same HTTP server.
 ///
 /// All of these are operational under this module's own rule — they change
 /// what this node offers others, never what it believes. The state root
@@ -396,7 +420,7 @@ fn snapshot_config(args: &Args, ledger: &str) -> openfiat_snapshot::SnapshotConf
         .clone()
         .unwrap_or_else(|| format!("{ledger}/snapshots"))
         .into();
-    let public_urls: Vec<openfiat_snapshot::SnapshotLocation> = args
+    let mut public_urls: Vec<openfiat_snapshot::SnapshotLocation> = args
         .snapshot_public_urls
         .iter()
         .map(|s| {
@@ -404,6 +428,12 @@ fn snapshot_config(args: &Args, ledger: &str) -> openfiat_snapshot::SnapshotConf
                 .unwrap_or_else(|e| panic!("invalid --snapshot-public-url {s:?}: {e}"))
         })
         .collect();
+    if public_urls.is_empty()
+        && let Some(url) = &args.public_rpc_url
+        && let Ok(location) = openfiat_snapshot::SnapshotLocation::parse(url.clone())
+    {
+        public_urls.push(location);
+    }
     let interval = args
         .snapshot_interval_secs
         .map(std::time::Duration::from_secs)
@@ -411,8 +441,13 @@ fn snapshot_config(args: &Args, ledger: &str) -> openfiat_snapshot::SnapshotConf
 
     openfiat_snapshot::SnapshotConfig {
         directory,
-        interval: (!public_urls.is_empty()).then_some(interval),
+        interval: (!args.no_snapshot_production).then_some(interval),
         public_urls,
+        // Parsed rather than resolved: a `HOST:PORT` naming a hostname
+        // binds fine but says nothing this node can derive a location
+        // from, so it falls back to the operator's override — the same
+        // answer as any other address it cannot reason about.
+        rpc_bind: args.rpc_bind_address.parse().ok(),
         retain: openfiat_snapshot::config::DEFAULT_RETAIN,
     }
 }

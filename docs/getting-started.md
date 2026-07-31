@@ -476,7 +476,7 @@ discovering which flags to leave out.
 | Peer discovery | nothing — it is not optional | A node that announced no address and learned no peer is how this network spent its first months, and it looked healthy the whole time. |
 | Content serving | `--no-content-serving` | Node stores no attachment content and cannot answer a retrievability challenge, so it earns the reduced share (0.7x). It still challenges its peers. |
 | Keeping old content | `--retention 30` (the default) | Nothing, unless you were relying on this node to serve older-than-30-day content. Use `--retention archival` if you intend to run an archive. |
-| Producing snapshots | omit `--snapshot-public-url` | Node produces no snapshots for others to bootstrap from. It still *consumes* them, which needs no configuration. |
+| Producing snapshots | `--no-snapshot-production` | Node produces no snapshots for others to bootstrap from. It still *consumes* them, which needs no configuration. Production is on by default and needs none either — the node derives its own download URL from the addresses it has learned it is reachable at. |
 | Log volume | `--log warn` | Routine INFO lines, including the addresses the node is reachable at. Errors and warnings still appear. |
 
 Two things you cannot turn off, and should not want to: signature
