@@ -44,6 +44,14 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 /// on a shared/rate-limited public RPC endpoint.
 const CHAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How often a node with no peers dials its entrypoints again.
+///
+/// Thirty seconds: long enough that a genuinely unreachable entrypoint is
+/// not hammered, short enough that a node is not sitting out a whole
+/// trading session because the bootstrap peer happened to be restarting
+/// when it came up. The tick does nothing at all once a peer exists.
+const ENTRYPOINT_REDIAL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// How often this node sweeps its own registry replica for stale services
 /// (OFS-1500 §18). Purely local bookkeeping, so the cadence only bounds how
 /// promptly a departed provider disappears — an hour against a multi-day
@@ -1681,10 +1689,10 @@ where
                     .node
                     .listen_on(network.listen_addr)
                     .expect("failed to bind this node's gossip listen address");
-                for peer in network.bootstrap_peers {
+                for peer in &network.bootstrap_peers {
                     gossip
                         .node
-                        .dial(peer)
+                        .dial(peer.clone())
                         .expect("failed to dial a configured bootstrap peer");
                 }
             }
@@ -1697,6 +1705,22 @@ where
             // driven by gossiped protocol events, which a `GossipOnly`
             // node sees just as well as an `RpcConnected` one.
             let mut notification_poll = tokio::time::interval(NOTIFICATION_POLL_INTERVAL);
+            // Redialling the entrypoints, for a node that has ended up with
+            // none.
+            //
+            // The startup dial happened exactly once. `Swarm::dial`
+            // returning `Ok` only means the dial was queued, so a peer
+            // that was down, or a UDP path that was briefly blocked, left
+            // this node isolated permanently — replicating nothing,
+            // learning no registrations, and looking from outside like a
+            // network of one. Nothing retried and nothing said so.
+            //
+            // Only when the peer count is zero. A node with peers has no
+            // need of its entrypoints, and dialling them anyway would
+            // reconnect to the same bootstrap node forever instead of
+            // letting discovery spread the load.
+            let entrypoints = network.bootstrap_peers.clone();
+            let mut entrypoint_redial = tokio::time::interval(ENTRYPOINT_REDIAL_INTERVAL);
             // Before the loop starts: the registry record should exist by
             // the time this node begins answering, not a tick later.
             if let Some(advertisement) = &advertisement {
@@ -1817,6 +1841,18 @@ where
                     }
                     _ = registry_sweep.tick() => {
                         state.services.expire_stale(REGISTRY_EXPIRATION_THRESHOLD);
+                    }
+                    _ = entrypoint_redial.tick() => {
+                        let mut gossip = state.gossip.borrow_mut();
+                        if !entrypoints.is_empty() && gossip.connected_peer_count() == 0 {
+                            tracing::info!(
+                                entrypoints = entrypoints.len(),
+                                "no peers; dialling the configured entrypoints again"
+                            );
+                            for peer in &entrypoints {
+                                let _ = gossip.node.dial(peer.clone());
+                            }
+                        }
                     }
                     _ = notification_poll.tick() => {
                         poll_notifications(&state, &notification_provider).await;

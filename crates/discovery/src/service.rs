@@ -160,6 +160,26 @@ impl<S: KvStore> DiscoveryService<S> {
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 self.connected.remove(peer_id);
             }
+            // A dial that never completes was, until now, completely
+            // silent. `Swarm::dial` returning `Ok` means the dial was
+            // *queued*; whether a connection was ever made arrives here,
+            // and nothing was listening. An operator whose only
+            // `--entrypoint` was unreachable saw an empty `getPeers` and
+            // no explanation anywhere — on either node, since the failure
+            // is symmetric and equally unlogged on the far side.
+            //
+            // Logged at WARN rather than INFO because a node with no peer
+            // is not participating: it replicates nothing, learns no
+            // registrations, and looks from the outside like a network of
+            // one.
+            SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                tracing::warn!(
+                    peer = ?peer_id,
+                    error = %error,
+                    "could not connect to a peer; if this was the only \
+                     --entrypoint, this node has nobody to replicate with"
+                );
+            }
             _ => {}
         }
     }
