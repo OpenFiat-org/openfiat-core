@@ -226,6 +226,7 @@ mod tests {
             supported_ofs: vec![1500, 1300],
             region: None,
             capabilities: vec![],
+            branding: None,
             pricing: None,
             payout_wallet: None,
             timestamp: at,
@@ -556,6 +557,110 @@ mod tests {
             earnings.payout_wallet.as_deref(),
             Some("EA8TyQ58C3eavg3ThRFTMu1KLyV9e1v2oTQubSBQ9s5z")
         );
+    }
+
+    /// Branding only means something if it survives the whole path a
+    /// real registration takes — signed by the provider, decoded here,
+    /// stored, and read back by the client that renders the directory.
+    /// A field that a `getProviders` caller cannot see is a field that
+    /// does not exist as far as the network is concerned.
+    #[test]
+    fn declared_branding_round_trips_from_registration_to_get_providers() {
+        use openfiat_registry::ServiceBranding;
+        let (table, state) = table_and_state();
+        let owner = Keypair::generate();
+
+        let mut reg = registration_at(&owner, "svc-branded", Timestamp::from_millis(1_000));
+        reg.branding = Some(ServiceBranding {
+            name: Some("AllenHark EU".to_string()),
+            description: Some("Public API node in Frankfurt.".to_string()),
+            logo: Some("bafkreibdmq27skp3wnycoyoqcei47etyaulerpsegivlkfvyhjkw7ufjva".to_string()),
+            website: Some("https://openfiat.allenhark.com".to_string()),
+        });
+        table
+            .dispatch(
+                &state,
+                "sendProviderRegister",
+                params(&SignedRegistration::sign(reg, &owner)),
+            )
+            .expect("a branded registration must be accepted");
+
+        let listed: Vec<ServiceRecord> = serde_json::from_value(
+            table
+                .dispatch(&state, "getProviders", serde_json::json!({}))
+                .unwrap(),
+        )
+        .unwrap();
+        let record = listed
+            .into_iter()
+            .find(|r| r.service_id.as_str() == "svc-branded")
+            .expect("the branded service must appear in the directory");
+        let branding = record
+            .branding
+            .expect("branding must reach the client that renders the row");
+        assert_eq!(branding.name.as_deref(), Some("AllenHark EU"));
+        assert_eq!(
+            branding.logo.as_deref(),
+            Some("bafkreibdmq27skp3wnycoyoqcei47etyaulerpsegivlkfvyhjkw7ufjva")
+        );
+        assert_eq!(
+            branding.website.as_deref(),
+            Some("https://openfiat.allenhark.com")
+        );
+    }
+
+    /// The boundary has to refuse this, not merely the local operator's
+    /// own CLI: `sendProviderRegister` accepts a payload anyone can POST.
+    #[test]
+    fn branding_that_would_track_or_misrender_is_refused_at_the_rpc_boundary() {
+        use openfiat_registry::ServiceBranding;
+        let (table, state) = table_and_state();
+        let owner = Keypair::generate();
+
+        for (label, branding) in [
+            (
+                // Would make every viewer of the directory report their
+                // IP to whoever hosts the image.
+                "a logo that is a tracking URL",
+                ServiceBranding {
+                    logo: Some("https://tracker.example/pixel.png".to_string()),
+                    ..ServiceBranding::default()
+                },
+            ),
+            (
+                // Script execution in the viewer's own page.
+                "a website that is a javascript: URL",
+                ServiceBranding {
+                    website: Some("javascript:alert(1)".to_string()),
+                    ..ServiceBranding::default()
+                },
+            ),
+            (
+                // A megabyte of it, on every node's disk, forever.
+                "a name past the length bound",
+                ServiceBranding {
+                    name: Some("a".repeat(10_000)),
+                    ..ServiceBranding::default()
+                },
+            ),
+        ] {
+            let mut reg = registration_at(&owner, "svc-hostile", Timestamp::from_millis(1_000));
+            reg.branding = Some(branding);
+            assert!(
+                table
+                    .dispatch(
+                        &state,
+                        "sendProviderRegister",
+                        params(&SignedRegistration::sign(reg, &owner)),
+                    )
+                    .is_err(),
+                "{label} must not reach the registry"
+            );
+            assert!(
+                state.services.get(&ServiceId::new("svc-hostile")).is_none(),
+                "{label} must not be stored"
+            );
+        }
     }
 
     #[test]

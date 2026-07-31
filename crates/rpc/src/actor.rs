@@ -28,6 +28,10 @@ use openfiat_network::behaviour::OpenFiatBehaviourEvent;
 use openfiat_network::{Multiaddr, Node};
 use openfiat_network::{SwarmEvent, request_response};
 use openfiat_notifications::{HttpGateway, NotificationProvider};
+/// Re-exported so a caller filling in [`NetworkConfig::branding`] — the
+/// `openfiat-node` binary, or anyone embedding this actor — does not have
+/// to depend on `openfiat-registry` just to name the type of one field.
+pub use openfiat_registry::ServiceBranding;
 use openfiat_serialization::wire;
 use openfiat_snapshot::SnapshotConfig;
 use openfiat_storage::KvStore;
@@ -273,8 +277,21 @@ pub struct NetworkConfig {
     /// unencrypted on a server.
     pub payout_wallet: Option<String>,
     /// A region this node declares itself to be in, for clients that
-    /// prefer a nearby one. Self-declared and unverified — see #173.
+    /// prefer a nearby one.
+    ///
+    /// Self-declared and unverified, and staying that way: #173 asked
+    /// whether it could be determined from the node's own addresses
+    /// instead, and `docs/region-is-declared.md` records why the answer
+    /// is no. Nothing here observes where the node is.
     pub region: Option<String>,
+    /// What this node calls itself in a directory: a name, a sentence,
+    /// a logo CID and a website.
+    ///
+    /// All four optional and all four self-asserted. Empty is the right
+    /// answer for a node on a laptop — the alternative to declaring
+    /// nothing is a row that says the node is something it is not, and
+    /// that is worse than a row that says only the peer id.
+    pub branding: ServiceBranding,
     /// This node's publicly reachable API URL, if it has one.
     ///
     /// `Some` means the operator has put the node behind TLS and wants it
@@ -300,6 +317,7 @@ impl NetworkConfig {
             external_addresses: Vec::new(),
             payout_wallet: None,
             region: None,
+            branding: ServiceBranding::default(),
             serve_content: true,
             // Off for a test node, unlike the shipped default: joining the
             // public IPFS DHT dials four hostnames on the open internet,
@@ -686,11 +704,38 @@ fn payout_wallet(network: &NetworkConfig, keypair: &Keypair) -> String {
         .unwrap_or_else(|| bs58::encode(keypair.public_key().as_bytes()).into_string())
 }
 
+/// What this node says it is called, or nothing at all.
+///
+/// Refused rather than trimmed if the operator got it wrong. A name over
+/// the bound or a logo that is not a CID would be rejected by every peer
+/// this node gossiped it to, so silently registering without it would
+/// leave the operator staring at a directory row that ignores half their
+/// configuration with no explanation anywhere. The warning names the
+/// field and the node registers with what is valid — which for a
+/// misconfigured operator is nothing, and visibly nothing.
+fn declared_branding(network: &NetworkConfig) -> Option<openfiat_registry::ServiceBranding> {
+    if network.branding.is_empty() {
+        return None;
+    }
+    match network.branding.validate() {
+        Ok(()) => Some(network.branding.clone()),
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "this node's declared branding is not valid and will not be registered; check \
+                 --node-name, --node-description, --node-logo and --node-website"
+            );
+            None
+        }
+    }
+}
+
 /// Everything this node will say about itself, decided once from the
 /// configuration as given.
 struct PublicApiAdvert {
     capabilities: Vec<String>,
     region: Option<String>,
+    branding: Option<openfiat_registry::ServiceBranding>,
     payout_wallet: String,
     url: String,
 }
@@ -741,9 +786,14 @@ fn advertise_public_api<S: KvStore + 'static>(
         supported_ofs: crate::state::SUPPORTED_OFS.to_vec(),
         // Self-declared and optional. A node on a laptop has no useful
         // region to state, and inventing one from an IP lookup would be
-        // guessing about the operator on their behalf.
+        // guessing about the operator on their behalf — the question
+        // #173 asked, answered in `docs/region-is-declared.md`.
         region: advert.region.clone(),
         capabilities: advert.capabilities.clone(),
+        // What an operator wants this node to be recognised as. Signed
+        // along with everything else, and asserted by nobody but this
+        // node — see `openfiat_registry::ServiceBranding`.
+        branding: advert.branding.clone(),
         // Still no pricing: serving the public API is not something this
         // node charges for. The payout wallet below is for the reward
         // share it earns by running, which is a different thing.
@@ -780,6 +830,7 @@ fn advertise_public_api<S: KvStore + 'static>(
 /// [`PublicApiAdvert`] follows, and for the same reason.
 struct SnapshotProviderAdvert {
     region: Option<String>,
+    branding: Option<openfiat_registry::ServiceBranding>,
     payout_wallet: String,
     capabilities: Vec<String>,
 }
@@ -826,6 +877,10 @@ fn register_as_snapshot_provider<S: KvStore + 'static>(
         supported_ofs: vec![openfiat_snapshot::protocol::OFS_SPEC],
         region: advert.region.clone(),
         capabilities: advert.capabilities.clone(),
+        // The same branding the public-API record carries: one operator,
+        // two services, and a directory that shows them as the same
+        // operator rather than as two anonymous peer ids.
+        branding: advert.branding.clone(),
         // Serving a snapshot is not something this node charges for.
         pricing: None,
         payout_wallet: Some(advert.payout_wallet.clone()),
@@ -1753,14 +1808,22 @@ where
             // these later would mean reading whatever survived the move,
             // which is how a registration ends up describing something
             // other than the node that is running.
+            // `None` when the operator declared nothing, rather than a
+            // struct of four `None`s. A registration carrying an empty
+            // branding object and one carrying no branding say the same
+            // thing, and there should be one way to say it — the
+            // registry normalises the same way in `into_record`.
+            let branding = declared_branding(&network);
             let advertisement = network.public_rpc_url.clone().map(|url| PublicApiAdvert {
                 capabilities: declared_capabilities(&network),
                 region: network.region.clone(),
+                branding: branding.clone(),
                 payout_wallet: payout_wallet(&network, &advertise_keypair),
                 url,
             });
             let snapshot_advert = SnapshotProviderAdvert {
                 region: network.region.clone(),
+                branding,
                 payout_wallet: payout_wallet(&network, &advertise_keypair),
                 // What a snapshot from this node *contains*, which is not
                 // the same question as whether it verifies. An archival
@@ -3150,6 +3213,7 @@ mod tests {
                     supported_ofs: vec![6000],
                     region: None,
                     capabilities: vec![],
+                    branding: None,
                     pricing: None,
                     payout_wallet: None,
                     timestamp: Timestamp::now(),
@@ -3363,6 +3427,7 @@ mod tests {
                         supported_ofs: vec![1300],
                         region: None,
                         capabilities: vec![],
+                        branding: None,
                         pricing: None,
                         payout_wallet: None,
                         timestamp: Timestamp::now(),
@@ -3463,6 +3528,7 @@ mod tests {
             };
             let advert = SnapshotProviderAdvert {
                 region: None,
+                branding: None,
                 payout_wallet: "11111111111111111111111111111111".to_string(),
                 capabilities: vec!["retention:archival".to_string()],
             };
@@ -3530,6 +3596,7 @@ mod tests {
             };
             let advert = SnapshotProviderAdvert {
                 region: None,
+                branding: None,
                 payout_wallet: "11111111111111111111111111111111".to_string(),
                 capabilities: vec!["retention:archival".to_string()],
             };

@@ -31,6 +31,10 @@ pub enum RegistryError {
     /// An endpoint in a domain reserved by RFC 2606/6761, which can never
     /// resolve for anyone. See `registration::is_unresolvable`.
     UnresolvableEndpoint,
+    /// Declared branding that is over a length bound, empty, would
+    /// misrender, is a logo that is not a CID, or is a website that is
+    /// not an ordinary http(s) address. See [`crate::ServiceBranding`].
+    MalformedBranding,
     /// No outstanding earnings challenge matches this Service ID and
     /// nonce — never issued, already spent, or superseded.
     UnknownChallenge,
@@ -49,6 +53,7 @@ impl RegistryError {
             Self::GossipRejected => ErrorCode::InvalidRequest,
             Self::PricingWithoutPayoutWallet => ErrorCode::InvalidRequest,
             Self::UnresolvableEndpoint => ErrorCode::InvalidParameter,
+            Self::MalformedBranding => ErrorCode::InvalidParameter,
             Self::UnknownChallenge => ErrorCode::ResourceNotFound,
             Self::ChallengeExpired => ErrorCode::InvalidRequest,
         }

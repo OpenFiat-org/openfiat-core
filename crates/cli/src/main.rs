@@ -323,8 +323,54 @@ pub struct Args {
     /// and nothing here proves where this one is. Omit it rather than
     /// guessing; a node on a laptop has no useful region, and an absent
     /// answer is better than a wrong one.
+    ///
+    /// It stays self-declared on purpose. #173 asked whether the node
+    /// could work its own region out from the addresses it announces;
+    /// `docs/region-is-declared.md` records why deriving it would
+    /// produce a confident answer to a different question.
     #[arg(long, value_name = "REGION")]
     pub region: Option<String>,
+
+    /// A name for this node in directories, e.g. `AllenHark EU`.
+    ///
+    /// Self-asserted, like everything below it: the registration is
+    /// signed by this node's key, which proves the record was not
+    /// altered and proves nothing about whether the name is yours to
+    /// use. Clients show it beside the peer id, never instead of it.
+    ///
+    /// Capped at 64 characters, because every node on the network stores
+    /// what you write here until this node deregisters.
+    #[arg(long, value_name = "NAME")]
+    pub node_name: Option<String>,
+
+    /// A sentence about what this node is for, up to 280 characters.
+    #[arg(long, value_name = "TEXT")]
+    pub node_description: Option<String>,
+
+    /// A logo for this node, as an IPFS CID — not a URL.
+    ///
+    /// A URL would make everyone who so much as scrolls past this node
+    /// in a directory issue a request to whoever hosts the image, which
+    /// hands that host their IP address and what they were looking at. A
+    /// CID names one specific image and is served by the node the viewer
+    /// already chose to talk to, over its `GET /ipfs/{cid}`.
+    ///
+    /// Publish the image to this network first — `POST /api/ipfs/upload`
+    /// in the web app, or any node's content API — and pass the CID it
+    /// returns. A value that is not a CIDv1 is refused rather than
+    /// registered.
+    #[arg(long, value_name = "CID")]
+    pub node_logo: Option<String>,
+
+    /// A website for whoever runs this node, e.g.
+    /// `https://allenhark.com`.
+    ///
+    /// Not `--public-rpc-url`. That one is where this node's API lives
+    /// and other software dials it; this one is a link a human clicks.
+    /// Naming them apart is deliberate — an operator who swapped them
+    /// would publish their marketing site as a dialable endpoint.
+    #[arg(long, value_name = "URL")]
+    pub node_website: Option<String>,
 
     /// This node's publicly reachable API URL, e.g.
     /// `https://openfiat.allenhark.com`.
@@ -353,6 +399,15 @@ pub struct Args {
     /// values are refused rather than quietly raised. Challenges are only
     /// ever drawn from inside that floor, which is what lets a rolling
     /// node evict correctly without losing its reward share.
+    ///
+    /// It governs content blocks and nothing else. The gossip event log
+    /// keeps a flat week whatever this says, records with an `expires_at`
+    /// go when they expire, and the marketplace records — settlements,
+    /// disputes, advertisements and the rest — are kept for good, because
+    /// a wallet's reputation is derived by scanning them and cannot be
+    /// recomputed once they are gone. See `docs/getting-started.md` for
+    /// the full table and `openfiat_rpc::actor::poll_expired_records` for
+    /// the reasoning per family.
     #[arg(long, value_name = "DAYS|archival", default_value = "30", value_parser = Retention::parse)]
     pub retention: Retention,
 
@@ -635,6 +690,12 @@ async fn main() {
             external_addresses: args.external_addrs.clone(),
             payout_wallet: args.payout_wallet.clone(),
             region: args.region.clone(),
+            branding: openfiat_rpc::ServiceBranding {
+                name: args.node_name.clone(),
+                description: args.node_description.clone(),
+                logo: args.node_logo.clone(),
+                website: args.node_website.clone(),
+            },
             serve_content: !args.no_content_serving,
             announce_content: !args.no_content_announce,
             content_gateway: args.content_gateway.clone(),

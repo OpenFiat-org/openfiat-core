@@ -9,8 +9,8 @@ use openfiat_gossip::EventStore;
 use openfiat_gossip::channel::Subscription;
 use openfiat_network::identity::{peer_id, to_libp2p_keypair};
 use openfiat_network::{Multiaddr, Node};
-use openfiat_registry::RegistryService;
 use openfiat_registry::health::HealthState;
+use openfiat_registry::{RegistryService, ServiceBranding, ServiceListing};
 use openfiat_storage::mem::MemoryStore;
 use openfiat_types::{InfrastructureService, PeerId, PublicKey, ServiceType};
 use std::future::Future;
@@ -97,16 +97,24 @@ async fn registration_and_health_changes_replicate_and_stale_services_expire_eve
 
     // Leaf 0 (index 1) registers a service.
     let service_id = all[1]
-        .register(
-            "snapshot-1",
-            ServiceType::Infrastructure(InfrastructureService::SnapshotProvider),
-            vec!["/ip4/127.0.0.1/udp/9001/quic-v1".to_string()],
-            vec![1300],
-            Some("Kenya".to_string()),
-            vec!["hourly".to_string()],
-            None,
-            None,
-        )
+        .register(ServiceListing {
+            service_id: "snapshot-1".to_string(),
+            service_type: ServiceType::Infrastructure(InfrastructureService::SnapshotProvider),
+            endpoints: vec!["/ip4/127.0.0.1/udp/9001/quic-v1".to_string()],
+            supported_ofs: vec![1300],
+            region: Some("Kenya".to_string()),
+            capabilities: vec!["hourly".to_string()],
+            // Branding is replicated like every other field: it is part
+            // of the signed registration, so a node that never met this
+            // provider still knows what it calls itself.
+            branding: Some(ServiceBranding {
+                name: Some("Nairobi Snapshots".to_string()),
+                website: Some("https://openfiat.allenhark.com".to_string()),
+                ..ServiceBranding::default()
+            }),
+            pricing: None,
+            payout_wallet: None,
+        })
         .unwrap();
 
     drive_until(&mut all, |services| {
@@ -118,6 +126,10 @@ async fn registration_and_health_changes_replicate_and_stale_services_expire_eve
         let record = service.get(&service_id).unwrap();
         assert_eq!(record.region.as_deref(), Some("Kenya"));
         assert_eq!(record.health, HealthState::Online);
+        let branding = record
+            .branding
+            .expect("branding must replicate with the registration it is part of");
+        assert_eq!(branding.name.as_deref(), Some("Nairobi Snapshots"));
     }
 
     // The same node publishes a health change; it must reach every node.

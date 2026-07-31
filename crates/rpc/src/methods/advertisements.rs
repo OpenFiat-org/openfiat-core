@@ -345,6 +345,7 @@ mod tests {
                     supported_ofs: vec![7000],
                     region: None,
                     capabilities: vec![],
+                    branding: None,
                     pricing: None,
                     payout_wallet: None,
                     timestamp: at,

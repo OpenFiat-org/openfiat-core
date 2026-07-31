@@ -23,6 +23,36 @@ pub struct RegistryService<S> {
     registry: Rc<Registry<S>>,
 }
 
+/// The half of a registration a caller supplies (§7), as one value
+/// rather than as a positional argument list.
+///
+/// The other half — provider peer id, public key, timestamp — is the
+/// node's own and is filled in by [`RegistryService::register`], which
+/// is the point: a caller cannot register a service under someone
+/// else's identity by passing the wrong argument.
+///
+/// A struct rather than parameters because the list had reached eight
+/// and needed `#[allow(clippy::too_many_arguments)]` to compile, and
+/// four of the eight were `Option`s of compatible types — `region` and a
+/// branding field could be swapped at a call site with nothing to catch
+/// it. Branding would have made it nine.
+#[derive(Debug, Clone)]
+pub struct ServiceListing {
+    pub service_id: String,
+    pub service_type: ServiceType,
+    pub endpoints: Vec<String>,
+    pub supported_ofs: Vec<u16>,
+    /// Self-declared. Nothing observes it — see
+    /// `Registration::region`.
+    pub region: Option<String>,
+    pub capabilities: Vec<String>,
+    /// Name, description, logo and website. Self-asserted; bounded by
+    /// [`crate::ServiceBranding::validate`].
+    pub branding: Option<crate::branding::ServiceBranding>,
+    pub pricing: Option<crate::pricing::ServicePricing>,
+    pub payout_wallet: Option<String>,
+}
+
 impl<S: KvStore + 'static> RegistryService<S> {
     pub fn new(mut gossip: GossipService<S>, store: S) -> Self {
         let registry = Rc::new(Registry::new(store));
@@ -51,29 +81,19 @@ impl<S: KvStore + 'static> RegistryService<S> {
     }
 
     /// §7: register a new service under this node's own identity.
-    #[allow(clippy::too_many_arguments)]
-    pub fn register(
-        &mut self,
-        service_id: impl Into<String>,
-        service_type: ServiceType,
-        endpoints: Vec<String>,
-        supported_ofs: Vec<u16>,
-        region: Option<String>,
-        capabilities: Vec<String>,
-        pricing: Option<crate::pricing::ServicePricing>,
-        payout_wallet: Option<String>,
-    ) -> Result<ServiceId, RegistryError> {
+    pub fn register(&mut self, listing: ServiceListing) -> Result<ServiceId, RegistryError> {
         let registration = Registration {
-            service_id: ServiceId::new(service_id),
-            service_type,
+            service_id: ServiceId::new(listing.service_id),
+            service_type: listing.service_type,
             provider: self.gossip.node.local_peer_id(),
             provider_public_key: self.gossip.public_key(),
-            endpoints,
-            supported_ofs,
-            region,
-            capabilities,
-            pricing,
-            payout_wallet,
+            endpoints: listing.endpoints,
+            supported_ofs: listing.supported_ofs,
+            region: listing.region,
+            capabilities: listing.capabilities,
+            branding: listing.branding,
+            pricing: listing.pricing,
+            payout_wallet: listing.payout_wallet,
             timestamp: Timestamp::now(),
         };
         let signed = self.sign_registration(registration);

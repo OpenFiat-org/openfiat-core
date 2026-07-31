@@ -295,6 +295,7 @@ mod tests {
             supported_ofs: vec![6000],
             region: Some("Kenya".to_string()),
             capabilities: vec![],
+            branding: None,
             pricing: None,
             payout_wallet: None,
             timestamp: Timestamp::now(),

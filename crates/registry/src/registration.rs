@@ -1,5 +1,6 @@
 //! Signed service registration (OFS-1500 §5, §7-8).
 
+use crate::branding::ServiceBranding;
 use crate::error::RegistryError;
 use crate::pricing::ServicePricing;
 use crate::record::{HealthState, ServiceRecord};
@@ -17,8 +18,25 @@ pub struct Registration {
     pub provider_public_key: PublicKey,
     pub endpoints: Vec<String>,
     pub supported_ofs: Vec<u16>,
+    /// Where this service says it is, or which regions it says it
+    /// serves (§10 — "providers MAY advertise regions served").
+    ///
+    /// Self-declared and unverified, deliberately. Deriving it from the
+    /// endpoint's IP was investigated under #173 and rejected: see
+    /// `docs/region-is-declared.md`. In short, a GeoIP answer would be a
+    /// precise answer to a different question (where the socket
+    /// terminates, not who the service is for), it would differ between
+    /// nodes and so break the property that every node derives the same
+    /// registry from the same events, and it would present a guess as a
+    /// fact. Consumers must render it as declared.
     pub region: Option<String>,
     pub capabilities: Vec<String>,
+    /// What this service is called, what it looks like and where to read
+    /// more about it (§9). Self-asserted — see [`ServiceBranding`].
+    ///
+    /// Optional because most services have nothing to say here, and an
+    /// absent name is better than an invented one.
+    pub branding: Option<ServiceBranding>,
     /// What this service charges, if anything. OFS-1500 §15 keeps pricing
     /// optional — plenty of providers are free — but a declared price has
     /// to be machine-readable to be billable at all (OFS-4100 §9.5).
@@ -61,6 +79,13 @@ impl SignedRegistration {
         if self.registration.pricing.is_some() && self.registration.payout_wallet.is_none() {
             return Err(RegistryError::PricingWithoutPayoutWallet);
         }
+        // Checked on the way in, so branding this node would have
+        // refused from its own operator cannot arrive from a peer
+        // instead. `apply_event` funnels every gossiped registration
+        // through here.
+        if let Some(branding) = &self.registration.branding {
+            branding.validate()?;
+        }
         if let Some(endpoint) = self
             .registration
             .endpoints
@@ -96,6 +121,10 @@ impl SignedRegistration {
             supported_ofs: r.supported_ofs,
             region: r.region,
             capabilities: r.capabilities,
+            // Normalised to `None` when nothing was actually declared,
+            // so a consumer has one shape for "said nothing" instead of
+            // two that render differently.
+            branding: r.branding.filter(|b| !b.is_empty()),
             pricing: r.pricing,
             payout_wallet: r.payout_wallet,
             health: HealthState::Online,
@@ -119,6 +148,7 @@ mod tests {
             supported_ofs: vec![1500, 7000],
             region: Some("Kenya".to_string()),
             capabilities: vec!["KES/USD".to_string()],
+            branding: None,
             pricing: None,
             payout_wallet: None,
             timestamp: Timestamp::now(),
@@ -190,6 +220,64 @@ mod tests {
     }
 
     #[test]
+    fn declared_branding_survives_signing_and_reaches_the_record() {
+        let keypair = Keypair::generate();
+        let provider = peer_id_from_public_key(&keypair.public_key()).unwrap();
+        let mut reg = registration(&keypair, provider);
+        reg.branding = Some(ServiceBranding {
+            name: Some("AllenHark EU".to_string()),
+            description: Some("Public API node, run by AllenHark.".to_string()),
+            logo: Some("bafkreibdmq27skp3wnycoyoqcei47etyaulerpsegivlkfvyhjkw7ufjva".to_string()),
+            website: Some("https://openfiat.allenhark.com".to_string()),
+        });
+
+        let signed = SignedRegistration::sign(reg, &keypair);
+        assert_eq!(signed.verify(), Ok(()));
+        let branding = signed
+            .into_record()
+            .branding
+            .expect("branding must survive the round trip");
+        assert_eq!(branding.name.as_deref(), Some("AllenHark EU"));
+        assert_eq!(
+            branding.website.as_deref(),
+            Some("https://openfiat.allenhark.com")
+        );
+    }
+
+    #[test]
+    fn branding_this_node_would_refuse_cannot_be_gossiped_in_instead() {
+        // The registration is genuinely signed by a genuine key: the
+        // only thing wrong with it is the value. Signature verification
+        // alone would accept it, which is why `verify` also validates
+        // shape — every gossiped registration reaches the store through
+        // this one path.
+        let keypair = Keypair::generate();
+        let provider = peer_id_from_public_key(&keypair.public_key()).unwrap();
+        let mut reg = registration(&keypair, provider);
+        reg.branding = Some(ServiceBranding {
+            logo: Some("https://tracker.example/pixel.png".to_string()),
+            ..ServiceBranding::default()
+        });
+
+        let signed = SignedRegistration::sign(reg, &keypair);
+        assert_eq!(signed.verify(), Err(RegistryError::MalformedBranding));
+    }
+
+    #[test]
+    fn branding_that_declares_nothing_becomes_a_plain_absence_on_the_record() {
+        // `Some(everything-None)` and `None` are the same statement, and
+        // a consumer should not have to handle both spellings of it.
+        let keypair = Keypair::generate();
+        let provider = peer_id_from_public_key(&keypair.public_key()).unwrap();
+        let mut reg = registration(&keypair, provider);
+        reg.branding = Some(ServiceBranding::default());
+
+        let signed = SignedRegistration::sign(reg, &keypair);
+        assert_eq!(signed.verify(), Ok(()));
+        assert_eq!(signed.into_record().branding, None);
+    }
+
+    #[test]
     fn rejects_a_tampered_registration() {
         let keypair = Keypair::generate();
         let provider = peer_id_from_public_key(&keypair.public_key()).unwrap();
@@ -233,7 +321,7 @@ const UNRESOLVABLE_SUFFIXES: [&str; 3] = [".test", ".invalid", ".example"];
 /// services failing a liveness check would be making an availability
 /// judgement, which is the consumer's to make — and `health` already
 /// exists for it.
-fn is_unresolvable(endpoint: &str) -> bool {
+pub(crate) fn is_unresolvable(endpoint: &str) -> bool {
     let after_scheme = endpoint.split("://").nth(1).unwrap_or(endpoint);
     let host = after_scheme
         .split(['/', '?', '#'])

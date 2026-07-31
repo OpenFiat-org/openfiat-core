@@ -146,7 +146,7 @@ impl<S: KvStore> Registry<S> {
         }
         match parse_event(event) {
             Some(crate::RegistryEvent::Registered(signed)) => {
-                let _ = self.apply_registration(signed);
+                let _ = self.apply_registration(*signed);
             }
             Some(crate::RegistryEvent::Updated(signed)) => {
                 let _ = self.apply_health_update(signed);
@@ -181,6 +181,7 @@ mod tests {
             supported_ofs: vec![1300],
             region: None,
             capabilities: vec![],
+            branding: None,
             pricing: None,
             payout_wallet: None,
             timestamp: Timestamp::now(),

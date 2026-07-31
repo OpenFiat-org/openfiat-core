@@ -19,7 +19,7 @@ mod onchain_stake;
 pub mod server;
 pub mod state;
 
-pub use actor::{NetworkConfig, RpcHandle, spawn_actor};
+pub use actor::{NetworkConfig, RpcHandle, ServiceBranding, spawn_actor};
 pub use dispatch::MethodTable;
 pub use error::RpcError;
 pub use server::router;
