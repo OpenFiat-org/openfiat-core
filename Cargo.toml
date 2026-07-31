@@ -26,6 +26,7 @@ members = [
     "crates/settlement",
     "crates/content",
     "crates/disputes",
+    "crates/tradechannel",
     "crates/governance",
     "crates/notifications",
     "crates/oracles",

@@ -43,6 +43,7 @@ use openfiat_settlement::SettlementRegistry;
 use openfiat_snapshot::SnapshotIndex;
 use openfiat_storage::KvStore;
 use openfiat_trade::{CounterpartyView, TradeView};
+use openfiat_tradechannel::TradeChannelRegistry;
 use openfiat_types::NodeRole;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -125,6 +126,17 @@ pub const SNAPSHOT_COLUMN_FAMILIES: &[&str] = &[
     "sessions",
     openfiat_content::CONTENT_COLUMN_FAMILY,
     openfiat_reviews::REVIEWS_COLUMN_FAMILY,
+    // Named through the owning crate's own constants rather than spelled
+    // again here. A column family missing from this list is not a compile
+    // error and not a test failure — `openfiat-node` opens its database
+    // from this list, and a registry writing to a family nobody opened
+    // loses every write in silence. See
+    // `openfiat-tradechannel/tests/column_families.rs`, which
+    // demonstrates exactly that against a real RocksDB, and
+    // `every_trade_channel_column_family_is_in_the_snapshot_set` below,
+    // which catches a *third* family added to that crate later.
+    openfiat_tradechannel::store::GRANTS_COLUMN_FAMILY,
+    openfiat_tradechannel::store::ENTRIES_COLUMN_FAMILY,
 ];
 
 /// What this node will accept into each column family of a snapshot.
@@ -243,6 +255,12 @@ pub struct NodeState<S> {
     /// trail these features exist to avoid creating.
     pub wallet_challenges: Rc<RefCell<ChallengeLedger>>,
     pub disputes: Rc<DisputeRegistry<Rc<S>>>,
+    /// The confidential per-trade channel: the payment details one party
+    /// hands the other, and their conversation. This node stores nothing
+    /// but ciphertext and metadata here and holds no key that would open
+    /// any of it — see `openfiat_tradechannel` for what a node operator
+    /// and an arbitrator can each actually see.
+    pub trade_channels: Rc<TradeChannelRegistry<Rc<S>>>,
     pub identity: Rc<IdentityRegistry<Rc<S>>>,
     /// Trade evidence, addressed by IPFS CID. Never the bytes — see
     /// `openfiat_content` for why a node stores the reference and not the
@@ -412,6 +430,15 @@ impl<S: KvStore + 'static> NodeState<S> {
             Rc::clone(&store),
             Rc::clone(&settlements),
         ));
+        // Reads both of the registries above and writes neither: the
+        // settlement says who the parties are, and the dispute says who
+        // the arbitrators are, which is all that decides who may write to
+        // a channel and who may be granted its key.
+        let trade_channels = Rc::new(TradeChannelRegistry::new(
+            Rc::clone(&store),
+            Rc::clone(&settlements),
+            Rc::clone(&disputes),
+        ));
         let trades = TradeView::new(Rc::clone(&reservations), Rc::clone(&settlements));
         let counterparties = CounterpartyView::new(Rc::clone(&settlements), Rc::clone(&disputes));
         let reputation = ReputationView::new(
@@ -501,6 +528,18 @@ impl<S: KvStore + 'static> NodeState<S> {
         attach!(reservations);
         attach!(settlements);
         attach!(disputes);
+        // A channel event is only applicable once this node holds the
+        // settlement that authorizes it, and a grant to an arbitrator
+        // only once it holds the dispute they joined. An entry that
+        // outruns either is dropped rather than queued — the same stance
+        // `DisputeRegistry` already takes toward a dispute whose
+        // settlement has not arrived, and it carries the same known
+        // limitation: nothing re-applies it later, so a node that
+        // received the two out of order learns the channel from its next
+        // recovery exchange rather than immediately. Registering after
+        // both makes the common case (a settlement long since replicated,
+        // a channel written during the trade) apply on first sight.
+        attach!(trade_channels);
         attach!(services);
         attach!(notifications);
         attach!(oracles);
@@ -571,6 +610,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             counterparties,
             wallet_challenges: Rc::new(RefCell::new(ChallengeLedger::new())),
             disputes,
+            trade_channels,
             identity,
             attachments,
             held_content,
@@ -825,6 +865,94 @@ mod tests {
              real node never opens it and every review is silently discarded",
             openfiat_reviews::REVIEWS_COLUMN_FAMILY,
         );
+    }
+
+    /// The same proof for the trade channel, which is the surface where
+    /// a silently-dropped write would be worst: the buyer would be shown
+    /// an empty conversation and no error, while the seller's client
+    /// believed it had handed over the account number.
+    #[test]
+    fn a_trade_channel_entry_survives_a_store_that_only_accepts_declared_column_families() {
+        use openfiat_crypto::Keypair;
+        use openfiat_network::identity::peer_id_from_public_key;
+        use openfiat_reservations::ReservationId;
+        use openfiat_settlement::SettlementId;
+        use openfiat_settlement::events::{SettlementInitiate, SignedSettlementInitiate};
+        use openfiat_tradechannel::events::{SignedTradeChannelEntryPost, TradeChannelEntryPost};
+        use openfiat_tradechannel::{ChannelKey, EntryBinding, EntryKind, seal_entry};
+        use openfiat_types::{Amount, Timestamp};
+
+        let state = NodeState::new_for_test(DeclaredOnly::new());
+        let buyer = Keypair::generate();
+        let seller = Keypair::generate();
+        let settlement_id = SettlementId::new("s-1");
+        state
+            .settlements
+            .apply_initiate(SignedSettlementInitiate::sign(
+                SettlementInitiate {
+                    id: settlement_id.clone(),
+                    reservation_id: ReservationId::new("r-1"),
+                    buyer: peer_id_from_public_key(&buyer.public_key()).unwrap(),
+                    buyer_public_key: buyer.public_key(),
+                    seller: peer_id_from_public_key(&seller.public_key()).unwrap(),
+                    seller_public_key: seller.public_key(),
+                    amount: Amount::new(2_000_000, 6),
+                    timestamp: Timestamp::from_millis(1),
+                },
+                &buyer,
+            ))
+            .expect("a well-signed settlement is accepted");
+
+        let author = peer_id_from_public_key(&seller.public_key()).unwrap();
+        let payload = seal_entry(
+            &ChannelKey::generate(),
+            &EntryBinding {
+                settlement_id: &settlement_id,
+                author: &author,
+                sequence: 0,
+                kind: EntryKind::PaymentDetails.name(),
+            },
+            b"Equity Bank 0110123456789",
+        )
+        .expect("a short plaintext always seals");
+        state
+            .trade_channels
+            .apply_entry(SignedTradeChannelEntryPost::sign(
+                TradeChannelEntryPost {
+                    settlement_id: settlement_id.clone(),
+                    author,
+                    sequence: 0,
+                    kind: EntryKind::PaymentDetails,
+                    payload,
+                    timestamp: Timestamp::from_millis(2),
+                },
+                &seller,
+            ))
+            .expect("a party's well-signed entry is accepted");
+
+        assert_eq!(
+            state.trade_channels.channel(&settlement_id).entries.len(),
+            1,
+            "the write went nowhere — a trade-channel column family is missing from \
+             SNAPSHOT_COLUMN_FAMILIES, so a real node never opens it and every payment \
+             detail is silently discarded"
+        );
+    }
+
+    /// `SNAPSHOT_COLUMN_FAMILIES` names this crate's two families through
+    /// its own constants, so those two cannot drift. A *third* family
+    /// added there later would not be caught by that, and would be caught
+    /// by this.
+    #[test]
+    fn every_trade_channel_column_family_is_in_the_snapshot_set() {
+        for family in openfiat_tradechannel::COLUMN_FAMILIES {
+            assert!(
+                SNAPSHOT_COLUMN_FAMILIES.contains(family),
+                "{family:?} is written by openfiat-tradechannel and absent from \
+                 SNAPSHOT_COLUMN_FAMILIES, which is the list openfiat-node opens its \
+                 database from — every write to it would be discarded in silence"
+            );
+        }
     }
 
     #[test]

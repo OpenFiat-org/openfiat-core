@@ -3766,6 +3766,7 @@ dependencies = [
  "openfiat-snapshot",
  "openfiat-storage",
  "openfiat-trade",
+ "openfiat-tradechannel",
  "openfiat-types",
  "reqwest",
  "serde",
@@ -3887,6 +3888,29 @@ dependencies = [
  "openfiat-storage",
  "openfiat-types",
  "serde",
+]
+
+[[package]]
+name = "openfiat-tradechannel"
+version = "0.1.0"
+dependencies = [
+ "chacha20poly1305",
+ "futures",
+ "libp2p",
+ "openfiat-crypto",
+ "openfiat-database",
+ "openfiat-disputes",
+ "openfiat-gossip",
+ "openfiat-network",
+ "openfiat-reservations",
+ "openfiat-serialization",
+ "openfiat-settlement",
+ "openfiat-storage",
+ "openfiat-types",
+ "rand 0.10.2",
+ "serde",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

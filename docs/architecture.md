@@ -26,9 +26,20 @@ flowchart TD
     snapshot --> rpc
     chain --> rpc
     chain --> settlement["settlement (OFS-2300)"]
+    settlement --> disputes["disputes (OFS-2400)"]
+    settlement --> tradechannel["tradechannel (sealed payment details + chat)"]
+    disputes --> tradechannel
+    tradechannel --> rpc
     rpc --> indexer["explorer/indexer (openfiat-apps, git dep)"]
     indexer --> explorerapi["explorer/api (openfiat-apps)"]
 ```
+
+`tradechannel` sits below both because it holds no state of its own that
+either does not already establish: a settlement says who may write to a
+channel, and a dispute says who may be granted the key to read one. It
+carries ciphertext and never a key — see `trade-channel.md` for what a
+node operator and an arbitrator can each actually see, and for why
+presence and typing indicators are deliberately not in the event log.
 
 Shared foundational crates (`types`, `serialization`, `crypto`,
 `storage`/`database`) sit underneath `network` and are depended on by

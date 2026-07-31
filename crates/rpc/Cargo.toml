@@ -18,6 +18,7 @@ openfiat-reservations = { path = "../reservations", version = "0.1.0" }
 openfiat-settlement = { path = "../settlement", version = "0.1.0" }
 openfiat-trade = { path = "../trade", version = "0.1.0" }
 openfiat-disputes = { path = "../disputes", version = "0.1.0" }
+openfiat-tradechannel = { path = "../tradechannel", version = "0.1.0" }
 openfiat-content = { path = "../content", version = "0.1.0" }
 openfiat-identity = { path = "../identity", version = "0.1.0" }
 openfiat-reputation = { path = "../reputation", version = "0.1.0" }
