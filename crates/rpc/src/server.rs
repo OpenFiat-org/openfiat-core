@@ -155,7 +155,14 @@ mod tests {
             std::thread::current().id()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        std::fs::write(directory.join("snap-7-42.snapshot"), b"compressed state").unwrap();
+        std::fs::write(
+            directory.join(format!(
+                "snap-7-42{}",
+                openfiat_snapshot::serve::FILE_EXTENSION
+            )),
+            b"compressed state",
+        )
+        .unwrap();
 
         let response = router_over(directory.clone())
             .oneshot(

@@ -68,7 +68,12 @@ pub fn produce<S: KvStore>(
         return Err(SnapshotError::DuplicateSnapshotId);
     }
 
-    let compression = CompressionMethod::None;
+    // Gzip, so a produced snapshot is a real `.tar.gz` an operator can
+    // open with `tar xzf`. `state_root` is taken over the *uncompressed*
+    // bytes below, deliberately: the digest has to identify the state, not
+    // one particular encoding of it, or re-compressing at a different
+    // level would look like different state.
+    let compression = CompressionMethod::Gzip;
     let state_bytes = state::serialize(store, column_families)?;
     let state_root = codec::state_root(&state_bytes);
     let compressed = codec::compress(&state_bytes, compression)?;
@@ -143,8 +148,15 @@ fn prune(directory: &Path, retain: usize) {
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| {
-            path.extension()
-                .is_some_and(|ext| ext == serve::FILE_EXTENSION.trim_start_matches('.'))
+            // Matched on the whole filename, not `Path::extension()`.
+            // The extension is `.tar.gz`, and `extension()` returns only
+            // the last component — `gz` — so comparing against it would
+            // both miss this node's own files and match any unrelated
+            // gzip that happened to be in the directory. Pruning silently
+            // matching nothing is the failure that fills a disk.
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(serve::FILE_EXTENSION))
         })
         .collect();
     if files.len() <= retain {

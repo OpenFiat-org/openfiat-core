@@ -29,7 +29,12 @@ use std::path::PathBuf;
 
 /// The extension every produced snapshot file carries, and the only one
 /// this router will serve.
-pub const FILE_EXTENSION: &str = ".snapshot";
+///
+/// A produced snapshot is a gzip-compressed tar holding the serialized
+/// state, so this names the format honestly: `tar xzf` opens one. It was
+/// `.snapshot` while the bytes were raw, which said nothing and invited
+/// the assumption that they were opaque.
+pub const FILE_EXTENSION: &str = ".tar.gz";
 
 /// The path a snapshot is served under, relative to the node's HTTP root.
 /// Shared with [`crate::producer`] so an announced URL and the route that

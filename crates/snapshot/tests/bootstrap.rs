@@ -492,7 +492,11 @@ async fn a_corrupted_download_is_rejected_and_changes_nothing() {
 
     // Corrupt the served file in place, keeping its length identical so
     // the size check cannot catch this and the state root has to.
-    let path = directory.join(format!("{}.snapshot", metadata.id.as_str()));
+    let path = directory.join(format!(
+        "{}{}",
+        metadata.id.as_str(),
+        openfiat_snapshot::serve::FILE_EXTENSION
+    ));
     let mut bytes = std::fs::read(&path).unwrap();
     let middle = bytes.len() / 2;
     bytes[middle] ^= 0x01;
@@ -587,8 +591,12 @@ async fn a_fresh_node_refuses_a_first_snapshot_from_a_stranger() {
         ))
         .expect("the announcement is valid; it is the import that is refused");
 
-    let compressed =
-        std::fs::read(directory.join(format!("{}.snapshot", metadata.id.as_str()))).unwrap();
+    let compressed = std::fs::read(directory.join(format!(
+        "{}{}",
+        metadata.id.as_str(),
+        openfiat_snapshot::serve::FILE_EXTENSION
+    )))
+    .unwrap();
     assert_eq!(
         untrusting
             .snapshots

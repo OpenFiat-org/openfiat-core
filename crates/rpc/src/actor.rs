@@ -3236,7 +3236,14 @@ mod tests {
             std::fs::create_dir_all(&directory).unwrap();
 
             let bytes = blob();
-            std::fs::write(directory.join("snap-usable.snapshot"), &bytes).unwrap();
+            std::fs::write(
+                directory.join(format!(
+                    "snap-usable{}",
+                    openfiat_snapshot::serve::FILE_EXTENSION
+                )),
+                &bytes,
+            )
+            .unwrap();
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let live = listener.local_addr().unwrap();
             tokio::spawn(async move {

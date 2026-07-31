@@ -7,6 +7,8 @@ description = "State snapshot creation and synchronization between nodes."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
+flate2 = "1"
+tar = "0.4"
 openfiat-network = { path = "../network", version = "0.1.0" }
 openfiat-types = { path = "../types", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
