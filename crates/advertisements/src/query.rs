@@ -28,7 +28,7 @@
 
 use crate::record::{Advertisement, AdvertisementId, AdvertisementStatus, Direction};
 use openfiat_crypto::MintAddress;
-use openfiat_types::{Amount, FiatCurrency};
+use openfiat_types::{Amount, FiatCurrency, PeerId};
 
 /// The most advertisements one response will carry.
 ///
@@ -68,14 +68,31 @@ pub struct AdvertisementFilter {
     /// this filter exists to remove.
     #[serde(default)]
     pub amount: Option<Amount>,
-    /// Defaults to active only.
+    /// Whose advertisements, by merchant PeerId.
+    ///
+    /// A merchant reviewing their own book asks a different question from
+    /// a buyer reading the market, and it is the same question every
+    /// interface with a merchant console asks. Without it a client reads
+    /// the whole book and keeps the rows whose merchant matches — which
+    /// works, and means the node serializes every advertisement on the
+    /// network so a browser can throw nearly all of them away.
+    #[serde(default)]
+    pub merchant: Option<PeerId>,
+    /// Which states count. Absent means active only.
     ///
     /// A disabled or deleted advertisement cannot be traded against, so
     /// returning one by default would be offering something that is not
-    /// on offer. Asking for another status explicitly is a merchant
-    /// reviewing their own book, which is a different question.
+    /// on offer.
+    ///
+    /// A *set* rather than one status, because the caller that needs
+    /// something other than the default needs several: a merchant's
+    /// console has to show a paused advertisement — it is the only screen
+    /// that can put it back — alongside the live ones. With a single
+    /// value that screen had to ask four times and stitch the answers
+    /// together, which is the same "filter it in the client" shape one
+    /// level down.
     #[serde(default)]
-    pub status: Option<AdvertisementStatus>,
+    pub statuses: Option<Vec<AdvertisementStatus>>,
 }
 
 /// Where to resume from, and how much to take.
@@ -112,10 +129,19 @@ pub struct AdvertisementPage {
 impl AdvertisementFilter {
     /// Whether `ad` is one this filter asks for.
     pub fn matches(&self, ad: &Advertisement) -> bool {
-        // Active unless the caller named a status. See the field's doc for
+        // Active unless the caller named states. See the field's doc for
         // why the default is not "everything".
-        let wanted_status = self.status.unwrap_or(AdvertisementStatus::Active);
-        if ad.status != wanted_status {
+        match &self.statuses {
+            Some(wanted) if !wanted.contains(&ad.status) => return false,
+            // An explicitly empty set asks for nothing, and gets nothing.
+            // Treating it as "no constraint" would turn a client's own
+            // bug into the whole book.
+            None if ad.status != AdvertisementStatus::Active => return false,
+            _ => {}
+        }
+        if let Some(merchant) = &self.merchant
+            && &ad.merchant != merchant
+        {
             return false;
         }
         if let Some(mint) = &self.asset_mint
@@ -337,7 +363,7 @@ mod tests {
         );
 
         let on_holiday = AdvertisementFilter {
-            status: Some(AdvertisementStatus::Vacation),
+            statuses: Some(vec![AdvertisementStatus::Vacation]),
             ..Default::default()
         };
         assert_eq!(
@@ -450,5 +476,71 @@ mod tests {
             },
         );
         assert_eq!(result.next_cursor, None);
+    }
+
+    #[test]
+    fn a_merchant_sees_their_own_book_and_nobody_elses() {
+        // The question a merchant console asks. Answering it in the client
+        // means serializing every advertisement on the network so a
+        // browser can discard nearly all of them.
+        let mut theirs = ad("ad-theirs", USDC, "KES", Direction::Sell);
+        theirs.merchant = PeerId::from_bytes(vec![9; 8]);
+        let mine = ad("ad-mine", USDC, "KES", Direction::Sell);
+        let merchant = mine.merchant.clone();
+        let all = vec![mine, theirs];
+
+        let filter = AdvertisementFilter {
+            merchant: Some(merchant),
+            ..Default::default()
+        };
+        assert_eq!(ids(&page(all, &filter, &Page::default())), ["ad-mine"]);
+    }
+
+    #[test]
+    fn a_merchants_console_gets_every_state_in_one_answer() {
+        // A paused advertisement has to appear beside the live ones: this
+        // is the only screen that can put it back on offer, and a screen
+        // that cannot show it cannot offer that.
+        let mut paused = ad("ad-paused", USDC, "KES", Direction::Sell);
+        paused.status = AdvertisementStatus::Vacation;
+        let mut gone = ad("ad-gone", USDC, "KES", Direction::Sell);
+        gone.status = AdvertisementStatus::Deleted;
+        let live = ad("ad-live", USDC, "KES", Direction::Sell);
+        let merchant = live.merchant.clone();
+        let all = vec![live, paused, gone];
+
+        let filter = AdvertisementFilter {
+            merchant: Some(merchant),
+            statuses: Some(vec![
+                AdvertisementStatus::Active,
+                AdvertisementStatus::Vacation,
+                AdvertisementStatus::Disabled,
+                AdvertisementStatus::Deleted,
+            ]),
+            ..Default::default()
+        };
+        // Ordered by id, which is the total order the cursor resumes
+        // under — not by state and not by when they were published.
+        assert_eq!(
+            ids(&page(all, &filter, &Page::default())),
+            ["ad-gone", "ad-live", "ad-paused"]
+        );
+    }
+
+    #[test]
+    fn asking_for_no_statuses_returns_nothing_rather_than_everything() {
+        // An empty set is a caller's bug. Reading it as "no constraint"
+        // would answer it with the whole book, including the deleted rows
+        // — the loudest possible response to the quietest possible
+        // mistake.
+        let filter = AdvertisementFilter {
+            statuses: Some(Vec::new()),
+            ..Default::default()
+        };
+        assert!(
+            page(book(), &filter, &Page::default())
+                .advertisements
+                .is_empty()
+        );
     }
 }
