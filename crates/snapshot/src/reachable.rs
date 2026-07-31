@@ -19,6 +19,12 @@
 //! survives only as an override, for the node whose HTTP server is genuinely
 //! reached on a hostname or port it has no way to observe (a reverse proxy).
 //!
+//! An observed address is a *claim*, though, and this module's output is
+//! signed and gossiped to the whole cluster — so the caller supplies
+//! `GossipService::corroborated_addresses`, which requires more than one
+//! peer to have reported the same address. One peer alone must not be able
+//! to aim every bootstrapping node at an address of its choosing.
+//!
 //! # Why a wrong guess here is cheap
 //!
 //! A derived URL is a hint about where bytes might be, never a statement

@@ -1240,8 +1240,8 @@ fn discard_unverifiable_votes<S: KvStore + 'static>(state: &NodeState<S>) {
 /// timer wakeup for the rest of the process's life and nothing else.
 const SNAPSHOT_BOOTSTRAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Every address this node currently believes it can be reached at, most
-/// likely to work first.
+/// Every address this node is willing to *act* on believing it is
+/// reachable at, most likely to work first.
 ///
 /// Two sources, because neither alone is complete. Discovery holds what
 /// the operator declared (`--external-addr`) followed by what libp2p
@@ -1250,6 +1250,12 @@ const SNAPSHOT_BOOTSTRAP_INTERVAL: std::time::Duration = std::time::Duration::fr
 /// what a *peer* saw the connection arrive from — which is the only thing
 /// that can see through a NAT, and so the only source that answers for the
 /// deployment this used to need a flag for.
+///
+/// `corroborated_addresses`, deliberately, and not `reachable_addresses`:
+/// an observed address is one peer's unverified claim, and what this
+/// function feeds is the location an honest producer signs and gossips to
+/// the whole cluster. See `GossipService::corroborated_addresses` for what
+/// a single reporter could otherwise aim every joining node at.
 ///
 /// Duplicates are expected and harmless: both sources report the bound
 /// addresses, and `openfiat_snapshot::reachable` collapses them by host.
@@ -1260,7 +1266,7 @@ fn reachable_addresses<S: KvStore + 'static>(state: &NodeState<S>) -> Vec<Multia
         .announced_addresses()
         .iter()
         .filter_map(|address| address.parse().ok())
-        .chain(state.gossip.borrow().reachable_addresses())
+        .chain(state.gossip.borrow().corroborated_addresses())
         .collect()
 }
 

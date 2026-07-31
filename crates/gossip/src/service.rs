@@ -26,6 +26,17 @@ use openfiat_types::{
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+/// How many distinct peers must independently report seeing this node at
+/// an address before it is one this node will act on.
+///
+/// Two, not one: one is a single peer's unverified word, and this node
+/// publishes what it concludes from it (see
+/// [`GossipService::corroborated_addresses`]). Not more than two, because
+/// every increment is a node on a small or young cluster that never learns
+/// its own public address at all, and the address is only ever a hint —
+/// what it points at is verified on arrival regardless.
+pub const MIN_OBSERVERS: usize = 2;
+
 /// What happened when an event was offered to [`GossipService::receive_event`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiveOutcome {
@@ -51,8 +62,9 @@ pub struct GossipService<S> {
     /// to know discovery's storage backing.
     peer_keys: HashMap<PeerId, PublicKey>,
     connected: HashSet<Libp2pPeerId>,
-    /// Addresses at which this node is actually reachable, learned rather
-    /// than configured.
+    /// Everything this node has been told it is reachable at, learned
+    /// rather than configured — safe to show an operator, and not what
+    /// anything decides on (that is `corroborated_addresses`).
     ///
     /// Two independent sources, and the difference matters. `NewListenAddr`
     /// is what libp2p bound after expanding `--gossip-bind-address`: bind
@@ -60,12 +72,21 @@ pub struct GossipService<S> {
     /// is the answer for a host whose interface address is its real one.
     /// identify's `observed_addr` is what a *peer* saw the connection
     /// arrive from, which is the only way to learn a public address behind
-    /// NAT — no amount of local inspection can produce it.
+    /// NAT — no amount of local inspection can produce it, and no amount
+    /// of local inspection can check it either.
     ///
     /// Bind wildcards never enter this set (see [`is_dialable`]): an
     /// address that cannot be dialled is worse than none, because it looks
     /// like an answer.
     reachable: BTreeSet<Multiaddr>,
+    /// The subset of `reachable` that libp2p itself bound — a local fact,
+    /// not a claim by anyone.
+    bound: BTreeSet<Multiaddr>,
+    /// Which peers reported observing this node at which address.
+    ///
+    /// Kept per reporter rather than as a count, because a count is
+    /// something one peer can raise on its own by reconnecting.
+    observed_by: HashMap<Multiaddr, HashSet<Libp2pPeerId>>,
     /// When this node started, used to tell its own history from an
     /// impostor's traffic — see [`GossipService::accept`].
     started_at: Timestamp,
@@ -137,6 +158,8 @@ impl<S: KvStore> GossipService<S> {
             peer_keys,
             connected: HashSet::new(),
             reachable: BTreeSet::new(),
+            bound: BTreeSet::new(),
+            observed_by: HashMap::new(),
             started_at: Timestamp::now(),
             identity_conflicts: 0,
             newly_reachable: Vec::new(),
@@ -429,20 +452,23 @@ impl<S: KvStore> GossipService<S> {
                 self.connected.remove(peer_id);
             }
             // What libp2p actually bound, one event per interface once a
-            // wildcard is expanded.
+            // wildcard is expanded. A local fact — nobody is being taken
+            // at their word.
             SwarmEvent::NewListenAddr { address, .. } => {
+                if is_dialable(address) {
+                    self.bound.insert(address.clone());
+                }
                 self.record_reachable(address.clone());
             }
             // What a peer saw. The only source that can see through NAT,
-            // and unverified by design: a peer could report anything. It
-            // costs nothing to be wrong here — the address is used to tell
-            // an operator where they appear to be reachable, never to
-            // decide anything — but that is why it is not treated as
-            // authoritative anywhere else.
+            // and a claim rather than an observation: a peer can report
+            // anything at all. Recorded against the peer that reported it,
+            // so `corroborated_addresses` can require more than one — see
+            // there for what a single reporter could otherwise do.
             SwarmEvent::Behaviour(OpenFiatBehaviourEvent::Identify(
-                libp2p::identify::Event::Received { info, .. },
+                libp2p::identify::Event::Received { peer_id, info, .. },
             )) => {
-                self.record_reachable(info.observed_addr.clone());
+                self.record_observed(*peer_id, info.observed_addr.clone());
             }
             _ => {}
         }
@@ -459,6 +485,20 @@ impl<S: KvStore> GossipService<S> {
         }
     }
 
+    /// Records `peer`'s claim to have seen this node at `address`.
+    ///
+    /// The claim is kept against its reporter and never merged into a
+    /// count, so a peer that reconnects a hundred times still counts once.
+    fn record_observed(&mut self, peer: Libp2pPeerId, address: Multiaddr) {
+        if is_dialable(&address) {
+            self.observed_by
+                .entry(address.clone())
+                .or_default()
+                .insert(peer);
+        }
+        self.record_reachable(address);
+    }
+
     fn record_reachable(&mut self, address: Multiaddr) {
         if !is_dialable(&address) {
             return;
@@ -468,9 +508,43 @@ impl<S: KvStore> GossipService<S> {
         }
     }
 
-    /// Every address this node is known to be reachable at.
+    /// Every address this node has been told it is reachable at, from
+    /// either source. For showing an operator, not for deciding anything —
+    /// see [`corroborated_addresses`](Self::corroborated_addresses).
     pub fn reachable_addresses(&self) -> Vec<Multiaddr> {
         self.reachable.iter().cloned().collect()
+    }
+
+    /// The addresses this node is willing to *act* on: what libp2p bound
+    /// locally, plus any address at least [`MIN_OBSERVERS`] distinct peers
+    /// independently reported seeing this node at.
+    ///
+    /// The corroboration requirement exists because `observed_addr` is a
+    /// claim by one peer and this node publishes what it concludes from it
+    /// — `openfiat_snapshot` derives the URL it tells the whole cluster to
+    /// fetch its snapshots from. A single peer reporting
+    /// `observed_addr: <someone else's address>` would otherwise aim every
+    /// bootstrapping node in the network at a third party, using an honest
+    /// producer's signature to do it. Two unrelated peers reporting the
+    /// same address is not proof, but it costs an attacker a second
+    /// identity that must also be connected, and it is what the address is
+    /// worth: a hint that verified bytes are then checked against.
+    ///
+    /// The cost is a node that is behind NAT *and* has only ever had one
+    /// peer, which learns no public address here. That node states one
+    /// with `--external-addr` or `--snapshot-public-url`, exactly as it
+    /// did before anything was derived at all.
+    pub fn corroborated_addresses(&self) -> Vec<Multiaddr> {
+        self.bound
+            .iter()
+            .cloned()
+            .chain(
+                self.observed_by
+                    .iter()
+                    .filter(|(_, reporters)| reporters.len() >= MIN_OBSERVERS)
+                    .map(|(address, _)| address.clone()),
+            )
+            .collect()
     }
 
     /// Addresses learned since the last call, draining them.
@@ -706,5 +780,84 @@ mod identity_conflicts {
             ReceiveOutcome::Duplicate
         );
         assert_eq!(service.identity_conflicts(), 0);
+    }
+}
+
+#[cfg(test)]
+/// What this node is willing to believe about its own address, and from
+/// how many independent mouths.
+mod corroboration {
+    use super::*;
+    use openfiat_storage::mem::MemoryStore;
+
+    fn service() -> GossipService<MemoryStore> {
+        let keypair = Keypair::from_seed([31u8; 32]);
+        GossipService::new(
+            openfiat_network::Node::new(&keypair).unwrap(),
+            EventStore::new(MemoryStore::new()),
+            Keypair::from_seed(keypair.seed()),
+            vec![NodeRole::MerchantGateway],
+            Subscription::All,
+        )
+    }
+
+    fn address(raw: &str) -> Multiaddr {
+        raw.parse().unwrap()
+    }
+
+    /// The vector this closes. One peer says "I saw you at
+    /// `<a stranger's address>`", and `openfiat_snapshot` would sign that
+    /// into an announcement telling every joining node in the cluster to
+    /// fetch from there.
+    #[test]
+    fn one_peer_alone_cannot_decide_where_this_node_is() {
+        let mut service = service();
+        service.record_observed(Libp2pPeerId::random(), address("/ip4/203.0.113.9/tcp/4001"));
+
+        assert!(
+            service.corroborated_addresses().is_empty(),
+            "a single unverified claim must not become an address this node acts on"
+        );
+        assert_eq!(
+            service.reachable_addresses().len(),
+            1,
+            "it is still worth showing an operator — it just decides nothing"
+        );
+    }
+
+    #[test]
+    fn two_independent_peers_reporting_the_same_address_is_enough() {
+        let mut service = service();
+        let observed = address("/ip4/203.0.113.9/tcp/4001");
+        service.record_observed(Libp2pPeerId::random(), observed.clone());
+        service.record_observed(Libp2pPeerId::random(), observed.clone());
+
+        assert_eq!(service.corroborated_addresses(), vec![observed]);
+    }
+
+    /// Counting reports rather than reporters would let one peer
+    /// corroborate itself by reconnecting.
+    #[test]
+    fn one_peer_repeating_itself_is_still_one_peer() {
+        let mut service = service();
+        let peer = Libp2pPeerId::random();
+        let observed = address("/ip4/203.0.113.9/tcp/4001");
+        for _ in 0..50 {
+            service.record_observed(peer, observed.clone());
+        }
+
+        assert!(service.corroborated_addresses().is_empty());
+    }
+
+    /// A bound address is a local fact, so it needs nobody's agreement —
+    /// which is what keeps an ordinary public-interface node working with
+    /// no peers at all.
+    #[test]
+    fn a_bound_address_needs_no_corroboration() {
+        let mut service = service();
+        let bound = address("/ip4/198.51.100.4/udp/4001/quic-v1");
+        service.bound.insert(bound.clone());
+
+        assert_eq!(service.corroborated_addresses(), vec![bound]);
     }
 }
