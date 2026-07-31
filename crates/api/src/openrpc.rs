@@ -103,6 +103,17 @@ fn params_schema_for(method: &str) -> Value {
             "required": ["id", "nonce", "signature"],
         });
     }
+    // The interface's fallback when a public gateway cannot produce an
+    // attachment. It takes a `cid`, not an `id`, and the fallback below
+    // published it as `id` for as long as the method has existed — a
+    // documented parameter name that no caller could have used.
+    if method == "getHeldContent" {
+        return json!({
+            "type": "object",
+            "properties": { "cid": { "type": "string", "description": "a CIDv1 base32 sha2-256 content address — the block to fetch, which for a chunked file means the root first and then each linked block in turn" } },
+            "required": ["cid"],
+        });
+    }
     if method == "getRewardObservations" {
         return json!({
             "type": "object",
@@ -133,6 +144,12 @@ fn params_schema_for(method: &str) -> Value {
 }
 
 fn result_schema_for(method: &str) -> Value {
+    if method == "getHeldContent" {
+        return json!({
+            "type": "object",
+            "properties": { "content": { "type": ["string", "null"], "description": "base64 of the block this CID names, or null when this node does not hold it — an ordinary answer, not an error" } },
+        });
+    }
     if method.starts_with("send") {
         json!({ "description": "the created/updated resource's ID, or nothing meaningful to return for a state-transition-only method" })
     } else if let Some(name) = method.strip_prefix("get")
@@ -141,6 +158,29 @@ fn result_schema_for(method: &str) -> Value {
         json!({ "type": "array", "items": { "type": "object" }, "description": "see the corresponding record type in the owning openfiat-core crate" })
     } else {
         json!({ "type": ["object", "null"], "description": "see the corresponding record type in the owning openfiat-core crate; null if not found" })
+    }
+}
+
+/// The few methods whose contract is not implied by their name.
+///
+/// Deliberately short. A summary derived from the method name is honest
+/// for a lookup and useless for a method whose *point* is how the caller
+/// is meant to use the answer — which is one method so far.
+fn description_for(method: &str) -> Option<&'static str> {
+    match method {
+        "getHeldContent" => Some(
+            "Fetch one IPFS block this node holds, addressed by CID. This is the trustless \
+             fallback for an attachment a public gateway will not serve: the answer is bytes, \
+             and the caller checks them by hashing — sha2-256 of the block must equal the \
+             digest inside the CID it asked for. A node that returns anything else is caught \
+             by that check, so no trust in this node is required or implied. \
+             Content at or under 256 KiB is a single block and this is the whole file. Above \
+             that the CID names a dag-pb root: fetch it here, read its links (PBNode field 2, \
+             each PBLink's field 1 being a binary CID), fetch each linked block by that CID, \
+             and check every one the same way. Do not trust a link list from anywhere but a \
+             root block you have already hashed — that is what keeps the walk trustless.",
+        ),
+        _ => None,
     }
 }
 
@@ -163,12 +203,16 @@ pub fn build_document() -> Value {
         .method_names()
         .into_iter()
         .map(|name| {
-            json!({
+            let mut method = json!({
                 "name": name,
                 "summary": humanize(name),
                 "params": [{ "name": "params", "schema": params_schema_for(name) }],
                 "result": { "name": "result", "schema": result_schema_for(name) },
-            })
+            });
+            if let Some(description) = description_for(name) {
+                method["description"] = json!(description);
+            }
+            method
         })
         .collect();
 
@@ -225,7 +269,6 @@ mod tests {
             "getSession",
             "getIdentityClaim",
             "getAttachment",
-            "getHeldContent",
             "getAttachmentsBySettlement",
             "getSubscriptionById",
             "getDeliveryReceipt",
@@ -289,6 +332,36 @@ mod tests {
         assert!(
             properties["id"].is_null(),
             "it must not be described as a generic getX(id) read"
+        );
+    }
+
+    #[test]
+    fn the_content_fallback_names_the_parameter_it_actually_takes() {
+        // It was documented as `id` for as long as the method existed,
+        // because the `getX(id)` fallback caught it. An interface written
+        // against this reference would have got `InvalidParams` and no
+        // clue why — a durability fallback that exists and cannot be
+        // reached is not one.
+        let document = build_document();
+        let method = document["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "getHeldContent")
+            .expect("the method is on the surface");
+
+        let properties = &method["params"][0]["schema"]["properties"];
+        assert!(properties["cid"].is_object(), "{properties}");
+        assert!(properties["id"].is_null(), "{properties}");
+        assert!(
+            method["result"]["schema"]["properties"]["content"].is_object(),
+            "a caller has to be told the answer is base64 under `content`"
+        );
+        assert!(
+            method["description"]
+                .as_str()
+                .is_some_and(|d| d.contains("hashing")),
+            "the fallback is only trustless if the caller is told to check"
         );
     }
 

@@ -199,6 +199,15 @@ curl -s -X POST http://localhost:7080/rpc -H 'content-type: application/json' \
 # {"jsonrpc":"2.0","id":1,"result":{"content":null}}          ← not held
 ```
 
+The same call is how a client gets an attachment when the public gateway
+it normally reads through will not serve one — the failure your node is
+being paid to survive. It answers with one IPFS block, and the caller
+checks it by hashing: sha2-256 of the bytes must equal the digest inside
+the CID it asked for, so nothing about the node has to be trusted. For a
+chunked file, fetch the root, hash it, read its links, and fetch each
+linked block the same way; a node can withhold content that way but never
+substitute it.
+
 Pinning is opt-in rather than automatic on purpose. A node that fetched
 every CID it saw would store whatever anyone chose to point it at. What
 bounds the opted-in case is that an attachment must name a settlement, and

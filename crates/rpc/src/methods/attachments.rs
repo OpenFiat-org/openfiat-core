@@ -7,6 +7,29 @@
 //! authorization check `openfiat_content::store` deliberately located on
 //! the read path. A caller cannot ask for "all attachments" and filter
 //! client-side, because that method does not exist.
+//!
+//! # `getHeldContent` is also the interface's fallback, not only a
+//! challenger's question
+//!
+//! An OpenFiat client reads attachments through a public IPFS gateway.
+//! When that gateway does not have one — which is precisely the case the
+//! durability premium is paid to survive — this is where the bytes come
+//! from instead: the access node the client already selected, over the
+//! JSON-RPC it is already speaking, with the answer hashed against the
+//! CID it asked for. Nothing about the node has to be trusted for that to
+//! be safe, which is the whole property of a content address.
+//!
+//! Blocks rather than files, deliberately. Under 256 KiB the two are the
+//! same thing. Above it a CID names a dag-pb root, and a node that
+//! assembled the file and returned *that* would be handing back bytes the
+//! caller cannot check, since the root's digest covers the DAG node and
+//! not the file. So a client walks: fetch the root, hash it, read its
+//! links, fetch each linked block, hash each one. Every step is checked
+//! against a CID the client either brought with it or read out of a block
+//! it had already verified, so a dishonest node can withhold content but
+//! never substitute it. A `getAttachmentFile` returning assembled bytes
+//! would be one call instead of forty and unverifiable, which for
+//! evidence in a dispute is the wrong trade.
 
 use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, method_fn};
 use crate::error::RpcError;
