@@ -37,12 +37,10 @@ pub fn from_libp2p_peer_id(id: Libp2pPeerId) -> PeerId {
 
 /// The `12D3Koo…` spelling of a protocol peer id.
 ///
-/// `openfiat_types::PeerId` holds the libp2p peer id's own bytes, and
-/// serializes as a byte array — which is correct on the wire and unusable
-/// to a person. An operator reading a log line or a `getPeers` response
-/// needs the base58 form: it is what they recognise, and it is the form
-/// that goes in a multiaddr's `/p2p/` segment, so it can be pasted
-/// straight into an `--entrypoint`.
+/// `openfiat_types::PeerId` holds the libp2p peer id's own bytes and now
+/// renders as base58 in JSON itself, so this exists for the places that
+/// hold a `PeerId` and want the `12D3Koo…` string directly — a log line,
+/// a multiaddr's `/p2p/` segment — without going through serde.
 ///
 /// `None` for bytes that are not a peer id at all. Discovery caches a
 /// placeholder record for a peer it has connected to but not yet learned
@@ -201,6 +199,56 @@ mod dialable_tests {
 /// there is nothing to check, and the attacker becomes your only peer:
 /// they cannot forge events, since every event carries its origin's own
 /// signature, but they can decide which ones you see. Keep the peer id.
+/// Whether this host can reach the global IPv6 internet.
+///
+/// # Why this is asked at all
+///
+/// A `/dns/` name resolves to every address the host has records for, of
+/// both families. On an IPv4-only host — which most VPS instances are
+/// unless the operator asked otherwise — every IPv6 result is an address
+/// the kernel has no route to, and QUIC does not fail those gracefully:
+/// it fails each send with `NetworkUnreachable` and retries on the DHT's
+/// own republish interval. The observed result was one `WARN` per
+/// bootstrapper every five minutes, indefinitely, on a node that was
+/// otherwise working perfectly — it had already joined the DHT over IPv4
+/// and was announcing content. Noise that never stops trains an operator
+/// to ignore the log, which is worse than the original problem.
+///
+/// # How it is answered
+///
+/// By `connect`ing a UDP socket to a global address. `connect` on a UDP
+/// socket transmits nothing: it performs a route lookup and records a
+/// default destination. So this costs one syscall, sends no packet,
+/// contacts nobody, and returns exactly the error the transport would
+/// have hit. The address used is documentation-range (RFC 3849) so that
+/// even a misreading of this code cannot turn it into a probe of somebody
+/// else's host.
+///
+/// Answered once and cached: a machine does not usually gain a default
+/// route while a process runs, and re-probing per resolution would put a
+/// syscall in a loop for an answer that does not change. A node that
+/// *does* gain IPv6 picks it up on restart.
+fn host_has_ipv6_route() -> bool {
+    use std::sync::OnceLock;
+    static HAS_ROUTE: OnceLock<bool> = OnceLock::new();
+
+    *HAS_ROUTE.get_or_init(|| {
+        let Ok(socket) = std::net::UdpSocket::bind("[::]:0") else {
+            return false;
+        };
+        // 2001:db8::/32 — reserved for documentation, routed by nobody.
+        let reachable = socket.connect("[2001:db8::1]:443").is_ok();
+        if !reachable {
+            tracing::info!(
+                "no IPv6 route on this host: IPv6 addresses will be skipped when \
+                 resolving hostnames, since dialling them produces an unreachable \
+                 error on every attempt"
+            );
+        }
+        reachable
+    })
+}
+
 pub fn resolve_dns_multiaddr(
     address: &libp2p::Multiaddr,
 ) -> Result<Vec<libp2p::Multiaddr>, String> {
@@ -228,7 +276,11 @@ pub fn resolve_dns_multiaddr(
             .map(|socket| socket.ip())
             .filter(|ip| match ip {
                 std::net::IpAddr::V4(_) => want_v4,
-                std::net::IpAddr::V6(_) => want_v6,
+                // A `/dns/` name resolves to both families, and dialling
+                // an address family this host has no route to is not a
+                // slow failure — it is an immediate `NetworkUnreachable`
+                // on every send, retried forever, once per bootstrapper.
+                std::net::IpAddr::V6(_) => want_v6 && host_has_ipv6_route(),
             })
             .collect();
 
@@ -256,7 +308,42 @@ pub fn resolve_dns_multiaddr(
 
 #[cfg(test)]
 mod dns_tests {
-    use super::resolve_dns_multiaddr;
+    use super::{host_has_ipv6_route, resolve_dns_multiaddr};
+
+    /// The probe must report the same thing the transport would discover,
+    /// because reporting anything else either reintroduces the unreachable
+    /// dials or silently drops addresses that would have worked.
+    ///
+    /// Deliberately compares against a fresh, independent `connect` rather
+    /// than a hardcoded expectation: whether this machine has IPv6 is a
+    /// property of wherever the tests happen to run, and asserting either
+    /// answer would make this test a report on the CI runner.
+    #[test]
+    fn the_ipv6_probe_agrees_with_what_a_dial_would_find() {
+        let independent = std::net::UdpSocket::bind("[::]:0")
+            .and_then(|socket| socket.connect("[2001:db8::1]:443"))
+            .is_ok();
+        assert_eq!(host_has_ipv6_route(), independent);
+    }
+
+    /// On a host with no IPv6 route, resolution must not hand back an IPv6
+    /// address — that is the whole point. Vacuous where IPv6 works, which
+    /// is stated rather than hidden.
+    #[test]
+    fn no_ipv6_address_survives_resolution_without_a_route() {
+        if host_has_ipv6_route() {
+            return;
+        }
+        let addr: libp2p::Multiaddr = "/dns/localhost/udp/4001/quic-v1".parse().unwrap();
+        for resolved in resolve_dns_multiaddr(&addr).unwrap_or_default() {
+            assert!(
+                !resolved
+                    .iter()
+                    .any(|c| matches!(c, libp2p::multiaddr::Protocol::Ip6(_))),
+                "resolution produced {resolved}, which this host cannot route to"
+            );
+        }
+    }
 
     #[test]
     fn an_ip_multiaddr_is_returned_unchanged() {

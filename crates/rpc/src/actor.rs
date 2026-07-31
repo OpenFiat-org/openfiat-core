@@ -1509,7 +1509,7 @@ fn poll_snapshot_production<S: KvStore + 'static>(
                 gossip_bytes,
             );
             println!(
-                "openfiat-node: announced snapshot {} at height {} ({} bytes) from {}",
+                "openfiat-node: announced snapshot {} at slot {} ({} bytes) from {}",
                 id.as_str(),
                 metadata.slot,
                 metadata.size_bytes,
@@ -1564,7 +1564,7 @@ async fn poll_snapshot_bootstrap<S: KvStore + 'static>(
         {
             Ok(restored) => {
                 println!(
-                    "openfiat-node: bootstrapped from snapshot {} at height {} — {restored} \
+                    "openfiat-node: bootstrapped from snapshot {} at slot {} — {restored} \
                      state entries imported, gossip catch-up resumes from there instead of \
                      full replay",
                     candidate.id.as_str(),
