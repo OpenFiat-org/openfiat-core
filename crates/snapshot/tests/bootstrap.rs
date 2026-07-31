@@ -66,6 +66,7 @@ fn registration(keypair: &Keypair, service_id: &str, service_type: ServiceType) 
         supported_ofs: vec![1300],
         region: None,
         capabilities: vec![],
+        branding: None,
         pricing: None,
         payout_wallet: None,
         timestamp: Timestamp::now(),
@@ -491,7 +492,7 @@ async fn a_corrupted_download_is_rejected_and_changes_nothing() {
     drive_until(&mut nodes, |nodes| nodes[1].snapshots.latest().is_some()).await;
 
     // Corrupt the served file in place, keeping its length identical so
-    // the size check cannot catch this and the state root has to.
+    // the size check cannot be what catches this.
     let path = directory.join(format!(
         "{}{}",
         metadata.id.as_str(),
@@ -504,10 +505,23 @@ async fn a_corrupted_download_is_rejected_and_changes_nothing() {
 
     let client = reqwest::Client::new();
     let result = fetch::fetch_and_import(nodes[1].snapshots.index(), &client, &metadata.id).await;
-    assert_eq!(
-        result,
-        Err(SnapshotError::StateRootMismatch),
-        "a single flipped byte must be fatal"
+    // Refused — and deliberately not asserted to be refused by one named
+    // layer. A snapshot is a gzip stream, and a byte flipped inside the
+    // deflate data fails its own checksum long before a state root is
+    // computed over anything; which of the two catches a given flip
+    // depends on where in the stream it lands, so pinning this to
+    // `StateRootMismatch` was asserting a coincidence. What matters end to
+    // end is that corruption anywhere on the wire is fatal and leaves no
+    // trace, and that is what the three assertions here say. The digest
+    // itself is checked directly, against uncompressed bytes where it is
+    // unambiguously the thing deciding, in
+    // `store::tests::a_tampered_state_blob_fails_state_root_verification`.
+    assert!(
+        matches!(
+            result,
+            Err(SnapshotError::StateRootMismatch | SnapshotError::UnsupportedCompression)
+        ),
+        "a single flipped byte must be fatal, got {result:?}"
     );
     assert!(
         nodes[1].services.get(&merchant_service_id()).is_none(),

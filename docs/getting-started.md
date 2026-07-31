@@ -265,7 +265,38 @@ evicted last year's evidence is never asked about it and never loses its
 share for having done the right thing. Equally, no node can shrink what it
 can be asked by declaring a smaller window.
 
+#### What `--retention` does not cover
+
+It is a window on **content**, not a whole-node setting, and the rest of
+what your node keeps is bounded separately — or, in one case, not at all:
+
+| What your node holds | Bounded by |
+|---|---|
+| Content blocks | `--retention` |
+| Oracle, risk and session records | each record's own `expires_at` |
+| The gossip event log | a flat 7 days, whatever `--retention` says |
+| Snapshot announcements | the newest one per producer |
+| Known peers, registered services | how recently each was heard from |
+| Advertisements, reservations, settlements, disputes, attachments, identity claims, governance proposals, notifications | **nothing — they are kept for good** |
+
+The last row is deliberate. A wallet's reputation and trade count are
+computed by scanning every settlement, so deleting old ones would silently
+lower somebody's standing, make two nodes with different `--retention`
+disagree about the same wallet, and destroy the only copy of the figure —
+it cannot be recomputed from anything that is left. Attachment records are
+kept for a second reason: they are what tells your node which content
+blocks to hold, so pruning them would evict content as a side effect
+rather than by the retention rule.
+
+What that costs is bounded and worth knowing. Those are records of a few
+hundred bytes each, and a settlement exists only behind real escrow, so
+the families grow with the network's trading volume rather than with time.
+The bulk on a busy node is content — which is exactly what `--retention`
+governs. Pruning the rest needs their aggregates materialised first; that
+is [#108] and it is not done.
+
 [OFS-4100 §9.2]: https://github.com/OpenFiat-org/openfiat-specs
+[#108]: https://github.com/OpenFiat-org/openfiat-core/issues/108
 
 ## 5b. Snapshots, which are also already on
 
@@ -345,11 +376,14 @@ else's problem right up until the uploader stops paying.
 
 That makes size real rather than trivial. Retention is what bounds it —
 the content in a snapshot is the content in the node's window, with no
-second policy to keep in step — and there is a hard ceiling of **2 GiB**
-on the whole file, because every stage of the pipeline holds it in memory.
-A node whose state outgrows that fails to produce and says so, rather than
-writing an hourly file its peers would refuse; the fix is a shorter
-`--retention`.
+second policy to keep in step — and there is a hard ceiling of **512 MiB**
+on the whole file. The ceiling is about the *importer*, which gets no say
+in how big your snapshot is: it holds the compressed blob, the
+decompressed state and the decoded records all at once, and content blocks
+are already-compressed photos and PDFs that gzip does not shrink again, so
+the peak is close to three times the file size. A node whose state
+outgrows the ceiling fails to produce and says so, rather than writing an
+hourly file its peers would refuse; the fix is a shorter `--retention`.
 
 ### What a node will accept
 

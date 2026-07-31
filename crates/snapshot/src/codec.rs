@@ -34,19 +34,37 @@ use openfiat_crypto::hash::sha256;
 /// size follows real trading volume and the operator's retention window,
 /// and both of those are numbers somebody else chose.
 ///
-/// Every stage of the pipeline holds the whole thing in memory: the
-/// producer serializes into a `Vec`, the fetcher downloads into one, the
-/// importer decompresses into another. So this is a memory bound, not a
-/// policy about how much content is worth keeping. Two gibibytes is the
-/// largest a node with a few gigabytes of RAM can move through that
-/// pipeline without the import being the thing that kills it.
+/// This is a memory bound, not a policy about how much content is worth
+/// keeping — and the memory it bounds is not one copy of the snapshot but
+/// three, held at the same moment by the *importer*, which is the node
+/// that gets no say in how large the file is:
+///
+/// 1. the compressed blob, owned by `fetch::download` for the whole of
+///    the import it then calls;
+/// 2. the decompressed state, which [`decompress`] returns while (1) is
+///    still alive;
+/// 3. the decoded `StateSnapshot`, which `state::restore` deserializes
+///    out of (2) into owned `Vec`s while (2) is still alive.
+///
+/// (2) is not smaller than (1) in the case that matters. A snapshot's
+/// bulk is content blocks, and an attachment is a photographed receipt or
+/// a PDF — bytes that are already compressed and that gzip does not
+/// shrink again. So the peak is close to three times this constant.
+///
+/// Half a gibibyte is therefore the largest a node with a few gigabytes
+/// of RAM can move through that pipeline without the import being the
+/// thing that kills it. It was two gibibytes, on the same "a few
+/// gigabytes of RAM" reasoning, which had counted one copy where there
+/// are three: a node accepting the old ceiling could be asked to allocate
+/// six gigabytes to finish bootstrapping, and would be OOM-killed part
+/// way through by a snapshot that verified perfectly.
 ///
 /// A producer whose state exceeds this fails to produce, loudly, rather
 /// than writing a file every peer would refuse. The fix is a shorter
 /// `--retention`: the node keeps serving what it holds either way, and
 /// what it stops doing is handing its whole archive to newcomers in one
 /// blob.
-pub const MAX_SNAPSHOT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const MAX_SNAPSHOT_BYTES: u64 = 512 * 1024 * 1024;
 
 /// §10: "a cryptographic digest representing the complete snapshot state."
 pub fn state_root(state_bytes: &[u8]) -> [u8; 32] {

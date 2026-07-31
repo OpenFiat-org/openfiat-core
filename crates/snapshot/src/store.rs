@@ -25,6 +25,18 @@ const CHECKPOINT_KEY: &[u8] = b"local";
 /// lockout this prevents.
 pub const RESERVED_COLUMN_FAMILIES: &[&str] = &[SNAPSHOTS_COLUMN_FAMILY, CHECKPOINT_COLUMN_FAMILY];
 
+/// What makes one announcement newer than another from the same
+/// producer, for [`SnapshotIndex::prune_superseded`].
+///
+/// Slot first, because that is what `latest` and the bootstrap ordering
+/// already sort by, and a sweep that disagreed with them would delete the
+/// announcement a joining node was about to fetch. Creation time breaks a
+/// tie: a producer restarted onto the same slot announces twice, and one
+/// of the two has to be the survivor rather than both or neither.
+fn recency(metadata: &SnapshotMetadata) -> (u64, u64) {
+    (metadata.slot, metadata.created_at.as_millis())
+}
+
 pub struct SnapshotIndex<S> {
     store: S,
     services: Rc<Registry<S>>,
@@ -230,6 +242,73 @@ impl<S: KvStore> SnapshotIndex<S> {
         Ok(restored)
     }
 
+    /// Drops every announcement superseded by a newer one from the same
+    /// producer, returning how many were forgotten.
+    ///
+    /// # Why the index has to be swept at all
+    ///
+    /// `apply_announce` writes every announcement it accepts and nothing
+    /// ever removed one, so this column family grew by one entry per
+    /// producer per production interval, for the life of the node — the
+    /// only thing here that grows purely with time. `all()` deserializes
+    /// the lot on every `getSnapshots` call and on every bootstrap tick,
+    /// so it is not merely disk: it is a scan that gets slower forever.
+    ///
+    /// # Why the newest per producer is the right thing to keep
+    ///
+    /// A producer keeps exactly one file on disk
+    /// ([`crate::config::DEFAULT_RETAIN`]), so its second-newest
+    /// announcement already names a file that has been deleted. Keeping
+    /// that metadata does not preserve a fallback; it preserves a
+    /// download that 404s. The real fallback is another *producer's*
+    /// announcement, which this keeps — one per producer, however many
+    /// producers there are — and which is exactly what
+    /// `poll_snapshot_bootstrap` falls through to.
+    ///
+    /// Per producer rather than by age, because age would encode an
+    /// assumption about cadence that no producer is obliged to honour: a
+    /// node snapshotting weekly would have its only live announcement
+    /// swept by any window shorter than a week.
+    ///
+    /// # §24 says snapshot ids are permanent, and this does not break it
+    ///
+    /// Forgetting an id means `apply_announce` would accept it again
+    /// instead of refusing it as a duplicate. That buys nobody anything.
+    /// A re-announcement still has to be signed by a producer the service
+    /// registry vouches for, still has to name a slot above this node's
+    /// checkpoint, and still has to ship bytes of the announced size that
+    /// hash to the announced state root — every condition a *fresh* id
+    /// would have to meet. The duplicate check is bookkeeping that stops
+    /// a producer overwriting its own live announcement, not a security
+    /// boundary.
+    pub fn prune_superseded(&self) -> usize {
+        let held = self.all();
+        let mut newest: std::collections::HashMap<&openfiat_types::PeerId, &SnapshotMetadata> =
+            std::collections::HashMap::new();
+        for metadata in &held {
+            let best = newest.entry(&metadata.producer).or_insert(metadata);
+            if recency(metadata) > recency(best) {
+                *best = metadata;
+            }
+        }
+
+        let mut dropped = 0;
+        for metadata in &held {
+            let survives = newest
+                .get(&metadata.producer)
+                .is_some_and(|best| best.id == metadata.id);
+            if !survives
+                && self
+                    .store
+                    .delete(SNAPSHOTS_COLUMN_FAMILY, metadata.id.as_str().as_bytes())
+                    .is_ok()
+            {
+                dropped += 1;
+            }
+        }
+        dropped
+    }
+
     /// §9/§18: the slot of the most recent snapshot this node has
     /// actually imported — where gossip catch-up replay should resume
     /// from, instead of full history replay.
@@ -283,6 +362,7 @@ mod tests {
             supported_ofs: vec![1300],
             region: None,
             capabilities: vec![],
+            branding: None,
             pricing: None,
             payout_wallet: None,
             timestamp: Timestamp::now(),
@@ -603,5 +683,90 @@ mod tests {
             store.get("advertisements", b"ad-1").unwrap(),
             Some(b"newer state".to_vec())
         );
+    }
+
+    /// A producer that has been running for a day has announced twenty-four
+    /// snapshots and still holds one file. Without a sweep, every node that
+    /// heard those announcements carries all twenty-four for ever, and
+    /// re-reads them on every `getSnapshots` call and every bootstrap tick.
+    #[test]
+    fn a_producers_superseded_announcements_are_forgotten_and_its_newest_is_not() {
+        let (provider, services) = registered_provider(1);
+        let index = trusting(Rc::new(MemoryStore::new()), services, &provider);
+        for (id, slot) in [("snap-1", 100), ("snap-2", 200), ("snap-3", 300)] {
+            seed(&index, &provider, &announce(&provider, id, slot, b"state"));
+        }
+
+        assert_eq!(index.prune_superseded(), 2);
+        let held = index.all();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].id, SnapshotId::new("snap-3"));
+        assert_eq!(
+            index.latest().map(|m| m.slot),
+            Some(300),
+            "the announcement a joining node would actually fetch must survive"
+        );
+    }
+
+    /// The reason the sweep is per producer rather than by age: another
+    /// producer's snapshot is the fallback a joining node falls through to
+    /// when the first one it tries is unreachable, and a sweep that kept
+    /// only the single newest announcement in the index would delete every
+    /// fallback the network has.
+    #[test]
+    fn every_producer_keeps_one_announcement_however_stale_it_is_beside_the_others() {
+        let (fast, services) = registered_provider(1);
+        let slow = Keypair::from_seed([2u8; 32]);
+        services
+            .apply_registration(SignedRegistration::sign(
+                Registration {
+                    service_id: ServiceId::new("snapshot-svc-slow"),
+                    service_type: ServiceType::Infrastructure(
+                        InfrastructureService::SnapshotProvider,
+                    ),
+                    provider: peer_id_from_public_key(&slow.public_key()).unwrap(),
+                    provider_public_key: slow.public_key(),
+                    endpoints: vec![],
+                    supported_ofs: vec![1300],
+                    region: None,
+                    capabilities: vec![],
+                    branding: None,
+                    pricing: None,
+                    payout_wallet: None,
+                    timestamp: Timestamp::now(),
+                },
+                &slow,
+            ))
+            .unwrap();
+        let index = trusting(Rc::new(MemoryStore::new()), services, &fast);
+
+        seed(&index, &slow, &announce(&slow, "weekly-1", 10, b"state"));
+        for (id, slot) in [("hourly-1", 100), ("hourly-2", 200)] {
+            seed(&index, &fast, &announce(&fast, id, slot, b"state"));
+        }
+
+        assert_eq!(
+            index.prune_superseded(),
+            1,
+            "only the superseded hourly one"
+        );
+        let mut ids: Vec<String> = index
+            .all()
+            .into_iter()
+            .map(|m| m.id.as_str().to_string())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["hourly-2", "weekly-1"]);
+    }
+
+    #[test]
+    fn sweeping_an_index_that_holds_nothing_superseded_changes_nothing() {
+        let (provider, services) = registered_provider(1);
+        let index = trusting(Rc::new(MemoryStore::new()), services, &provider);
+        assert_eq!(index.prune_superseded(), 0, "an empty index");
+        seed(&index, &provider, &announce(&provider, "snap-1", 100, b"s"));
+        assert_eq!(index.prune_superseded(), 0);
+        assert_eq!(index.prune_superseded(), 0, "and it is idempotent");
+        assert_eq!(index.all().len(), 1);
     }
 }

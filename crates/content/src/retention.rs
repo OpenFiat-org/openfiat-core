@@ -28,6 +28,22 @@
 //! asked; an archival node keeps more and is asked no more. Neither is
 //! penalised for the other's choice, and no node can shrink its
 //! obligation by declaring a smaller window.
+//!
+//! # This is a window on content, and only on content
+//!
+//! `--retention` reads like a whole-node setting and is not one. A node
+//! keeps several other things — a gossip event log, snapshot
+//! announcements, records with their own `expires_at`, and the
+//! marketplace records, which are kept for good — and each is bounded by
+//! its own rule rather than by this type. `Retention` is passed to
+//! exactly the two places that hold bytes on a node's behalf: the
+//! eviction sweep over [`crate::HeldContent`], and pinning into an
+//! operator's own IPFS daemon.
+//!
+//! The whole list, and why each entry is bounded the way it is, lives in
+//! one place: `openfiat_rpc::actor::poll_expired_records`. Keeping it
+//! there rather than here is deliberate — this crate knows about content
+//! and the node crate is the only one that sees everything a node holds.
 
 use openfiat_types::Timestamp;
 
