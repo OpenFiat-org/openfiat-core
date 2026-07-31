@@ -56,28 +56,45 @@ const ENTRYPOINT_REDIAL_INTERVAL: std::time::Duration = std::time::Duration::fro
 /// (OFS-1500 §18). Purely local bookkeeping, so the cadence only bounds how
 /// promptly a departed provider disappears — an hour against a multi-day
 /// threshold is ample, and the sweep is a scan of a small column family.
-const REGISTRY_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+/// How often expired registrations are swept.
+///
+/// A minute. This was an hour, which was coherent with a seven-day
+/// expiry and is not with a ten-minute one: a record would sit up to an
+/// hour past the moment it expired, so the eviction window an operator
+/// was promised would have been "ten minutes to seventy". The sweep has
+/// to be fine-grained relative to the threshold it enforces, not to the
+/// lifetime of the thing it is sweeping.
+const REGISTRY_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// `[PROPOSED — NEEDS SIGN-OFF]`: how long a service may go without a health
-/// update before this node drops it.
+/// How often this node re-announces its own registry record.
 ///
-/// OFS-1500 §18 pairs a 90-second expiry with §11's 30-second heartbeat, and
-/// `protocol::EXPIRATION_THRESHOLD` carries that spec value. This is
-/// deliberately ~6700x larger, because **nothing heartbeats yet**: until
-/// `sendProviderHealthUpdate` was added alongside this constant there was no
-/// way for a provider to refresh `last_health_update` at all, so every
-/// registration still carries its registration timestamp. Sweeping at §18's
-/// value today would evict the entire registry — measured against the live
-/// devnet cluster, all 9 registered providers, none of which has ever sent a
-/// health update.
+/// OFS-1500 §11's heartbeat. Until now the record was published exactly
+/// once, at startup, and gossip only reaches whoever is connected at that
+/// moment — so two nodes that did not happen to be connected in that
+/// instant never learned of each other, permanently. Each answered
+/// `getProviders` with itself and looked like the whole network.
 ///
-/// Seven days leaves the existing population (oldest ~17h stale when this
-/// shipped) a wide margin to adopt the new heartbeat path, while still
-/// bounding the unbounded growth that motivated wiring the sweep on. Tighten
-/// this toward §18's 90 seconds once providers heartbeat routinely; that is a
-/// parameter change, not a code change.
-const REGISTRY_EXPIRATION_THRESHOLD: std::time::Duration =
-    std::time::Duration::from_secs(7 * 24 * 60 * 60);
+/// Re-announcing also refreshes `last_health_update` on every node
+/// holding the record, which is what `REGISTRY_EXPIRATION_THRESHOLD` is
+/// waiting on before it can come down from seven days to §18's ninety
+/// seconds.
+const REGISTRY_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long a service may go without a health update before this node
+/// drops it.
+///
+/// Ten minutes, against a two-minute heartbeat: five beats fit in the
+/// window, so a node survives losing four in a row before the network
+/// concludes it is gone. A registry that evicts a live node is worse than
+/// one that carries a dead one a little longer, and gossip delivery is
+/// not something a node can guarantee for any single message.
+///
+/// This was seven days, and had to be: nothing heartbeated, so every
+/// registration still carried its *registration* timestamp and sweeping
+/// at anything tight would have evicted the entire registry. Now that
+/// `REGISTRY_HEARTBEAT_INTERVAL` refreshes the record, the threshold can
+/// mean what it says.
+const REGISTRY_EXPIRATION_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// How often this node drains the notifications its gossip handlers have
 /// planned (`notify::NotificationDispatcher`) and hands them to the bound
@@ -1745,6 +1762,10 @@ where
             if let Some(advertisement) = &advertisement {
                 advertise_public_api(&state, advertisement, &advertise_keypair);
             }
+            let mut registry_heartbeat = tokio::time::interval(REGISTRY_HEARTBEAT_INTERVAL);
+            // The first tick fires immediately and would repeat the
+            // announcement just made above.
+            registry_heartbeat.reset();
             let notification_provider = HttpGateway::default();
             // A node that produces nothing still ticks this arm, which
             // returns immediately — cheaper than the conditional-arm
@@ -1861,6 +1882,16 @@ where
                     _ = registry_sweep.tick() => {
                         state.services.expire_stale(REGISTRY_EXPIRATION_THRESHOLD);
                     }
+                    _ = registry_heartbeat.tick() => {
+                        // Re-announced unconditionally rather than only
+                        // when a new peer appears: a peer that connects
+                        // and then misses one announcement would wait a
+                        // week for the next, and the cost here is one
+                        // small gossip message every thirty seconds.
+                        if let Some(advertisement) = &advertisement {
+                            advertise_public_api(&state, advertisement, &advertise_keypair);
+                        }
+                    }
                     _ = entrypoint_redial.tick() => {
                         let mut gossip = state.gossip.borrow_mut();
                         if !entrypoints.is_empty() && gossip.connected_peer_count() == 0 {
@@ -1929,6 +1960,30 @@ where
 mod tests {
     use super::*;
     use openfiat_chain::ChainError;
+
+    /// The three registry timings are one design, not three numbers, and
+    /// changing any of them in isolation breaks it.
+    #[test]
+    fn the_registry_timings_stay_coherent() {
+        // A node must survive losing several heartbeats in a row: gossip
+        // guarantees nothing about any single message, and a registry that
+        // evicts a live node is worse than one that carries a dead one a
+        // little longer.
+        let beats_per_window =
+            REGISTRY_EXPIRATION_THRESHOLD.as_secs() / REGISTRY_HEARTBEAT_INTERVAL.as_secs();
+        assert!(
+            beats_per_window >= 3,
+            "only {beats_per_window} heartbeats fit before expiry; a node would be              evicted for losing one or two messages"
+        );
+
+        // The sweep enforces the threshold, so it has to be fine-grained
+        // relative to it. An hourly sweep against a ten-minute expiry
+        // means records live up to seventy minutes, not ten.
+        assert!(
+            REGISTRY_SWEEP_INTERVAL * 5 <= REGISTRY_EXPIRATION_THRESHOLD,
+            "the sweep is too coarse to deliver the eviction window it enforces"
+        );
+    }
     use openfiat_storage::mem::MemoryStore;
 
     /// A service id must distinguish two nodes that differ *anywhere* in
