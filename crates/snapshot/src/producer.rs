@@ -259,4 +259,56 @@ mod tests {
         assert_eq!(remaining, 2, "retain: 2");
         let _ = std::fs::remove_dir_all(&directory);
     }
+
+    /// The shipped default keeps exactly one, and it is the newest.
+    ///
+    /// Counting the files is not enough on its own — a prune that kept the
+    /// *oldest* would also leave one behind, and would leave every joining
+    /// node fetching state that gets staler every cycle while the node
+    /// reports itself as producing normally.
+    #[test]
+    fn the_default_keeps_only_the_newest_snapshot() {
+        let directory = temporary_directory("prune-default");
+        let store = MemoryStore::new();
+        let mut newest = None;
+        for height in 1..=3 {
+            store
+                .put("advertisements", format!("ad-{height}").as_bytes(), b"x")
+                .unwrap();
+            let keypair = Keypair::from_seed([9u8; 32]);
+            let config = SnapshotConfig {
+                directory: directory.clone(),
+                retain: crate::config::DEFAULT_RETAIN,
+                ..SnapshotConfig::default()
+            };
+            newest = Some(
+                produce(
+                    &store,
+                    &["advertisements"],
+                    &config,
+                    &base_urls(),
+                    height,
+                    peer_id_from_public_key(&keypair.public_key()).unwrap(),
+                    keypair.public_key(),
+                )
+                .unwrap(),
+            );
+            // Modification time is what prune orders by, and a loop this
+            // tight can write two files inside one filesystem tick.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let files: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(files.len(), 1, "the default retains one");
+        assert_eq!(
+            files[0],
+            newest.unwrap().path,
+            "the one kept must be the newest, not merely one of them"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 }

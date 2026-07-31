@@ -245,7 +245,7 @@ listening on.
 |---|---|---|
 | Directory | `<ledger>/snapshots` — so `./openfiat-data/snapshots` unless you moved `--ledger` | `--snapshot-dir <DIR>` |
 | Interval | **one hour** | `--snapshot-interval-secs <SECS>` |
-| Kept on disk | the **3** newest | *not configurable* — see below |
+| Kept on disk | **1** — the newest; older ones are deleted once it is written | *not configurable* — see below |
 | Served at | `GET /snapshot/{id}` on `--rpc-bind-address` | — |
 
 ```bash
@@ -254,13 +254,24 @@ listening on.
 --no-snapshot-production                     # stop producing; still consumes
 ```
 
-Three retained is a deliberate floor rather than a tuning knob, and it is
-worth knowing why it is not a flag: it gives a mirror something to serve
-while the newest file is still being written, and leaves a fallback if the
-newest turns out to be unreachable — while stopping an unattended archival
-node from filling its own disk over months. If you need a different number,
-that is a change to `DEFAULT_RETAIN`, not a flag we have and did not
-document.
+One retained, because an older snapshot of the same node is not a
+different answer — only a staler one — and each copy costs the node's full
+serialized state again on disk.
+
+It is safe to keep only one because of two properties that are easy to
+miss. The new file is written **atomically and pruning happens only
+afterwards**, so the old one is removed only once the new one is durably in
+place under its final name; there is no window where a peer can fetch a
+half-written snapshot. And the fallback for an unreachable snapshot is the
+**next announcement**, not the previous local file — a joining node walks
+every verified announcement highest-first, so a producer whose file has
+just been replaced is one candidate that fails and the joiner moves on.
+
+The one real cost: a peer part-way through downloading the previous
+snapshot when a new one lands gets a truncated transfer. That is a retry
+rather than a failure — the download is checked against `state_root` and
+refused if short, and the retry picks up the newer snapshot, which is the
+one it wanted anyway.
 
 Size follows your `--retention` window, since a snapshot carries the state
 the node actually holds. An archival node's snapshots grow without bound;

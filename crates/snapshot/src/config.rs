@@ -32,12 +32,35 @@ use std::time::Duration;
 /// negligible against a cluster of this size.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// How many produced snapshots stay on disk. Three gives a mirror
-/// something to serve while the newest is still being written and leaves
-/// a fallback if the newest turns out to be unreachable, without letting
-/// an unattended node fill its own disk — the failure mode an unbounded
-/// directory reaches on a long-running archival node and nowhere else.
-pub const DEFAULT_RETAIN: usize = 3;
+/// How many produced snapshots stay on disk.
+///
+/// One. A joining node wants the newest state it can get; an older
+/// snapshot of the same node is not a different answer, only a staler one,
+/// and keeping several means paying for the full serialized state of this
+/// node several times over on every disk that runs one.
+///
+/// This was three, on the reasoning that a mirror needs something to serve
+/// while the newest is written and a fallback if the newest turns out to
+/// be unreachable. Neither survives contact with how the code actually
+/// works:
+///
+/// - **Nothing is ever served half-written.** [`crate::producer::produce`]
+///   writes atomically and prunes only afterwards, so the old file is
+///   removed only once the new one is durably in place under its final
+///   name. There is no window where a peer can see a partial snapshot.
+/// - **The fallback is the next announcement, not the previous file.**
+///   Bootstrap walks every verified announcement highest-first, so a
+///   producer whose file has just been replaced is simply one candidate
+///   that fails; the joining node moves to the next. Keeping a stale
+///   local copy for that purpose was solving a problem the fall-through
+///   already solves, at the cost of two extra full copies of state.
+///
+/// The one real cost: a peer part-way through downloading the previous
+/// snapshot when a new one lands gets a truncated transfer. That is a
+/// retry rather than a failure — the download is verified against
+/// `state_root` and refused if short, and the retry picks up the newer
+/// snapshot, which is the one it wanted.
+pub const DEFAULT_RETAIN: usize = 1;
 
 #[derive(Debug, Clone)]
 pub struct SnapshotConfig {
