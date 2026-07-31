@@ -8,7 +8,7 @@
 //! produces the same signature, and therefore the same Event ID.
 
 use openfiat_crypto::sha256;
-use openfiat_types::{EventId, EventType, PeerId, Signature, Timestamp};
+use openfiat_types::{EventEnvelope, EventId, EventType, PeerId, Signature, Timestamp};
 
 /// The bytes an origin signs, and every recipient re-derives to verify —
 /// everything in the envelope except the signature itself.
@@ -49,6 +49,26 @@ pub fn compute(
         input.extend_from_slice(&signature_bytes);
     }
     EventId::from_bytes(sha256(&input))
+}
+
+/// The id `event` would be assigned if it were being originated now.
+///
+/// §5 makes the id a *function of the event*, and this is the only thing
+/// that makes it one on arrival as well as at origination. Without it the
+/// id is simply a field the sender fills in, and every property built on
+/// it — duplicate suppression (§11), replay prevention (§10) — is a
+/// property of what the sender chose to write there rather than of the
+/// event. The fields not covered are exactly the two the protocol expects
+/// to change in flight (`ttl`) or attaches no meaning to on receipt
+/// (`priority`); everything the signature covers, this covers.
+pub fn matches(event: &EventEnvelope) -> bool {
+    compute(
+        &event.event_type,
+        &event.payload,
+        event.timestamp,
+        &event.origin,
+        &event.signature,
+    ) == event.id
 }
 
 #[cfg(test)]

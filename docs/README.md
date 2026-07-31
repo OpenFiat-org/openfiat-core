@@ -6,6 +6,7 @@ Extended documentation for `openfiat-core` lives here. High-level architecture a
 
 - `architecture.md` — component architecture and diagrams
 - `getting-started.md` — local setup walkthrough
+- `dishonest-node.md` — what a lying, replaying, flooding or withholding node can and cannot achieve, and what a client must verify for itself (#111)
 - `region-is-declared.md` — why a service's region is self-declared rather than geolocated (#173)
 - `reviews.md` — post-trade reviews: why they never touch the reputation score, and who can read one (#103)
 - `trade-channel.md` — sealed payment details and trade chat: what an arbitrator and a node operator can each see, and why presence is not in the event log (#100, #101)

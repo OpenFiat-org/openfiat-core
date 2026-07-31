@@ -10,6 +10,26 @@ pub enum GossipError {
     UnauthorizedOrigination,
     ProtocolVersionMismatch,
     MalformedPayload,
+    /// The `id` on the envelope is not the id §5 says that envelope's own
+    /// content computes to.
+    ///
+    /// The id is the dedup key, and until this check existed it was
+    /// whatever the sender wrote in the field — nothing derived it from
+    /// the content it names. Anyone relaying a genuinely signed event
+    /// could therefore mint unlimited *distinct* copies of it by varying
+    /// only the id, each one passing the signature check (the signature
+    /// covers everything but the id), each one a fresh entry in every
+    /// peer's dedup store, and each one re-forwarded. That is not a
+    /// replay the store can recognise, because the store recognises ids.
+    EventIdMismatch,
+    /// Stamped further into the future than any clock disagreement
+    /// explains.
+    ///
+    /// The event log is pruned by timestamp, so a far-future stamp is a
+    /// permanent entry: it is never older than any cutoff and never
+    /// swept. Refusing it is what keeps "the log holds a bounded window"
+    /// true against a sender who chooses the field.
+    TimestampTooFarAhead,
     /// An event signed by *this node's own key* that this node did not
     /// emit — proof that another process holds the same identity.
     ///
@@ -29,6 +49,11 @@ impl GossipError {
             Self::UnauthorizedOrigination => ErrorCode::InvalidRequest,
             Self::ProtocolVersionMismatch => ErrorCode::ProtocolVersionMismatch,
             Self::MalformedPayload => ErrorCode::DeserializationError,
+            // An envelope whose id is not its content's id is malformed in
+            // the one way that matters: the field the protocol indexes it
+            // by does not describe it.
+            Self::EventIdMismatch => ErrorCode::DeserializationError,
+            Self::TimestampTooFarAhead => ErrorCode::InvalidRequest,
             // The closest existing code: an event whose origin cannot be
             // what it claims is exactly a signature that does not
             // establish what it appears to.

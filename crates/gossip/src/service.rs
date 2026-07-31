@@ -17,7 +17,7 @@ use libp2p::request_response::{self, Message, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
 use openfiat_crypto::{Keypair, verify};
 use openfiat_network::behaviour::OpenFiatBehaviourEvent;
-use openfiat_network::identity::{from_libp2p_peer_id, is_dialable, public_key_from_peer_id};
+use openfiat_network::identity::{is_dialable, public_key_from_peer_id};
 use openfiat_network::{Envelope, Multiaddr, Node, PeerId as Libp2pPeerId};
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
@@ -37,6 +37,63 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// what it points at is verified on arrival regardless.
 pub const MIN_OBSERVERS: usize = 2;
 
+/// The largest hop budget this node will honour on a *received* event.
+///
+/// `ttl` is the one envelope field the protocol expects to change in
+/// flight, so it cannot be signed, so any relay can write anything into
+/// it. `docs/architecture.md` puts the default budget at 8 (OGP §12's own
+/// illustrative figure); this is double that, which leaves room for a
+/// network wider than anything measured while still bounding what one
+/// inflated field can cost.
+///
+/// Clamped rather than rejected, and that direction is the whole point. A
+/// node that refused an over-budget TTL would hand every relay a
+/// censorship button: raise the field on someone else's genuinely signed
+/// event and watch the rest of the network throw it away. Clamping costs
+/// the liar nothing to attempt and gains them nothing either — the event
+/// travels exactly as far as an honest one.
+pub const MAX_TTL: u8 = 16;
+
+/// How far ahead of this node's clock an event may be stamped.
+///
+/// Generous, because the cost of getting this wrong is refusing honest
+/// traffic from a node whose clock is merely bad, and no node here runs
+/// NTP by mandate. Bounded, because the event log is pruned by timestamp
+/// and nothing else: an event stamped in the year 3000 is older than no
+/// cutoff that will ever be computed, so it is a permanent row that one
+/// unauthenticated push put there.
+pub const MAX_CLOCK_SKEW_MILLIS: u64 = 5 * 60 * 1_000;
+
+/// How many distinct addresses this node will remember having been told
+/// it is reachable at.
+///
+/// `observed_addr` arrives from identify and is whatever the peer wrote —
+/// a peer can report a fresh, well-formed, undialable-by-anyone address on
+/// every reconnection forever. This is a diagnostic set shown to an
+/// operator; the number of genuine answers is the number of interfaces
+/// this host has, so a cap three orders of magnitude above that costs
+/// nothing real and turns "grows until the node dies" into "the operator
+/// sees the first 256 addresses anyone claimed".
+pub const MAX_REACHABLE_ADDRESSES: usize = 256;
+
+/// How many reporters are remembered per claimed address.
+///
+/// [`MIN_OBSERVERS`] is the only question this set answers, so anything
+/// past a handful is recorded and never read. Without a cap it is a
+/// per-address list of every peer id an attacker cares to mint.
+const MAX_OBSERVERS_PER_ADDRESS: usize = 8;
+
+/// The byte budget for one recovery response.
+///
+/// [`openfiat_network::MAX_ENVELOPE_BYTES`] is a hard 1 MiB and the codec
+/// refuses to *write* anything larger, so before this existed a node whose
+/// log had grown past a megabyte — which is every node that has been up a
+/// day — answered every recovery request by building the whole log,
+/// failing to encode it, and sending nothing at all. Recovery did not
+/// degrade at scale, it stopped. This serves as much as will fit, oldest
+/// first, and says so.
+const RECOVERY_RESPONSE_BUDGET_BYTES: usize = 768 * 1024;
+
 /// What happened when an event was offered to [`GossipService::receive_event`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiveOutcome {
@@ -52,16 +109,39 @@ pub struct GossipService<S> {
     self_peer_id: PeerId,
     self_roles: Vec<NodeRole>,
     subscription: Subscription,
-    /// Known peers' public keys, needed to verify signatures on events
-    /// they originate. Auto-populated on every new connection (see
-    /// `handle`'s `ConnectionEstablished` arm, `public_key_from_peer_id`)
-    /// since Ed25519 peer ids embed their own key; `openfiat-discovery`'s
-    /// peer cache or an explicit `register_peer_key` call (as tests do)
-    /// can also seed it ahead of a connection. Kept as a plain map here
-    /// rather than a second `KvStore` generic so this crate doesn't need
-    /// to know discovery's storage backing.
+    /// Public keys supplied out of band, consulted only for an origin
+    /// whose `PeerId` does not carry its own key.
+    ///
+    /// It used to be the *only* source, filled from `ConnectionEstablished`
+    /// — which quietly meant a node could verify its direct peers and
+    /// nobody else. An event relayed two hops names an origin this node
+    /// has never connected to, so its key was absent and `validate`
+    /// returned `InvalidSignature`: epidemic propagation past one hop did
+    /// not work off the test harness, and every test in this workspace
+    /// hid it by calling `register_peer_key` for the whole cluster by
+    /// hand. [`Self::origin_key`] now derives the key from the origin
+    /// itself, which is both the fix and strictly safer — a derived
+    /// binding cannot be told a different key for an identity, and a map
+    /// fed by remote input cannot grow without bound if nothing remote
+    /// feeds it.
     peer_keys: HashMap<PeerId, PublicKey>,
     connected: HashSet<Libp2pPeerId>,
+    /// Peers already given their one recovery response on the current
+    /// connection.
+    ///
+    /// A recovery request is ~30 bytes and its answer is as much of the
+    /// event log as fits in an envelope. Answering every request as it
+    /// arrives makes this node a ~25,000x amplifier that any connected
+    /// peer can point at itself for free, in a loop. The honest protocol
+    /// asks exactly once, on connect ([`Self::request_recovery`]), so
+    /// once per connection is the full honest need — and re-arming costs
+    /// an attacker a real reconnection, handshake included, rather than
+    /// nothing.
+    ///
+    /// Keyed on the connection, cleared in `ConnectionClosed`, so it is
+    /// bounded by the peers actually connected rather than by everyone
+    /// who has ever asked.
+    recovery_served: HashSet<Libp2pPeerId>,
     /// Everything this node has been told it is reachable at, learned
     /// rather than configured — safe to show an operator, and not what
     /// anything decides on (that is `corroborated_addresses`).
@@ -134,20 +214,19 @@ impl<S: KvStore> GossipService<S> {
         subscription: Subscription,
     ) -> Self {
         let self_peer_id = node.local_peer_id();
-        // This node's own key goes in the map beside its peers'.
+        // Empty, and it stays empty on an ordinary node: `origin_key`
+        // derives every key it needs from the origin's own `PeerId`,
+        // including this node's.
         //
-        // Not vanity: `validate` looks the origin's key up here, so
-        // without it an event claiming our origin fails as
-        // `InvalidSignature` and we can never tell a clumsy spoof from
-        // proof that our wallet is running somewhere else. That
-        // distinction is the entire value of `is_impostor`, and it is
-        // only available once the signature has actually been checked —
-        // which is also why the impostor test runs *after* validation
-        // rather than before it. Checking first would let anyone trigger
-        // a false alarm on our node by putting our peer id in an
-        // envelope they never signed.
-        let mut peer_keys = HashMap::new();
-        peer_keys.insert(self_peer_id.clone(), keypair.public_key());
+        // That an event claiming *our* origin can still be verified is
+        // load-bearing, not incidental. `is_impostor` distinguishes a
+        // clumsy spoof from proof that our wallet is running somewhere
+        // else, and that distinction only exists once the signature has
+        // actually been checked — which is why the impostor test runs
+        // after validation rather than before it. Checking first would
+        // let anyone raise a false alarm on our node by putting our peer
+        // id in an envelope they never signed.
+        let peer_keys = HashMap::new();
         Self {
             node,
             store,
@@ -157,6 +236,7 @@ impl<S: KvStore> GossipService<S> {
             subscription,
             peer_keys,
             connected: HashSet::new(),
+            recovery_served: HashSet::new(),
             reachable: BTreeSet::new(),
             bound: BTreeSet::new(),
             observed_by: HashMap::new(),
@@ -288,7 +368,7 @@ impl<S: KvStore> GossipService<S> {
     pub fn receive_event(
         &mut self,
         from: Option<Libp2pPeerId>,
-        event: EventEnvelope,
+        mut event: EventEnvelope,
     ) -> ReceiveOutcome {
         if self.store.contains(&event.id) {
             return ReceiveOutcome::Duplicate;
@@ -300,6 +380,12 @@ impl<S: KvStore> GossipService<S> {
             self.identity_conflicts += 1;
             return ReceiveOutcome::Rejected(GossipError::IdentityInUseElsewhere);
         }
+        // Before it is stored, so this node never relays a budget it
+        // would not itself have granted, and never hands the next hop a
+        // number it got from a stranger. Outside the signature by
+        // necessity — see [`MAX_TTL`] for why the answer is to clamp it
+        // rather than to refuse the event.
+        event.ttl = event.ttl.min(MAX_TTL);
         self.store.put(&event);
         self.notify(&event);
         if self.should_forward(&event) {
@@ -359,19 +445,51 @@ impl<S: KvStore> GossipService<S> {
         self.forward_filters.iter_mut().all(|filter| filter(event))
     }
 
-    /// §9 local validation, applied identically to received events:
-    /// protocol version and signature. Full "event authorization" for a
-    /// *remote* origin (was this peer actually allowed to emit this event
-    /// type?) needs the Service Registry (Phase 5) to know what roles a
-    /// remote `PeerId` holds — [`authorization::is_authorized`] is only
-    /// applied at local origination for now.
+    /// The public key an origin's `PeerId` *is*, with the out-of-band map
+    /// as a fallback.
+    ///
+    /// A libp2p Ed25519 peer id is the size-inline multihash of the
+    /// protobuf-encoded public key — the key is carried in the identifier,
+    /// not hashed away (see `openfiat_network::identity`). Deriving it
+    /// here means the origin→key binding is a fact about the envelope
+    /// rather than something this node was told, so there is no
+    /// registration an attacker could win a race on and no key this node
+    /// can be missing for an origin several hops away.
+    fn origin_key(&self, origin: &PeerId) -> Option<PublicKey> {
+        Libp2pPeerId::from_bytes(origin.as_bytes())
+            .ok()
+            .and_then(public_key_from_peer_id)
+            .or_else(|| self.peer_keys.get(origin).copied())
+    }
+
+    /// §9 local validation, applied identically to received events.
+    ///
+    /// Four questions, in the order that makes the cheap ones cheap:
+    /// is this the protocol version we speak, is the event stamped
+    /// somewhere a clock could plausibly be, did the identity it names
+    /// actually sign it, and is its id the id its own content computes
+    /// to. The last is what stops a valid signature from being reusable
+    /// as raw material — see [`GossipError::EventIdMismatch`].
+    ///
+    /// Full "event authorization" for a *remote* origin (was this peer
+    /// actually allowed to emit this event type?) needs the Service
+    /// Registry to know what roles a remote `PeerId` holds —
+    /// [`authorization::is_authorized`] is applied at local origination
+    /// only, and `docs/dishonest-node.md` says plainly what that leaves
+    /// open.
     fn validate(&self, event: &EventEnvelope) -> Result<(), GossipError> {
         if event.version != 1 {
             return Err(GossipError::ProtocolVersionMismatch);
         }
+        if event.timestamp.as_millis()
+            > Timestamp::now()
+                .as_millis()
+                .saturating_add(MAX_CLOCK_SKEW_MILLIS)
+        {
+            return Err(GossipError::TimestampTooFarAhead);
+        }
         let public_key = self
-            .peer_keys
-            .get(&event.origin)
+            .origin_key(&event.origin)
             .ok_or(GossipError::InvalidSignature)?;
         let signable = event_id::signable_bytes(
             &event.event_type,
@@ -380,7 +498,12 @@ impl<S: KvStore> GossipService<S> {
             event.timestamp,
             &event.payload,
         );
-        verify(public_key, &signable, &event.signature).map_err(|_| GossipError::InvalidSignature)
+        verify(&public_key, &signable, &event.signature)
+            .map_err(|_| GossipError::InvalidSignature)?;
+        if !event_id::matches(event) {
+            return Err(GossipError::EventIdMismatch);
+        }
+        Ok(())
     }
 
     /// Re-forward a received event, decrementing its TTL first (§12).
@@ -437,19 +560,17 @@ impl<S: KvStore> GossipService<S> {
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                 let peer_id = *peer_id;
                 self.connected.insert(peer_id);
-                // Two independently-started nodes have no advance
-                // knowledge of each other's signing key — recover it
-                // from the connection's own peer id (see
-                // `public_key_from_peer_id`'s doc) so `validate` can
-                // verify events this peer originates without a prior,
-                // separate key-exchange step.
-                if let Some(public_key) = public_key_from_peer_id(peer_id) {
-                    self.register_peer_key(from_libp2p_peer_id(peer_id), public_key);
-                }
+                // No key is cached here any more. `origin_key` recovers
+                // the signing key from whichever `PeerId` an envelope
+                // actually names, which covers this peer and every origin
+                // behind it; caching one entry per connection covered
+                // only the first of those and grew by one row for every
+                // identity anyone cared to dial us from.
                 self.request_recovery(peer_id);
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 self.connected.remove(peer_id);
+                self.recovery_served.remove(peer_id);
             }
             // What libp2p actually bound, one event per interface once a
             // wildcard is expanded. A local fact — nobody is being taken
@@ -489,23 +610,43 @@ impl<S: KvStore> GossipService<S> {
     ///
     /// The claim is kept against its reporter and never merged into a
     /// count, so a peer that reconnects a hundred times still counts once.
+    ///
+    /// Every byte of this comes from a peer: identify's `observed_addr` is
+    /// a free-text field on the far side of the connection. So both
+    /// dimensions are capped — how many addresses are remembered at all
+    /// ([`MAX_REACHABLE_ADDRESSES`]) and how many reporters are remembered
+    /// per address ([`MAX_OBSERVERS_PER_ADDRESS`]) — because the question
+    /// being answered needs [`MIN_OBSERVERS`] of them and the supply is a
+    /// stranger's imagination.
     fn record_observed(&mut self, peer: Libp2pPeerId, address: Multiaddr) {
-        if is_dialable(&address) {
-            self.observed_by
-                .entry(address.clone())
-                .or_default()
-                .insert(peer);
+        // Deliberately gated on `reachable`, not on `observed_by`'s own
+        // size: an address that was too late to be remembered as reachable
+        // must not accumulate reporters either, or the cap moves the
+        // growth one map to the left.
+        if is_dialable(&address) && self.record_reachable(address.clone()) {
+            let reporters = self.observed_by.entry(address).or_default();
+            if reporters.len() < MAX_OBSERVERS_PER_ADDRESS {
+                reporters.insert(peer);
+            }
         }
-        self.record_reachable(address);
     }
 
-    fn record_reachable(&mut self, address: Multiaddr) {
+    /// Whether `address` is one this node is now tracking — either just
+    /// added, or already known. `false` means it was refused: undialable,
+    /// or past [`MAX_REACHABLE_ADDRESSES`].
+    fn record_reachable(&mut self, address: Multiaddr) -> bool {
         if !is_dialable(&address) {
-            return;
+            return false;
         }
-        if self.reachable.insert(address.clone()) {
-            self.newly_reachable.push(address);
+        if self.reachable.contains(&address) {
+            return true;
         }
+        if self.reachable.len() >= MAX_REACHABLE_ADDRESSES {
+            return false;
+        }
+        self.reachable.insert(address.clone());
+        self.newly_reachable.push(address);
+        true
     }
 
     /// Every address this node has been told it is reachable at, from
@@ -597,22 +738,64 @@ impl<S: KvStore> GossipService<S> {
                 self.acknowledge(channel);
             }
             MESSAGE_TYPE_RECOVERY_REQUEST => {
-                if let Ok(request) = wire::from_bytes::<RecoveryRequest>(&envelope.payload) {
-                    let events = self.store.all_for_subscription(&request.subscription);
-                    let payload = wire::to_bytes(&RecoveryResponse { events })
-                        .expect("RecoveryResponse always serializes");
-                    let response =
-                        Envelope::new(OFS_SPEC, MESSAGE_TYPE_RECOVERY_RESPONSE, 1, payload);
-                    let _ = self
-                        .node
-                        .swarm
-                        .behaviour_mut()
-                        .envelope
-                        .send_response(channel, response);
-                }
+                let events = match wire::from_bytes::<RecoveryRequest>(&envelope.payload) {
+                    // Once per connection. A second ask is answered with
+                    // nothing rather than ignored: the answer is what
+                    // frees the sender's inbound stream slot, and a
+                    // request left unanswered is the resource leak
+                    // `MESSAGE_TYPE_PUSH_ACK` exists to avoid.
+                    Ok(request) if self.recovery_served.insert(peer) => {
+                        self.recoverable_for(&request.subscription)
+                    }
+                    // Undecodable payloads land here too, for the same
+                    // reason: a peer that can make this node hold a
+                    // stream open by sending garbage has found a cheaper
+                    // flood than sending anything real.
+                    _ => Vec::new(),
+                };
+                let payload = wire::to_bytes(&RecoveryResponse { events })
+                    .expect("RecoveryResponse always serializes");
+                let response = Envelope::new(OFS_SPEC, MESSAGE_TYPE_RECOVERY_RESPONSE, 1, payload);
+                let _ = self
+                    .node
+                    .swarm
+                    .behaviour_mut()
+                    .envelope
+                    .send_response(channel, response);
             }
-            _ => {}
+            // A message type this node does not implement is still an
+            // inbound request holding a stream slot. Dropping the channel
+            // costs the sender nothing and costs this node a slot until
+            // the timeout, which is a flood anyone can mount with a typo.
+            _ => self.acknowledge(channel),
         }
+    }
+
+    /// As much of the event log as one recovery response can carry,
+    /// oldest first.
+    ///
+    /// Oldest first because the requester is filling a gap it has already
+    /// fallen behind: giving it the front of the gap lets it make
+    /// contiguous progress, and anything new arrives by push anyway now
+    /// that it is connected. A peer whose gap is wider than one response
+    /// does not converge from this log at all and needs a snapshot —
+    /// which is the same boundary `EventStore::prune_before` already
+    /// draws, reached for a different reason.
+    fn recoverable_for(&self, subscription: &Subscription) -> Vec<EventEnvelope> {
+        let mut events = self.store.all_for_subscription(subscription);
+        events.sort_by_key(|event| event.timestamp);
+
+        let mut budget = RECOVERY_RESPONSE_BUDGET_BYTES;
+        let mut fits = Vec::new();
+        for event in events {
+            let size = wire::to_bytes(&event).map(|bytes| bytes.len()).unwrap_or(0);
+            let Some(remaining) = budget.checked_sub(size) else {
+                break;
+            };
+            budget = remaining;
+            fits.push(event);
+        }
+        fits
     }
 
     /// Returns the empty ack that frees the sender's inbound stream slot.

@@ -92,6 +92,8 @@ tokenomics numbers — implementation defaults, not spec violations.
 | Session heartbeat interval | `15s` | OFNP §18 | Frequent enough to catch a dead peer well inside a 30-min reservation timeout window, cheap enough not to matter at scale. |
 | Heartbeat timeout (session termination) | `45s` (3 missed heartbeats) | OFNP §18, §22 | Tolerates one lost packet without flapping; three strikes avoids a single dropped heartbeat killing an otherwise-healthy session. |
 | Gossip TTL (default hop budget) | `8` | OGP §12 | Matches the spec's own illustrative example; revisit once real cluster diameter is measured. |
+| Gossip TTL ceiling honoured on receipt | `16` | OGP §12 | `ttl` changes in flight so it cannot be signed, and a relay may write anything into it. Clamped rather than refused — refusing would let any relay destroy someone else's signed event by raising a number nobody signed. See `docs/dishonest-node.md`. |
+| Gossip clock skew allowance | `5m` | OGP §5, §10 | The event log is pruned by timestamp and nothing else, so a far-future stamp is a permanent row. Generous enough that a merely-wrong clock is still believed. |
 | Gossip dedup/replay-protection retention | `24h` | OGP §10–11 | Covers the longest-lived trade lifecycle (reservation → settlement → dispute window) with margin; bounded so the RocksDB dedup store doesn't grow unbounded. |
 | Service Registry health-update interval | `30s` | SRP §11 | Matches other liveness signals in this table; cheap for a registered service to sustain continuously. |
 | Service Registry auto-expiration threshold | `90s` (3 missed health updates) | SRP §18 | Same 3-strikes tolerance as session heartbeats, scaled to the health-update interval. |
