@@ -7,3 +7,4 @@ Extended documentation for `openfiat-core` lives here. High-level architecture a
 - `architecture.md` — component architecture and diagrams
 - `getting-started.md` — local setup walkthrough
 - `region-is-declared.md` — why a service's region is self-declared rather than geolocated (#173)
+- `reviews.md` — post-trade reviews: why they never touch the reputation score, and who can read one (#103)

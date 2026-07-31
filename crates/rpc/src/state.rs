@@ -34,6 +34,7 @@ use openfiat_registry::Registry as ServiceRegistry;
 use openfiat_registry::earnings::EarningsLedger;
 use openfiat_reputation::ReputationView;
 use openfiat_reservations::ReservationRegistry;
+use openfiat_reviews::{ReviewRegistry, ReviewsView};
 use openfiat_rewards::{LivenessLedger, RewardParams};
 use openfiat_risk::RiskIndex;
 use openfiat_serialization::wire;
@@ -123,6 +124,7 @@ pub const SNAPSHOT_COLUMN_FAMILIES: &[&str] = &[
     "risk_records",
     "sessions",
     openfiat_content::CONTENT_COLUMN_FAMILY,
+    openfiat_reviews::REVIEWS_COLUMN_FAMILY,
 ];
 
 /// What this node will accept into each column family of a snapshot.
@@ -303,6 +305,17 @@ pub struct NodeState<S> {
     /// is announced when the count changes rather than on every tick.
     pub reported_identity_conflicts: std::cell::Cell<u64>,
     pub reputation: ReputationView<Rc<S>>,
+    /// Post-trade reviews as published — the write path and the gossip
+    /// handler. Never a read path for anything a client sees: a stored
+    /// review is an unattributed claim until a settlement says who was
+    /// entitled to make it, which is `reviews_view`'s job.
+    pub reviews: Rc<ReviewRegistry<Rc<S>>>,
+    /// The same reviews joined against the settlements that authorize
+    /// them. Everything `methods::reputation` hands out comes from here,
+    /// and it is also where the public/party split lives — see
+    /// `openfiat_reviews::view` on why a public review names its subject
+    /// and neither its author nor its trade.
+    pub reviews_view: ReviewsView<Rc<S>>,
     pub governance: Rc<GovernanceRegistry<Rc<S>>>,
     pub services: Rc<ServiceRegistry<Rc<S>>>,
     /// What each registered service has earned, and the outstanding
@@ -406,6 +419,8 @@ impl<S: KvStore + 'static> NodeState<S> {
             Rc::clone(&settlements),
             Rc::clone(&disputes),
         );
+        let reviews = Rc::new(ReviewRegistry::new(Rc::clone(&store)));
+        let reviews_view = ReviewsView::new(Rc::clone(&reviews), Rc::clone(&settlements));
         let identity = Rc::new(IdentityRegistry::new(Rc::clone(&store)));
         let attachments = Rc::new(AttachmentRegistry::new(Rc::clone(&store)));
         let held_content = Rc::new(HeldContent::new(Rc::clone(&store)));
@@ -494,6 +509,7 @@ impl<S: KvStore + 'static> NodeState<S> {
         attach!(sessions);
         attach!(identity);
         attach!(attachments);
+        attach!(reviews);
 
         // Governance's `VoteCast` is the one event type this node never
         // applies straight off the wire (self-reported or gossiped
@@ -563,6 +579,8 @@ impl<S: KvStore + 'static> NodeState<S> {
             content_provided: RefCell::new(std::collections::HashSet::new()),
             reported_identity_conflicts: std::cell::Cell::new(0),
             reputation,
+            reviews,
+            reviews_view,
             governance,
             services,
             provider_earnings,
@@ -682,7 +700,132 @@ impl<S: KvStore + 'static> NodeState<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openfiat_storage::Entry;
     use openfiat_storage::mem::MemoryStore;
+
+    /// The column families a real node's RocksDB is opened with:
+    /// [`SNAPSHOT_COLUMN_FAMILIES`] plus the node-local ones `openfiat-node`
+    /// adds. Spelled out here because that binary owns its own list and
+    /// this crate cannot see it; only the first part is the part a new
+    /// registry has to join.
+    const NODE_LOCAL: &[&str] = &[
+        "gossip_events",
+        "snapshot_metadata",
+        "snapshot_checkpoint",
+        "peers",
+    ];
+
+    #[derive(Debug)]
+    struct UndeclaredColumnFamily(String);
+
+    impl std::fmt::Display for UndeclaredColumnFamily {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "column family {:?} was not declared when the database was opened",
+                self.0
+            )
+        }
+    }
+
+    impl std::error::Error for UndeclaredColumnFamily {}
+
+    /// A store that behaves the way RocksDB does: a column family not
+    /// named when the database was opened does not exist, and every
+    /// access to it fails.
+    ///
+    /// [`MemoryStore`] creates a column family on first write, so a
+    /// registry whose family nobody declared passes every in-memory test
+    /// in this workspace and then silently drops every write on a real
+    /// node — a bug that has already shipped here once. This wrapper is
+    /// what makes that failure visible in a test.
+    struct DeclaredOnly {
+        inner: MemoryStore,
+    }
+
+    impl DeclaredOnly {
+        fn new() -> Self {
+            Self {
+                inner: MemoryStore::new(),
+            }
+        }
+
+        fn check(cf: &str) -> Result<(), UndeclaredColumnFamily> {
+            if SNAPSHOT_COLUMN_FAMILIES.contains(&cf) || NODE_LOCAL.contains(&cf) {
+                return Ok(());
+            }
+            Err(UndeclaredColumnFamily(cf.to_string()))
+        }
+    }
+
+    impl KvStore for DeclaredOnly {
+        type Error = UndeclaredColumnFamily;
+
+        fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+            Self::check(cf)?;
+            Ok(self.inner.get(cf, key).expect("MemoryStore is infallible"))
+        }
+
+        fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), Self::Error> {
+            Self::check(cf)?;
+            self.inner
+                .put(cf, key, value)
+                .expect("MemoryStore is infallible");
+            Ok(())
+        }
+
+        fn delete(&self, cf: &str, key: &[u8]) -> Result<(), Self::Error> {
+            Self::check(cf)?;
+            self.inner
+                .delete(cf, key)
+                .expect("MemoryStore is infallible");
+            Ok(())
+        }
+
+        fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<Entry>, Self::Error> {
+            Self::check(cf)?;
+            Ok(self
+                .inner
+                .iter_prefix(cf, prefix)
+                .expect("MemoryStore is infallible"))
+        }
+    }
+
+    /// Drives a real write through the real registry against a store that
+    /// refuses undeclared column families, which is the only way this
+    /// suite can tell "the registry works" from "the registry works on a
+    /// node that happens to have opened its column family".
+    #[test]
+    fn a_review_survives_a_store_that_only_accepts_declared_column_families() {
+        use openfiat_crypto::Keypair;
+        use openfiat_network::identity::peer_id_from_public_key;
+        use openfiat_reviews::{Rating, Review, SignedReviewPublish};
+        use openfiat_settlement::SettlementId;
+        use openfiat_types::Timestamp;
+
+        let state = NodeState::new_for_test(DeclaredOnly::new());
+        let author = Keypair::generate();
+        let review = Review {
+            settlement: SettlementId::new("s-1"),
+            author: peer_id_from_public_key(&author.public_key()).unwrap(),
+            author_public_key: author.public_key(),
+            rating: Rating::Five,
+            comment: "paid on time".to_string(),
+            created_at: Timestamp::from_millis(1),
+        };
+
+        state
+            .reviews
+            .apply_publish(SignedReviewPublish::sign(review, &author))
+            .expect("a well-signed review is accepted");
+        assert_eq!(
+            state.reviews.all().len(),
+            1,
+            "the write went nowhere — {:?} is missing from SNAPSHOT_COLUMN_FAMILIES, so a \
+             real node never opens it and every review is silently discarded",
+            openfiat_reviews::REVIEWS_COLUMN_FAMILY,
+        );
+    }
 
     #[test]
     fn composes_without_panicking_and_starts_empty() {

@@ -24,6 +24,7 @@ const WALLET_PARAM_METHODS: &[&str] = &[
     "getWalletChallenge",
     "getIdentityClaimsByWallet",
     "getReputation",
+    "getReviews",
     "getSubscription",
     "getDeliveryReceiptsByWallet",
     "getRiskRecordsByWallet",
@@ -46,6 +47,7 @@ const WALLET_PROOF_METHODS: &[&str] = &[
     "getMyReservations",
     "getMyDisputes",
     "getMyTrades",
+    "getMyReviews",
 ];
 
 const NO_PARAM_METHODS: &[&str] = &[
@@ -192,6 +194,21 @@ fn result_schema_for(method: &str) -> Value {
 /// is meant to use the answer.
 fn description_for(method: &str) -> Option<&'static str> {
     match method {
+        "getReviews" => Some(
+            "What people who traded with this wallet said about it: a 1-5 star rating, up to \
+             500 characters, and the day it was written. Deliberately not the author and not \
+             the settlement — a review names two people, and publishing both ends would \
+             rebuild the trade graph that `getSettlements` and `getCounterparties` refuse to \
+             hand out. Both parties may review the same trade, so a settlement id here would \
+             give the pairing away even with the author removed; that is why it is absent \
+             too, and why the timestamp is truncated to the day. \
+             This is opinion, not evidence: it is signed, so you know somebody who really \
+             traded with this wallet wrote it, and nothing more than that. It is deliberately \
+             kept out of `getReputation`, which is recomputed by every node from signed \
+             settlement and dispute events and cannot be talked up or down. Show both; do not \
+             merge them. Publish with `sendReviewPublish`, which only a party to a settled \
+             trade may do, once per trade, about the other party.",
+        ),
         "getReferenceData" => Some(
             "The countries, fiat currencies, payment methods and token mints to offer a user to choose from: \
              one list every client reads, instead of each interface shipping its own copy and \
@@ -391,6 +408,33 @@ mod tests {
             properties["id"].is_null(),
             "it must not be described as a generic getX(id) read"
         );
+    }
+
+    /// An integrator reading this document decides what to render. If it
+    /// described the public review read as an ordinary `getX(id)` lookup,
+    /// or said nothing about what a review is worth, the predictable
+    /// result is a client that averages reviews into the reputation score
+    /// and an SDK that expects an author field this surface will never
+    /// send.
+    #[test]
+    fn the_public_review_read_says_what_it_withholds_and_why() {
+        let document = build_document();
+        let method = document["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "getReviews")
+            .expect("the method must be dispatchable and documented");
+
+        let properties = &method["params"][0]["schema"]["properties"];
+        assert!(properties["wallet"].is_object(), "{properties}");
+        assert!(properties["id"].is_null(), "{properties}");
+
+        let description = method["description"]
+            .as_str()
+            .expect("a redacted read must explain its redaction");
+        assert!(description.contains("not the author"));
+        assert!(description.contains("getReputation"));
     }
 
     #[test]

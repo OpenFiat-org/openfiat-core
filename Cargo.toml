@@ -17,6 +17,7 @@ members = [
     "crates/identity",
     "crates/wallet",
     "crates/reputation",
+    "crates/reviews",
     "crates/rewards",
     "crates/slashing",
     "crates/trade",

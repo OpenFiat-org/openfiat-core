@@ -3687,6 +3687,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "openfiat-reviews"
+version = "0.1.0"
+dependencies = [
+ "openfiat-crypto",
+ "openfiat-network",
+ "openfiat-reservations",
+ "openfiat-serialization",
+ "openfiat-settlement",
+ "openfiat-storage",
+ "openfiat-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "openfiat-rewards"
 version = "0.1.0"
 dependencies = [
@@ -3740,6 +3755,7 @@ dependencies = [
  "openfiat-registry",
  "openfiat-reputation",
  "openfiat-reservations",
+ "openfiat-reviews",
  "openfiat-rewards",
  "openfiat-risk",
  "openfiat-serialization",
