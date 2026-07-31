@@ -66,6 +66,7 @@ const NO_PARAM_METHODS: &[&str] = &[
     "getLatestBlockhash",
     "getPeers",
     "getSettledVolume",
+    "getReferenceData",
 ];
 
 fn params_schema_for(method: &str) -> Value {
@@ -144,6 +145,23 @@ fn params_schema_for(method: &str) -> Value {
 }
 
 fn result_schema_for(method: &str) -> Value {
+    // The `getX` fallback below would describe this one as "null if not
+    // found", which is wrong twice over: it is a compiled-in table, so it
+    // is never absent, and an integrator told the answer may be null
+    // writes a branch that can only ever be dead code.
+    if method == "getReferenceData" {
+        return json!({
+            "type": "object",
+            "properties": {
+                "revision": { "type": "string", "description": "digest of the four lists below — changes only when they do, so a client can cache on it and two nodes can be compared for agreement by one string" },
+                "currencies": { "type": "array", "items": { "type": "object", "properties": { "code": { "type": "string" }, "name": { "type": "string" }, "symbol": { "type": "string" } } } },
+                "countries": { "type": "array", "items": { "type": "object", "properties": { "code": { "type": "string", "description": "ISO 3166-1 alpha-2, or a stable pseudo-code (XNC, XTR) for a territory that has none — do not assume two characters" }, "name": { "type": "string" }, "currency": { "type": "string" }, "alt_currencies": { "type": "array", "items": { "type": "string" }, "description": "other currencies in genuine circulation, most-used first" } } } },
+                "payment_methods": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "category": { "type": "string", "enum": ["MobileMoney", "BankTransfer", "Fintech", "Cash"] }, "aliases": { "type": "array", "items": { "type": "string" }, "description": "lowercase spellings for type-ahead; never shown" } } } },
+                "mints": { "type": "array", "items": { "type": "object", "properties": { "mint": { "type": "string", "description": "base58 mint address — the only field that identifies anything; look up by this, never by symbol" }, "symbol": { "type": "string", "description": "a nickname, cluster-dependent and spoofable — `USDC` names a different address on each cluster, and this network's wrapped SOL is named `wSOL`, not `SOL`" }, "decimals": { "type": "integer", "description": "base-unit exponent, carried beside the symbol so a client cannot name a mint while guessing how to scale it" } } }, "description": "mints this build can put a name to. NOT the settlement allowlist — that lives on chain in the escrow program's FeeConfig, is governance-updatable, and the two sets are not guaranteed equal in either direction" },
+            },
+            "required": ["revision", "currencies", "countries", "payment_methods", "mints"],
+        });
+    }
     if method == "getHeldContent" {
         return json!({
             "type": "object",
@@ -171,9 +189,32 @@ fn result_schema_for(method: &str) -> Value {
 ///
 /// Deliberately short. A summary derived from the method name is honest
 /// for a lookup and useless for a method whose *point* is how the caller
-/// is meant to use the answer — which is one method so far.
+/// is meant to use the answer.
 fn description_for(method: &str) -> Option<&'static str> {
     match method {
+        "getReferenceData" => Some(
+            "The countries, fiat currencies, payment methods and token mints to offer a user to choose from: \
+             one list every client reads, instead of each interface shipping its own copy and \
+             two honest builds disagreeing about what the network supports. Adding a payment \
+             method is a node update, not a release of every app. \
+             It is a suggestion list and never a validation gate. Nothing on this surface \
+             consults it: an advertisement in a currency absent from `currencies` is accepted \
+             exactly as one that is present, because a currency code is checked for form and \
+             deliberately not for membership of any list — a node built last year must not \
+             reject an advertisement in a currency added since. Do not use this to decide what \
+             is permitted, and do let a user name a rail it does not list. \
+             `mints` is the same kind of answer for token addresses: what this build calls each \
+             mint, so an interface shows `USDC` rather than `2bHPi5hA4z…`. Look mints up by \
+             address; a symbol is a nickname, is cluster-dependent, and travels on no record \
+             this protocol carries. In particular this network settles wrapped SOL under the \
+             name `wSOL`, so a client routing on `SOL` matches nothing. This is emphatically \
+             NOT the settlement allowlist: that lives on chain in the escrow program's \
+             `FeeConfig`, governance can change it, and the two sets are not guaranteed equal \
+             in either direction. \
+             The lists are compiled into the node rather than derived from anything, so they \
+             are still hand-maintained tables; they are one set of tables. Cache on `revision`, \
+             which changes when and only when the data does.",
+        ),
         "getContentFile" => Some(
             "Fetch a whole file this node holds, addressed by CID: the DAG is walked here and \
              the chunks come back concatenated, one call instead of forty. The caller cannot \

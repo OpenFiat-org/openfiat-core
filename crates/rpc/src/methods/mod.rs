@@ -14,6 +14,7 @@ pub mod notifications;
 pub mod oracles;
 pub mod providers;
 pub mod redaction;
+pub mod reference;
 pub mod reputation;
 pub mod reservations;
 pub mod rewards;
@@ -51,6 +52,7 @@ pub fn build_table<S: KvStore + 'static>() -> MethodTable<S> {
     sessions::register(&mut table);
     chain::register(&mut table);
     volume::register(&mut table);
+    reference::register(&mut table);
     table
 }
 
