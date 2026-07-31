@@ -51,6 +51,30 @@ pub struct CidParams {
     pub cid: String,
 }
 
+/// A caller handing this node bytes to hold, with the CID they believe
+/// those bytes have.
+#[derive(serde::Deserialize)]
+pub struct PutContentParams {
+    pub cid: String,
+    /// Base64, one block. A file larger than a block is uploaded as its
+    /// blocks and its dag-pb root, in separate calls — the same shape
+    /// `getHeldContent` serves them back in, and for the same reason:
+    /// every unit that moves is one the caller can check by itself.
+    pub content: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct PutContentResponse {
+    /// The CID this node stored the bytes under — always the one it was
+    /// given, since bytes that do not hash to it are refused rather than
+    /// stored somewhere else.
+    pub cid: String,
+    /// False when this node was already holding it. Not an error: an
+    /// interface retrying an upload should get the same answer as the
+    /// first time.
+    pub stored: bool,
+}
+
 #[derive(serde::Serialize)]
 pub struct HeldContentResponse {
     /// Base64. Absent when this node does not hold the content, which is
@@ -74,6 +98,49 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                         .held_content
                         .get(&cid)
                         .map(|bytes| BASE64.encode(bytes)),
+                })
+            },
+        ),
+    );
+    table.register(
+        "sendContentPut",
+        method_fn(
+            |state: &NodeState<S>,
+             params: PutContentParams|
+             -> Result<PutContentResponse, RpcError> {
+                let cid = openfiat_crypto::Cid::parse(&params.cid)
+                    .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let content = BASE64
+                    .decode(params.content.as_bytes())
+                    .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+
+                let already = state.held_content.holds(&cid);
+                // `keep` recomputes the digest and refuses bytes that are
+                // not what the CID names. That check is what makes an
+                // open ingress safe to expose: a caller chooses what to
+                // store but never chooses *where*, so nobody can overwrite
+                // an existing CID with different bytes, and the worst an
+                // abusive caller achieves is spending their own quota of
+                // this node's retention window.
+                //
+                // Run unconditionally, including when the CID is already
+                // held. Skipping it as an optimisation meant a mismatched
+                // upload against known content returned success — the
+                // caller was told their bytes were stored under a CID that
+                // named somebody else's, which is the exact confusion this
+                // check exists to prevent. `keep` is idempotent, so there
+                // is nothing to save by skipping it.
+                if !state.held_content.keep(&cid, &content) {
+                    return Err(RpcError::InvalidParams(
+                        "the content does not hash to the CID given, or exceeds the \
+                         maximum block size"
+                            .to_string(),
+                    ));
+                }
+
+                Ok(PutContentResponse {
+                    cid: cid.as_str().to_string(),
+                    stored: !already,
                 })
             },
         ),
