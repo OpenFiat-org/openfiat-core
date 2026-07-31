@@ -63,13 +63,46 @@ devnet deployment is a separate, explicit step:
 ```bash
 # Requires devnet SOL in the deploying wallet — request via
 # `solana airdrop 2` or a devnet faucet if rate-limited.
-anchor deploy --provider.cluster devnet
+solana program deploy \
+  --url devnet \
+  --program-id <PROGRAM_ID from devnet-addresses.json> \
+  target/deploy/<program>.so
 ```
+
+> **Upgrade in place, with an explicit `--program-id`. Never `anchor deploy`
+> against devnet, and never `anchor keys sync`.**
+>
+> The program keypairs under `target/deploy/` were destroyed by a `cargo
+> clean` and the files there now are freshly generated ones whose addresses
+> do **not** match the deployed programs. `anchor deploy` deploys to the
+> address of the local keypair file, so running it would publish a second
+> copy of each program at a brand-new address, leaving the live one — with
+> every config singleton, vault and staked token behind it — orphaned.
+> `anchor keys sync` would do the same damage more quietly, by rewriting
+> `declare_id!` to match the wrong keys. `anchor build` prints a program-ID
+> mismatch warning for the same reason; it is expected, and building still
+> produces correct binaries because `declare_id!` is the source of truth.
+>
+> An upgrade does not need the program keypair. `--program-id` accepts a
+> plain address for an existing program, and authority comes from the
+> upgrade authority (`devnet_programs.upgradeAuthority`), which is a
+> separate key and must stay separate from the token mint authority.
 
 After a real devnet deploy, record the resulting program ID in
 `devnet-addresses.json` (created once the first program — `presale` — is
 actually deployed; see Phase 3's exit criteria) — that file is the canonical
 source every later phase (core wiring, SDKs, the app) reads from.
+
+Verify every upgrade against the binary that was tested, rather than
+trusting the deploy's success:
+
+```bash
+solana program dump <PROGRAM_ID> /tmp/onchain.so --url devnet
+# The dump is the binary followed by zero padding to the account's
+# capacity. Assert the padding is all zero BEFORE trimming it — trimming
+# first and hashing the head matches even if the tail holds other bytes —
+# then compare sha256 of the head against target/deploy/<program>.so.
+```
 
 ## OPEN token genesis
 
