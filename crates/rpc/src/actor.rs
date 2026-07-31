@@ -363,7 +363,18 @@ async fn drive_gossip<S: KvStore + 'static>(state: &NodeState<S>) {
 
     let peer_id = gossip.node.libp2p_peer_id();
     for address in gossip.take_newly_reachable() {
-        tracing::info!(
+        // Debug, not info. This was written when a node had a handful of
+        // peers and each new address was news. On the public IPFS DHT the
+        // node is told its observed address by every peer it meets, and a
+        // NAT gives a different source port to most of them — so "new
+        // address" fired 528 times a minute, drowning everything else in
+        // the log.
+        //
+        // Nothing is lost by dropping the level: the addresses this node
+        // believes it is reachable at are a *state*, not an event, and
+        // `getPeers` already answers for them under `announced_addresses`.
+        // A list you can ask for beats a stream you have to reassemble.
+        tracing::debug!(
             entrypoint = %format!("{address}/p2p/{peer_id}"),
             "reachable at a new address; peers can use this as --entrypoint"
         );
@@ -1695,6 +1706,14 @@ where
                         .dial(peer.clone())
                         .expect("failed to dial a configured bootstrap peer");
                 }
+                // So a failure to reach one of these is reported, while the
+                // ordinary churn of the public DHT is not.
+                state.discovery.borrow_mut().set_entrypoints(
+                    network
+                        .bootstrap_peers
+                        .iter()
+                        .filter_map(openfiat_network::identity::peer_id_in_multiaddr),
+                );
             }
             let table: MethodTable<S> = crate::methods::build_table();
             let mut chain_poll = tokio::time::interval(CHAIN_POLL_INTERVAL);

@@ -61,6 +61,23 @@ pub struct DiscoveryService<S> {
     /// outside its own network. See [`Self::add_external_address`].
     external_addresses: Vec<String>,
     connected: HashSet<Libp2pPeerId>,
+    /// Peers a connection failure has already been reported for.
+    ///
+    /// libp2p retries a failed dial, and Kademlia retries harder: without
+    /// this, one unreachable bootstrapper produced a warning every few
+    /// hundred milliseconds forever. Noise that never stops trains an
+    /// operator to ignore the log, so the first failure per peer is a
+    /// warning and the rest are debug. Cleared on a successful connection,
+    /// so a peer that later goes away warns again.
+    reported_failures: HashSet<Libp2pPeerId>,
+    /// The peers named by `--entrypoint`.
+    ///
+    /// This node joins the public IPFS DHT, so it dials thousands of peers
+    /// it has no relationship with and a share of those dials fail — that
+    /// is ordinary and belongs at debug. A configured entrypoint failing is
+    /// not ordinary: it may be the only route this node has to the
+    /// protocol network. Only those are worth an operator's attention.
+    entrypoints: HashSet<Libp2pPeerId>,
     target_peers: usize,
 }
 
@@ -84,6 +101,8 @@ impl<S: KvStore> DiscoveryService<S> {
             self_addresses: Vec::new(),
             external_addresses: Vec::new(),
             connected: HashSet::new(),
+            reported_failures: HashSet::new(),
+            entrypoints: HashSet::new(),
             target_peers,
         }
     }
@@ -162,7 +181,12 @@ impl<S: KvStore> DiscoveryService<S> {
                 // populated by the OFS-1100 exchange rather than by the
                 // connection, so an empty list means "no peer record" and
                 // not necessarily "no peer".
-                tracing::info!(peer = %peer_id, "connected to a peer");
+                // Debug, not info: on the public DHT this fires over a
+                // thousand times a minute, and a line per connection is
+                // not an operator signal, it is a denial of one. The peer
+                // count is the signal, and `getPeers` answers it.
+                tracing::debug!(peer = %peer_id, "connected to a peer");
+                self.reported_failures.remove(peer_id);
                 self.on_connected(*peer_id, node);
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
@@ -181,15 +205,27 @@ impl<S: KvStore> DiscoveryService<S> {
             // registrations, and looks from the outside like a network of
             // one.
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                tracing::warn!(
-                    peer = ?peer_id,
-                    error = %error,
-                    "could not connect to a peer; if this was the only \
-                     --entrypoint, this node has nobody to replicate with"
-                );
+                let is_entrypoint = peer_id.is_some_and(|peer| self.entrypoints.contains(&peer));
+                let first_time = peer_id.is_none_or(|peer| self.reported_failures.insert(peer));
+                if is_entrypoint && first_time {
+                    tracing::warn!(
+                        peer = ?peer_id,
+                        error = %error,
+                        "could not connect to a peer; if this was the only \
+                         --entrypoint, this node has nobody to replicate with"
+                    );
+                } else {
+                    tracing::debug!(peer = ?peer_id, error = %error, "peer still unreachable");
+                }
             }
             _ => {}
         }
+    }
+
+    /// Record which peers came from `--entrypoint`, so a failure to reach
+    /// one can be told apart from the ordinary churn of a public DHT.
+    pub fn set_entrypoints(&mut self, peers: impl IntoIterator<Item = Libp2pPeerId>) {
+        self.entrypoints = peers.into_iter().collect();
     }
 
     /// Whether an envelope on the shared request-response protocol is this

@@ -120,6 +120,19 @@ mod tests {
     }
 }
 
+/// The `/p2p/` component of a multiaddr, if it names one.
+///
+/// A multiaddr without one addresses a host rather than a peer, which is
+/// exactly the distinction `resolve_dns_multiaddr`'s doc explains is the
+/// security of keeping the component: there is nothing for the handshake
+/// to check the far side against.
+pub fn peer_id_in_multiaddr(address: &libp2p::Multiaddr) -> Option<Libp2pPeerId> {
+    address.iter().find_map(|component| match component {
+        libp2p::multiaddr::Protocol::P2p(peer) => Some(peer),
+        _ => None,
+    })
+}
+
 /// Whether a multiaddr is one another peer could actually dial.
 ///
 /// Excludes the bind wildcards `0.0.0.0` and `::`, which mean "every

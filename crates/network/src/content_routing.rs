@@ -131,7 +131,7 @@ pub fn resolved_bootstrappers() -> Vec<(Libp2pPeerId, Multiaddr)> {
         let Ok(address) = entry.parse::<Multiaddr>() else {
             continue;
         };
-        let Some(peer) = peer_id_of(&address) else {
+        let Some(peer) = crate::identity::peer_id_in_multiaddr(&address) else {
             debug_assert!(false, "a bootstrapper without a peer id: {entry}");
             continue;
         };
@@ -141,14 +141,6 @@ pub fn resolved_bootstrappers() -> Vec<(Libp2pPeerId, Multiaddr)> {
         }
     }
     resolved
-}
-
-/// The `/p2p/` component of an address, if it has one.
-fn peer_id_of(address: &Multiaddr) -> Option<Libp2pPeerId> {
-    address.iter().find_map(|component| match component {
-        libp2p::multiaddr::Protocol::P2p(peer) => Some(peer),
-        _ => None,
-    })
 }
 
 /// Kept as a function so this module does not take a logging dependency
@@ -174,7 +166,7 @@ mod tests {
         for entry in BOOTSTRAPPERS {
             let address: Multiaddr = entry.parse().expect(entry);
             assert!(
-                peer_id_of(&address).is_some(),
+                crate::identity::peer_id_in_multiaddr(&address).is_some(),
                 "{entry} would let DNS decide who this node talks to"
             );
         }
@@ -187,7 +179,9 @@ mod tests {
         // depends on somebody else being up.
         let peers: std::collections::HashSet<_> = BOOTSTRAPPERS
             .iter()
-            .filter_map(|entry| peer_id_of(&entry.parse::<Multiaddr>().unwrap()))
+            .filter_map(|entry| {
+                crate::identity::peer_id_in_multiaddr(&entry.parse::<Multiaddr>().unwrap())
+            })
             .collect();
         assert_eq!(peers.len(), BOOTSTRAPPERS.len());
     }
