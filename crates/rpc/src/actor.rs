@@ -80,6 +80,15 @@ const REGISTRY_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// seconds.
 const REGISTRY_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// How often the connected-peer count is checked for an arrival.
+///
+/// The heartbeat alone converges, but slowly: a node that joins one second
+/// after a beat waits nearly two minutes before anyone tells it what
+/// exists, and for that whole window the two of them answer `getProviders`
+/// differently. Two seconds bounds that to something a person will not
+/// see.
+const PEER_ARRIVAL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// How long a service may go without a health update before this node
 /// drops it.
 ///
@@ -1723,14 +1732,24 @@ where
                         .dial(peer.clone())
                         .expect("failed to dial a configured bootstrap peer");
                 }
-                // So a failure to reach one of these is reported, while the
-                // ordinary churn of the public DHT is not.
+                // So a failure to reach one of these is reported.
                 state.discovery.borrow_mut().set_entrypoints(
                     network
                         .bootstrap_peers
                         .iter()
                         .filter_map(openfiat_network::identity::peer_id_in_multiaddr),
                 );
+                // The private DHT has no public bootstrappers, so these
+                // same peers seed its routing table.
+                let seeds: Vec<_> = network
+                    .bootstrap_peers
+                    .iter()
+                    .filter_map(|address| {
+                        openfiat_network::identity::peer_id_in_multiaddr(address)
+                            .map(|peer| (peer, address.clone()))
+                    })
+                    .collect();
+                gossip.node.seed_content_routing(&seeds);
             }
             let table: MethodTable<S> = crate::methods::build_table();
             let mut chain_poll = tokio::time::interval(CHAIN_POLL_INTERVAL);
@@ -1763,6 +1782,10 @@ where
                 advertise_public_api(&state, advertisement, &advertise_keypair);
             }
             let mut registry_heartbeat = tokio::time::interval(REGISTRY_HEARTBEAT_INTERVAL);
+            // Watched so a newly-arrived peer is told about this node at
+            // once. Cheap: a comparison of two integers.
+            let mut peer_arrival = tokio::time::interval(PEER_ARRIVAL_POLL_INTERVAL);
+            let mut last_peer_count = 0usize;
             // The first tick fires immediately and would repeat the
             // announcement just made above.
             registry_heartbeat.reset();
@@ -1891,6 +1914,19 @@ where
                         if let Some(advertisement) = &advertisement {
                             advertise_public_api(&state, advertisement, &advertise_keypair);
                         }
+                    }
+                    _ = peer_arrival.tick() => {
+                        // A peer that has just connected knows nothing of
+                        // this node until the next heartbeat, which is up
+                        // to two minutes of the two of them disagreeing
+                        // about who exists. Re-announcing the moment the
+                        // peer count rises closes that window to the tick
+                        // below rather than to the heartbeat.
+                        let now = state.gossip.borrow().connected_peer_count();
+                        if now > last_peer_count && let Some(a) = &advertisement {
+                            advertise_public_api(&state, a, &advertise_keypair);
+                        }
+                        last_peer_count = now;
                     }
                     _ = entrypoint_redial.tick() => {
                         let mut gossip = state.gossip.borrow_mut();

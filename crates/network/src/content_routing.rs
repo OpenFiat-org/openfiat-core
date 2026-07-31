@@ -56,37 +56,37 @@ use crate::identity::resolve_dns_multiaddr;
 use libp2p::kad::{self, store::MemoryStore};
 use libp2p::{Multiaddr, PeerId as Libp2pPeerId, StreamProtocol};
 
-/// The public IPFS DHT's protocol name.
+/// This network's own DHT protocol name.
 ///
-/// `/ipfs/kad/1.0.0` and nothing else. libp2p-kad's own default is
-/// `/ipfs/kad/1.0.0` too, but naming it here is what keeps it true when a
-/// second Kademlia instance for OpenFiat peer discovery arrives — two kad
-/// behaviours in one swarm work precisely because their protocol names
-/// differ, and a default is not a name anyone chose.
-pub const IPFS_KAD_PROTOCOL: StreamProtocol = StreamProtocol::new("/ipfs/kad/1.0.0");
+/// **Not** `/ipfs/kad/1.0.0`. Two Kademlia instances interoperate only if
+/// their protocol names match, so this one string is what separates an
+/// OpenFiat DHT from the public IPFS one — a peer that speaks the public
+/// name cannot open a stream here at all, and this node never appears in
+/// its routing table.
+///
+/// This node's content offering is not public. It was on the public DHT,
+/// and that was wrong twice over. It disclosed to the whole IPFS network
+/// which peer holds which trade attachment, and — because a libp2p swarm
+/// has one connection set shared by every behaviour — it put several
+/// thousand peers that do not speak this protocol into the same set that
+/// gossip broadcasts over. Two nodes that were connected to each other
+/// were each also connected to 3,500 strangers, and protocol events did
+/// not reliably cross between them.
+pub const OPENFIAT_KAD_PROTOCOL: StreamProtocol = StreamProtocol::new("/openfiat/kad/1.0.0");
 
-/// Where a node joins the public IPFS DHT.
+/// Nothing. This DHT is bootstrapped from the node's own
+/// `--entrypoint` peers, which are OpenFiat nodes.
 ///
-/// The libp2p Foundation's four bootstrappers, `/dnsaddr/` resolved to
-/// the `/dns/` addresses they actually publish, plus the one historical
-/// IPFS bootstrapper that is a literal IP. QUIC only for the hostnames:
-/// this node's transport offers TCP as well, but a bootstrapper is dialled
-/// once at startup and the QUIC address is the one every one of them
-/// serves.
-///
-/// Five, not one, because bootstrapping is the single point where a node
-/// depends on somebody else's host being up.
-pub const BOOTSTRAPPERS: &[&str] = &[
-    "/dns/sv15.bootstrap.libp2p.io/udp/4001/quic-v1/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-    "/dns/ny5.bootstrap.libp2p.io/udp/4001/quic-v1/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-    "/dns/am6.bootstrap.libp2p.io/udp/4001/quic-v1/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-    "/dns/sg1.bootstrap.libp2p.io/udp/4001/quic-v1/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
-    "/ip4/104.131.131.82/udp/4001/quic-v1/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
-];
+/// It used to hold the libp2p Foundation's public bootstrappers. Dialling
+/// them was how this node ended up on the public IPFS DHT; keeping the
+/// list empty is what keeps the network private, and there is nowhere
+/// else to bootstrap from because an OpenFiat node's peers are exactly
+/// the peers it already dials.
+pub const BOOTSTRAPPERS: &[&str] = &[];
 
-/// The DHT behaviour a node runs: a client of the public IPFS DHT.
+/// The DHT behaviour a node runs: a server in this network's own DHT.
 pub fn behaviour(local_peer_id: Libp2pPeerId) -> kad::Behaviour<MemoryStore> {
-    let mut config = kad::Config::new(IPFS_KAD_PROTOCOL);
+    let mut config = kad::Config::new(OPENFIAT_KAD_PROTOCOL);
     // A record is republished before the network expires it. IPFS drops a
     // provider record after 24 hours, and a node that only republished on
     // the hour it expired would be unfindable for whatever slice of an
@@ -96,8 +96,12 @@ pub fn behaviour(local_peer_id: Libp2pPeerId) -> kad::Behaviour<MemoryStore> {
 
     let mut behaviour =
         kad::Behaviour::with_config(local_peer_id, MemoryStore::new(local_peer_id), config);
-    // See the module doc. This is the decision, not a default.
-    behaviour.set_mode(Some(kad::Mode::Client));
+    // Server, not client. Client mode was right while this node was a
+    // guest on somebody else's DHT: it published records and answered
+    // nothing, leaving storage to the public network. In a private DHT
+    // there is no public network to lean on — these nodes *are* the DHT,
+    // and a network of clients stores nothing for anybody.
+    behaviour.set_mode(Some(kad::Mode::Server));
     behaviour
 }
 
@@ -157,56 +161,30 @@ fn tracing_unavailable(entry: &str, err: &str) {
 mod tests {
     use super::*;
 
+    /// The one string that keeps this network private.
+    ///
+    /// Two Kademlia instances interoperate only if their protocol names
+    /// match, so if this ever reverted to the public name the node would
+    /// rejoin the public IPFS DHT — disclosing which peer holds which
+    /// trade attachment, and putting thousands of peers that do not speak
+    /// this protocol into the swarm's single shared connection set, which
+    /// gossip then broadcasts over.
     #[test]
-    fn every_bootstrapper_is_a_real_address_naming_a_peer() {
-        // The peer id is what makes an unauthenticated DNS lookup safe:
-        // a hijacked record points at a host that cannot complete the
-        // handshake. An entry without one would silently make this node
-        // dial whoever DNS says.
-        for entry in BOOTSTRAPPERS {
-            let address: Multiaddr = entry.parse().expect(entry);
-            assert!(
-                crate::identity::peer_id_in_multiaddr(&address).is_some(),
-                "{entry} would let DNS decide who this node talks to"
-            );
-        }
+    fn the_dht_protocol_is_this_networks_own_and_not_the_public_ipfs_one() {
+        assert_eq!(OPENFIAT_KAD_PROTOCOL.as_ref(), "/openfiat/kad/1.0.0");
+        assert_ne!(OPENFIAT_KAD_PROTOCOL.as_ref(), "/ipfs/kad/1.0.0");
     }
 
+    /// A public bootstrapper is how the node ended up on the public DHT.
+    /// The private DHT is seeded from `--entrypoint` peers instead, so
+    /// this list stays empty — an entry here would quietly undo the
+    /// separation the protocol name creates.
     #[test]
-    fn the_bootstrappers_are_distinct_hosts() {
-        // Five entries all pointing at one host would be one bootstrapper
-        // written five times, and bootstrapping is the one place a node
-        // depends on somebody else being up.
-        let peers: std::collections::HashSet<_> = BOOTSTRAPPERS
-            .iter()
-            .filter_map(|entry| {
-                crate::identity::peer_id_in_multiaddr(&entry.parse::<Multiaddr>().unwrap())
-            })
-            .collect();
-        assert_eq!(peers.len(), BOOTSTRAPPERS.len());
-    }
-
-    #[test]
-    fn no_bootstrapper_needs_a_dnsaddr_resolver_this_workspace_does_not_have() {
-        // The canonical list is written with `/dnsaddr/`, which is a TXT
-        // indirection nothing here can follow. Resolving that chain by
-        // hand once, at authoring time, is what makes these dialable —
-        // and an entry that slipped back to `/dnsaddr/` would fail at
-        // runtime, on a node, silently.
-        for entry in BOOTSTRAPPERS {
-            assert!(
-                !entry.contains("/dnsaddr/"),
-                "{entry} cannot be resolved by `resolve_dns_multiaddr`"
-            );
-        }
-    }
-
-    #[test]
-    fn the_dht_protocol_is_the_public_ipfs_one() {
-        // A different protocol name would be a private DHT that no
-        // gateway queries — the node would publish records nobody reads
-        // and look correct doing it.
-        assert_eq!(IPFS_KAD_PROTOCOL.as_ref(), "/ipfs/kad/1.0.0");
+    fn there_are_no_public_bootstrappers() {
+        assert!(
+            BOOTSTRAPPERS.is_empty(),
+            "a bootstrapper here dials this node onto somebody else's DHT"
+        );
     }
 
     #[test]

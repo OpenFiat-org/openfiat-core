@@ -86,6 +86,25 @@ impl Node {
     /// addresses to the whole IPFS network, which is the point and also a
     /// disclosure an operator is entitled to decline. The node calls this
     /// only when they have not.
+    /// Seed the DHT routing table with this node's own entrypoints.
+    ///
+    /// The public bootstrapper list is empty now that the DHT is private,
+    /// so the peers an OpenFiat node already dials are the only ones there
+    /// are to seed from — which is correct rather than a compromise: they
+    /// are exactly the peers that speak this protocol.
+    pub fn seed_content_routing(&mut self, peers: &[(Libp2pPeerId, libp2p::Multiaddr)]) -> usize {
+        for (peer, address) in peers {
+            self.swarm
+                .behaviour_mut()
+                .content_routing
+                .add_address(peer, address.clone());
+        }
+        if !peers.is_empty() {
+            let _ = self.swarm.behaviour_mut().content_routing.bootstrap();
+        }
+        peers.len()
+    }
+
     pub fn join_content_routing(&mut self) -> usize {
         let mut added = 0;
         for (peer, address) in crate::content_routing::resolved_bootstrappers() {
