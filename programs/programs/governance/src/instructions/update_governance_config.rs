@@ -46,6 +46,19 @@ pub struct UpdateGovernanceConfig<'info> {
 
     #[account(token::mint = mint)]
     pub forfeit_destination: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    /// Read, never written — this instruction is where AllenHark's
+    /// first-year exception is *enforced*, not where it is administered.
+    /// Required rather than optional: an optional sunset is one an admin
+    /// can decline to supply.
+    ///
+    /// Anchor resolves this from its constant seed, so callers that
+    /// already used `accountsPartial` need no change.
+    #[account(
+        seeds = [EMERGENCY_AUTHORITY_SEED],
+        bump = emergency_authority.bump,
+    )]
+    pub emergency_authority: Box<Account<'info, EmergencyAuthority>>,
 }
 
 /// The numeric half of the config. `forfeit_destination` is absent
@@ -82,9 +95,27 @@ pub fn handle_update_governance_config(
     require_valid_bps(params.quorum_upgrade_bps)?;
     crate::shared_logic::require_valid_vote_lock(params.vote_lock_secs)?;
 
+    // OFS-4100 §5.1: writing `vote_lock_secs` *is* the delay power —
+    // "left unbounded it is an emergency power wearing a different hat".
+    // The spec gives that power two limits, and this is the second one.
+    // `MAX_VOTE_LOCK_SECS`, checked just above, bounds how far a delay
+    // may be pushed; this bounds how long anyone may push it at all.
+    //
+    // Only a *change* is refused, so the field remains part of a params
+    // struct a caller may keep echoing back unchanged after the sunset —
+    // the rest of the config stays configurable forever, as it should.
+    // After the deadline `vote_lock_secs` is frozen at whatever value it
+    // held when the exception lapsed.
+    let now = Clock::get()?.unix_timestamp;
+    if !crate::shared_logic::emergency_powers_available(&ctx.accounts.emergency_authority, now) {
+        require!(
+            params.vote_lock_secs == ctx.accounts.governance_config.vote_lock_secs,
+            ErrorCode::EmergencyPowersExpired
+        );
+    }
+
     let admin = ctx.accounts.admin.key();
     let forfeit_destination = ctx.accounts.forfeit_destination.key();
-    let now = Clock::get()?.unix_timestamp;
 
     let governance_config = &mut ctx.accounts.governance_config;
     governance_config.total_open_supply = params.total_open_supply;

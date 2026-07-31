@@ -48,4 +48,14 @@ pub enum ErrorCode {
     ProposalActionMismatch,
     #[msg("vote_lock_secs exceeds MAX_VOTE_LOCK_SECS")]
     VoteLockTooLong,
+    #[msg(
+        "AllenHark's first-year governance exception has expired; vote_lock_secs is now frozen (OFS-4100 §5.1)"
+    )]
+    EmergencyPowersExpired,
+    #[msg("This proposal is already linked to an off-chain proposal, and the link is immutable")]
+    OffchainLinkAlreadySet,
+    #[msg("Only the proposal's own proposer may link it to an off-chain proposal")]
+    NotTheProposer,
+    #[msg("An off-chain link must be a real digest, not all zeroes")]
+    EmptyOffchainIdHash,
 }

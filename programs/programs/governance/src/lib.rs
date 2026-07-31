@@ -39,6 +39,38 @@ declare_id!("AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE");
 /// no governance-aware authority yet. They carry
 /// `GovernanceAction::None`. When they gain real effects they must adopt
 /// `require_executable` — the whole point of it living in one place.
+///
+/// # AllenHark's first year, and its sunset
+///
+/// OFS-4100 §5.1 grants AllenHark a time-limited exception over
+/// governance for one year after initialization, and insists it be
+/// "enforced on-chain against a timestamp fixed at initialization and
+/// immutable afterwards". [`EmergencyAuthority`] is that timestamp.
+///
+/// The exception's concrete content is the delay power the specification
+/// itself identifies: the ability to write `GovernanceConfig.vote_lock_secs`,
+/// which decides how long an accepted proposal waits before it may act.
+/// It has two bounds and they are deliberately different in kind —
+/// [`MAX_VOTE_LOCK_SECS`] caps how far the delay may be pushed (30 days),
+/// and [`FIRST_YEAR_SECS`] caps how long anyone may push it at all. Past
+/// the deadline, `update_governance_config` refuses to change the field.
+///
+/// **Nothing can move that deadline.** No instruction here takes
+/// `EmergencyAuthority` mutably, neither creation path accepts a duration
+/// or a deadline, and the window is not reachable through
+/// `GovernanceAction`, so a passed governance vote cannot postpone it
+/// either. Extending it takes a program upgrade — a separately
+/// authorized, publicly visible act, not a governance action.
+///
+/// # Linking to the off-chain governance layer
+///
+/// `openfiat-core`'s `crates/governance` carries the same proposals as
+/// gossiped, signed off-chain records. [`Proposal::offchain_id_hash`],
+/// written by `link_offchain_proposal`, is this side's half of the join
+/// between them; the off-chain `ProposalCreate` event names this
+/// proposal's `u64` id as the other half. Neither half alone is a link —
+/// a reader holding both is what establishes one, and a reader holding
+/// only one is told so rather than shown a guess.
 #[program]
 pub mod governance {
     use super::*;
@@ -49,6 +81,30 @@ pub mod governance {
     ) -> Result<()> {
         crate::instructions::initialize_governance_config::handle_initialize_governance_config(
             ctx, params,
+        )
+    }
+
+    /// Starts AllenHark's first-year exception on a deployment whose
+    /// `GovernanceConfig` predates it. Permissionless and parameterless
+    /// — see the instruction's own doc for why both are safe, and why
+    /// there is no counterpart that could ever move the deadline.
+    pub fn initialize_emergency_authority(
+        ctx: Context<InitializeEmergencyAuthority>,
+    ) -> Result<()> {
+        crate::instructions::initialize_emergency_authority::handle_initialize_emergency_authority(
+            ctx,
+        )
+    }
+
+    /// Declares which off-chain proposal this on-chain one corresponds
+    /// to. Proposer-only, `Voting`-only, and write-once.
+    pub fn link_offchain_proposal(
+        ctx: Context<LinkOffchainProposal>,
+        offchain_id_hash: [u8; 32],
+    ) -> Result<()> {
+        crate::instructions::link_offchain_proposal::handle_link_offchain_proposal(
+            ctx,
+            offchain_id_hash,
         )
     }
 

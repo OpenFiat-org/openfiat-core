@@ -95,6 +95,9 @@ async fn a_proposal_passes_and_converges_across_the_cluster() {
             "Increase Reservation Timeout",
             "Raise the validation window from 30 to 45 minutes.",
             ProposalCategory::Protocol,
+            // No on-chain counterpart: this exercises gossip replication,
+            // and a claimed on-chain id would be a claim no chain answers.
+            None,
         )
         .unwrap();
     drive_until(&mut all, |services| {

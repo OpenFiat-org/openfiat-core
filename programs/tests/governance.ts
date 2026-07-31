@@ -25,7 +25,7 @@ import {
   MINT_DECIMALS,
   SHARED_VOTE_LOCK_SECS,
 } from "./shared-fixtures";
-import { passProposal } from "./governance-cycle";
+import { passProposal, sleepUntilChainTime } from "./governance-cycle";
 
 describe("governance", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
@@ -705,6 +705,371 @@ describe("governance", () => {
     expect(after.amount.toString()).to.equal(before.amount.toString());
     const account = await program.account.proposal.fetch(proposal);
     expect(account.executed).to.equal(true);
+  });
+
+  // OFS-4100 §5.1 — "The sunset must be non-extendable, or it is not a
+  // sunset. It has to be enforced on-chain against a timestamp fixed at
+  // initialization and immutable afterwards. The holder must not be able
+  // to move its own deadline, directly or through any configuration field
+  // it can write."
+  //
+  // These specs are that sentence, tested. The clock cannot be advanced a
+  // year on a validator whose time tracks wall time, so the branch *past*
+  // the deadline is proven by the program crate's own unit tests
+  // (`shared_logic::tests`, which call the same gate the instructions
+  // call, at and after expiry). What is proven here is the harder and
+  // more important half: that nothing can move the deadline in the first
+  // place.
+  describe("AllenHark's first-year exception and its sunset", () => {
+    const ONE_YEAR_SECS = 365 * 24 * 60 * 60;
+    const emergencyAuthorityPda = PublicKey.findProgramAddressSync(
+      [Buffer.from("emergency_authority")],
+      program.programId
+    )[0];
+
+    it("fixes the deadline at exactly one year from initialization", async () => {
+      const authority = await program.account.emergencyAuthority.fetch(
+        emergencyAuthorityPda
+      );
+      expect(
+        authority.expiresAt.sub(authority.initializedAt).toNumber(),
+        "the window must be one year wide, not one year plus whatever the caller asked for"
+      ).to.equal(ONE_YEAR_SECS);
+    });
+
+    it("records both AllenHark keys as equal first-class holders", async () => {
+      // §5.1: "Both addresses are first-class authorities and must be
+      // presented as such in every application, explorer and document —
+      // not one with the other as a footnote." Recorded on the account
+      // rather than left implicit in the program binary so an explorer
+      // can read them rather than trust a document.
+      const authority = await program.account.emergencyAuthority.fetch(
+        emergencyAuthorityPda
+      );
+      expect(authority.primaryHolder.toBase58()).to.equal(
+        "ALLENLMtV1zEAHT3xpVryqcbdPCB8c9JhM1Jdbe5XHg5"
+      );
+      expect(authority.secondaryHolder.toBase58()).to.equal(
+        "A11ENCKCBxZxEbXQmqs6mTmJkP8gjcA7xqfLD5BxfRpp"
+      );
+    });
+
+    it("cannot be re-initialized, so the deadline cannot be re-based", async () => {
+      // The most obvious extension attack: run the creation instruction
+      // again later and get a deadline a year from *now*. `init` refuses
+      // an account that already exists, so the second call cannot land.
+      // Asserted against the raw error because "already in use" is a
+      // runtime allocation failure, not an Anchor error code.
+      const before = await program.account.emergencyAuthority.fetch(
+        emergencyAuthorityPda
+      );
+      let failed = false;
+      try {
+        await withBlockhashRetry(() =>
+          program.methods
+            .initializeEmergencyAuthority()
+            .accountsPartial({
+              payer: admin.publicKey,
+              emergencyAuthority: emergencyAuthorityPda,
+              systemProgram: SystemProgram.programId,
+            })
+            .rpc({ commitment: "confirmed" })
+        );
+      } catch (err: any) {
+        failed = true;
+        expect(String(err)).to.match(/already in use|custom program error: 0x0/);
+      }
+      expect(failed, "re-initialization must not succeed").to.equal(true);
+
+      const after = await program.account.emergencyAuthority.fetch(
+        emergencyAuthorityPda
+      );
+      expect(after.expiresAt.toString()).to.equal(before.expiresAt.toString());
+    });
+
+    it("cannot be re-created through initialize_governance_config either", async () => {
+      // The second creation path, and the same attack through it. Both
+      // `init` the same PDA, so whichever ran first wins permanently —
+      // there is no ordering that yields two deadlines.
+      let failed = false;
+      try {
+        await withBlockhashRetry(() =>
+          program.methods
+            .initializeGovernanceConfig({
+              totalOpenSupply: new BN(TOTAL_OPEN_SUPPLY),
+              quorumBps: QUORUM_BPS,
+              thresholdSimpleBps: THRESHOLD_SIMPLE_BPS,
+              thresholdTreasuryBps: THRESHOLD_TREASURY_BPS,
+              thresholdUpgradeBps: THRESHOLD_UPGRADE_BPS,
+              quorumUpgradeBps: QUORUM_UPGRADE_BPS,
+              depositAmount: DEPOSIT_AMOUNT,
+              forfeitDestination,
+              voteLockSecs: new BN(ONE_YEAR_SECS),
+            })
+            .accountsPartial({
+              admin: admin.publicKey,
+              mint,
+              governanceConfig,
+              depositVault,
+              emergencyAuthority: emergencyAuthorityPda,
+              tokenProgram: TOKEN_2022_PROGRAM_ID,
+              systemProgram: SystemProgram.programId,
+              rent: SYSVAR_RENT_PUBKEY,
+            })
+            .rpc({ commitment: "confirmed" })
+        );
+      } catch (err: any) {
+        failed = true;
+      }
+      expect(failed, "the config's creation path must not re-create it").to.equal(
+        true
+      );
+    });
+
+    it("exposes no instruction that can write the deadline", async () => {
+      // The structural proof, and the one that keeps holding as the
+      // program grows. Every other test here attacks a path that exists
+      // today; this asserts that no *future* instruction can quietly
+      // acquire write access to the account without someone changing this
+      // list on purpose. A sunset a later commit can make mutable is not
+      // a sunset.
+      // Anchor's TypeScript client re-cases IDL names, so both spellings
+      // are accepted rather than pinning the test to whichever the client
+      // version in use happens to emit.
+      const canonical = (name: string) =>
+        name.replace(/[A-Z]/g, (ch) => `_${ch.toLowerCase()}`);
+      const writers = (program.idl as any).instructions
+        .filter((ix: any) =>
+          ix.accounts.some(
+            (acc: any) =>
+              canonical(acc.name) === "emergency_authority" && acc.writable
+          )
+        )
+        .map((ix: any) => canonical(ix.name))
+        .sort();
+      expect(writers).to.deep.equal([
+        "initialize_emergency_authority",
+        "initialize_governance_config",
+      ]);
+
+      // And neither of them takes a duration or a deadline, so even the
+      // two instructions that *can* write it cannot be told what to
+      // write. The only thing a caller influences is when the clock
+      // starts — which can only bring the deadline nearer.
+      for (const name of writers) {
+        const ix = (program.idl as any).instructions.find(
+          (candidate: any) => canonical(candidate.name) === name
+        );
+        const argNames = JSON.stringify(ix.args);
+        expect(argNames).to.not.match(/expires|deadline|duration|secs/i);
+      }
+    });
+
+    it("does not let a governance vote reach the deadline", async () => {
+      // The specific bypass §5.1 calls out: "The holder must not be able
+      // to move its own deadline... through any configuration field it
+      // can write." A passed proposal acts through `GovernanceAction`, so
+      // if none of its variants names the emergency authority, no vote —
+      // however overwhelming — can postpone the sunset.
+      const action = (program.idl as any).types.find(
+        (ty: any) => ty.name === "GovernanceAction"
+      );
+      expect(JSON.stringify(action)).to.not.match(/emergency|expires/i);
+    });
+
+    it("lets vote_lock_secs still be written inside the window", async () => {
+      // The control. The sunset must close a power that actually works
+      // beforehand — a test suite proving only that something is refused
+      // proves nothing about what was taken away. The window is a year
+      // wide and this run is inside it, so the write succeeds.
+      const before = await program.account.governanceConfig.fetch(
+        governanceConfig
+      );
+      const params = {
+        totalOpenSupply: before.totalOpenSupply,
+        quorumBps: before.quorumBps,
+        thresholdSimpleBps: before.thresholdSimpleBps,
+        thresholdTreasuryBps: before.thresholdTreasuryBps,
+        thresholdUpgradeBps: before.thresholdUpgradeBps,
+        quorumUpgradeBps: before.quorumUpgradeBps,
+        depositAmount: before.depositAmount,
+        voteLockSecs: new BN(11),
+      };
+      await withBlockhashRetry(() =>
+        program.methods
+          .updateGovernanceConfig(params)
+          .accountsPartial({
+            admin: admin.publicKey,
+            governanceConfig,
+            mint,
+            forfeitDestination: before.forfeitDestination,
+          })
+          .rpc({ commitment: "confirmed" })
+      );
+      expect(
+        (
+          await program.account.governanceConfig.fetch(governanceConfig)
+        ).voteLockSecs.toNumber()
+      ).to.equal(11);
+
+      // Restore, so the shared config the other suites depend on is
+      // exactly as they left it.
+      await withBlockhashRetry(() =>
+        program.methods
+          .updateGovernanceConfig({
+            ...params,
+            voteLockSecs: before.voteLockSecs,
+          })
+          .accountsPartial({
+            admin: admin.publicKey,
+            governanceConfig,
+            mint,
+            forfeitDestination: before.forfeitDestination,
+          })
+          .rpc({ commitment: "confirmed" })
+      );
+    });
+  });
+
+  // OFS-4200 §6 / the off-chain governance layer. Nothing correlated a
+  // gossiped proposal with an on-chain one, so an interface showing "the"
+  // proposal could not tell whether the chain agreed. This is the chain's
+  // half of the join.
+  describe("link_offchain_proposal", () => {
+    // sha256("ofip-0001"), the digest `openfiat_governance::onchain::
+    // offchain_id_hash` produces for that id. Written out rather than
+    // computed inline so this test and the Rust one are pinned to the
+    // same literal — a client hashing differently would write a link no
+    // node ever matches.
+    const OFIP_0001_HASH = [
+      ...Buffer.from(
+        "4298e38755cdf4009f0a9beb84960a10c0705ca506826fc77eb8cfd1a2b40ef1",
+        "hex"
+      ),
+    ];
+
+    it("agrees with the digest the node crate computes for the same id", async () => {
+      expect(
+        [...crypto.createHash("sha256").update("ofip-0001").digest()]
+      ).to.deep.equal(OFIP_0001_HASH);
+    });
+
+    it("starts unlinked, and records the link the proposer sets", async () => {
+      const id = 4101;
+      const { proposer, proposal } = await createFundedProposal(
+        id,
+        CATEGORY_PARAMETER,
+        30
+      );
+      const before = await program.account.proposal.fetch(proposal);
+      expect(
+        before.offchainIdHash.every((byte: number) => byte === 0),
+        "an unlinked proposal must read as all zeroes, the 'none claimed' sentinel"
+      ).to.equal(true);
+
+      await withBlockhashRetry(() =>
+        program.methods
+          .linkOffchainProposal(OFIP_0001_HASH)
+          .accountsPartial({ proposer: proposer.publicKey, proposal })
+          .signers([proposer])
+          .rpc({ commitment: "confirmed" })
+      );
+      const after = await program.account.proposal.fetch(proposal);
+      expect(after.offchainIdHash).to.deep.equal(OFIP_0001_HASH);
+    });
+
+    it("refuses a second link, so the claim a voter saw is the claim a reader gets", async () => {
+      const id = 4102;
+      const { proposer, proposal } = await createFundedProposal(
+        id,
+        CATEGORY_PARAMETER,
+        30
+      );
+      const link = (hash: number[]) =>
+        program.methods
+          .linkOffchainProposal(hash)
+          .accountsPartial({ proposer: proposer.publicKey, proposal })
+          .signers([proposer]);
+
+      await withBlockhashRetry(() => link(OFIP_0001_HASH).rpc({ commitment: "confirmed" }));
+      await expectAnchorError(
+        () => link([...crypto.randomBytes(32)]).rpc({ commitment: "confirmed" }),
+        "OffchainLinkAlreadySet"
+      );
+      expect(
+        (await program.account.proposal.fetch(proposal)).offchainIdHash
+      ).to.deep.equal(OFIP_0001_HASH);
+    });
+
+    it("refuses anyone but the proposal's own proposer", async () => {
+      // Execution instructions in this program are deliberately
+      // permissionless — the authority is the vote. This is not one: a
+      // stranger attaching a claim would both misattribute the proposal
+      // and spend its single write.
+      const id = 4103;
+      const { proposal } = await createFundedProposal(id, CATEGORY_PARAMETER, 30);
+      const stranger = Keypair.generate();
+      await airdrop(stranger.publicKey);
+      await expectAnchorError(
+        () =>
+          program.methods
+            .linkOffchainProposal(OFIP_0001_HASH)
+            .accountsPartial({ proposer: stranger.publicKey, proposal })
+            .signers([stranger])
+            .rpc({ commitment: "confirmed" }),
+        "NotTheProposer"
+      );
+    });
+
+    it("refuses an all-zero digest, which would read as unlinked", async () => {
+      // All zeroes is the sentinel. Storing it would consume the one-shot
+      // write while leaving the proposal looking unlinked forever, so
+      // "unset" and "set to nothing" must stay indistinguishable.
+      const id = 4104;
+      const { proposer, proposal } = await createFundedProposal(
+        id,
+        CATEGORY_PARAMETER,
+        30
+      );
+      await expectAnchorError(
+        () =>
+          program.methods
+            .linkOffchainProposal(new Array(32).fill(0))
+            .accountsPartial({ proposer: proposer.publicKey, proposal })
+            .signers([proposer])
+            .rpc({ commitment: "confirmed" }),
+        "EmptyOffchainIdHash"
+      );
+    });
+
+    it("refuses to link a proposal whose vote has already closed", async () => {
+      // A link bolted onto a decided proposal would let a proposer point
+      // a finished tally at an off-chain record after seeing how it went.
+      const id = 4105;
+      const { proposer, proposal } = await createFundedProposal(
+        id,
+        CATEGORY_PARAMETER,
+        3
+      );
+      const account = await program.account.proposal.fetch(proposal);
+      await sleepUntilChainTime(account.votingEndsAt.toNumber() + 1);
+      await withBlockhashRetry(() =>
+        program.methods
+          .tallyAndFinalize()
+          .accountsPartial({ proposal })
+          .rpc({ commitment: "confirmed" })
+      );
+
+      await expectAnchorError(
+        () =>
+          program.methods
+            .linkOffchainProposal(OFIP_0001_HASH)
+            .accountsPartial({ proposer: proposer.publicKey, proposal })
+            .signers([proposer])
+            .rpc({ commitment: "confirmed" }),
+        "NotInVotingState"
+      );
+    });
   });
 
   describe("update_governance_config", () => {

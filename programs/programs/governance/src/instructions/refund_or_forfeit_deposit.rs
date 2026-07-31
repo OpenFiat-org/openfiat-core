@@ -10,10 +10,20 @@ use crate::{constants::*, error::ErrorCode, events::ProposalDepositSettled, stat
 /// §5: "refunded if quorum is met by the voting deadline, independent of
 /// whether the proposal itself passes"), otherwise forfeits to
 /// `GovernanceConfig.forfeit_destination`.
+///
+/// Every deserialized account here is `Box`ed. Anchor builds the whole
+/// struct on the BPF stack, which is a hard 4KB per frame, and this
+/// context carries three token accounts, a mint and two program accounts
+/// — enough that adding a single 32-byte field to `Proposal` pushed
+/// `try_accounts` eight bytes past the limit and failed the build.
+/// Boxing moves the bodies to the heap and leaves pointers on the stack,
+/// so the frame no longer grows with the account layouts. Done to all of
+/// them rather than just enough to squeak under, because "enough" is a
+/// number the next field would break again.
 #[derive(Accounts)]
 pub struct RefundOrForfeitDeposit<'info> {
     #[account(mint::token_program = token_program)]
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         seeds = [GOVERNANCE_CONFIG_SEED],
@@ -21,10 +31,10 @@ pub struct RefundOrForfeitDeposit<'info> {
         constraint = governance_config.mint == mint.key(),
         constraint = governance_config.forfeit_destination == forfeit_destination.key(),
     )]
-    pub governance_config: Account<'info, GovernanceConfig>,
+    pub governance_config: Box<Account<'info, GovernanceConfig>>,
 
     #[account(mut, seeds = [DEPOSIT_VAULT_SEED], bump = governance_config.deposit_vault_bump)]
-    pub deposit_vault: InterfaceAccount<'info, TokenAccount>,
+    pub deposit_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -33,13 +43,13 @@ pub struct RefundOrForfeitDeposit<'info> {
         constraint = proposal.state != ProposalState::Voting @ ErrorCode::NotYetTallied,
         constraint = !proposal.deposit_settled @ ErrorCode::DepositAlreadySettled,
     )]
-    pub proposal: Account<'info, Proposal>,
+    pub proposal: Box<Account<'info, Proposal>>,
 
     #[account(mut, constraint = proposer_token_account.owner == proposal.proposer, constraint = proposer_token_account.mint == mint.key())]
-    pub proposer_token_account: InterfaceAccount<'info, TokenAccount>,
+    pub proposer_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(mut)]
-    pub forfeit_destination: InterfaceAccount<'info, TokenAccount>,
+    pub forfeit_destination: Box<InterfaceAccount<'info, TokenAccount>>,
 
     pub token_program: Interface<'info, TokenInterface>,
 }

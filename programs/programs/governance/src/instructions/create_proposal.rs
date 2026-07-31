@@ -165,6 +165,11 @@ pub fn handle_create_proposal(
     proposal.deposit_settled = false;
     proposal.executed = false;
     proposal.bump = ctx.bumps.proposal;
+    // All zeroes is the "no off-chain counterpart claimed" sentinel;
+    // `link_offchain_proposal` is the only thing that ever changes it,
+    // and only once. Set explicitly rather than relying on `init`'s
+    // zeroing, so the sentinel is a decision this function made.
+    proposal.offchain_id_hash = [0u8; 32];
 
     let proposal_key = proposal.key();
     let voting_ends_at = proposal.voting_ends_at;

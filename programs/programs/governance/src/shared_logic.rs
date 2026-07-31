@@ -7,7 +7,7 @@ use anchor_lang::prelude::*;
 use openfiat_programs_shared::ProposalCategory;
 
 use crate::error::ErrorCode;
-use crate::state::{GovernanceConfig, Proposal, ProposalState};
+use crate::state::{EmergencyAuthority, GovernanceConfig, Proposal, ProposalState};
 
 /// OFS-4100 §5: standard categories use `quorum_bps`; Protocol-Upgrade
 /// and Constitutional use the higher `quorum_upgrade_bps`.
@@ -94,4 +94,123 @@ pub fn require_valid_vote_lock(vote_lock_secs: i64) -> Result<()> {
         ErrorCode::VoteLockTooLong
     );
     Ok(())
+}
+
+/// Whether AllenHark's first-year exception is still open (OFS-4100
+/// §5.1).
+///
+/// Half-open by design: the window is `[initialized_at, expires_at)`, so
+/// the power is already gone at the instant `now == expires_at`. "The
+/// first year after initialization, and no longer" leaves no second in
+/// which the deadline has arrived and the power still works, and an
+/// inclusive comparison would invent one.
+///
+/// A free function over a plain timestamp rather than a method taking the
+/// `Clock`, so the boundary can be tested at, before and after expiry.
+/// Nothing else can: `solana-test-validator`'s clock tracks wall time and
+/// cannot be advanced a year, so every on-validator test necessarily runs
+/// inside the window. The instructions call this; these unit tests are
+/// what prove what it does on the far side of the deadline.
+pub fn emergency_powers_available(authority: &EmergencyAuthority, now: i64) -> bool {
+    now < authority.expires_at
+}
+
+/// [`emergency_powers_available`] as a guard.
+pub fn require_within_emergency_window(authority: &EmergencyAuthority, now: i64) -> Result<()> {
+    require!(
+        emergency_powers_available(authority, now),
+        ErrorCode::EmergencyPowersExpired
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::FIRST_YEAR_SECS;
+
+    /// `expires_at` exactly as `initialize_emergency_authority` computes
+    /// it, so these tests exercise the real span rather than a convenient
+    /// one.
+    fn authority_initialized_at(initialized_at: i64) -> EmergencyAuthority {
+        EmergencyAuthority {
+            primary_holder: crate::constants::ALLENHARK_PRIMARY_HOLDER,
+            secondary_holder: crate::constants::ALLENHARK_SECONDARY_HOLDER,
+            initialized_at,
+            expires_at: initialized_at + FIRST_YEAR_SECS,
+            bump: 255,
+        }
+    }
+
+    #[test]
+    fn the_exception_is_open_for_the_whole_first_year() {
+        let authority = authority_initialized_at(1_000);
+        assert!(emergency_powers_available(&authority, 1_000));
+        assert!(emergency_powers_available(
+            &authority,
+            1_000 + FIRST_YEAR_SECS - 1
+        ));
+    }
+
+    #[test]
+    fn the_exception_is_closed_at_the_very_instant_it_expires() {
+        // The boundary case the half-open window exists for. An
+        // inclusive check here would leave one second in which the
+        // deadline has arrived and the power still works.
+        let authority = authority_initialized_at(1_000);
+        assert!(!emergency_powers_available(
+            &authority,
+            1_000 + FIRST_YEAR_SECS
+        ));
+        assert!(
+            require_within_emergency_window(&authority, 1_000 + FIRST_YEAR_SECS).is_err(),
+            "the guard must refuse at expiry, not merely after it"
+        );
+    }
+
+    #[test]
+    fn the_exception_never_reopens_however_long_you_wait() {
+        // There is no periodic renewal and no second window: this is the
+        // property that makes it a sunset rather than a cooldown.
+        let authority = authority_initialized_at(1_000);
+        for years_later in 1..=10 {
+            let now = 1_000 + FIRST_YEAR_SECS * years_later;
+            assert!(
+                !emergency_powers_available(&authority, now),
+                "the exception must stay closed {years_later} year(s) past expiry"
+            );
+        }
+        assert!(!emergency_powers_available(&authority, i64::MAX));
+    }
+
+    #[test]
+    fn the_window_is_exactly_one_year_wide_wherever_the_clock_starts() {
+        // Nothing about the initializing transaction can change the span
+        // — the only thing a caller influences is when it starts.
+        for start in [0, 1, 1_700_000_000, i64::MAX - FIRST_YEAR_SECS] {
+            let authority = authority_initialized_at(start);
+            assert_eq!(authority.expires_at - authority.initialized_at, FIRST_YEAR_SECS);
+        }
+    }
+
+    /// The addresses OFS-4100 §5.1 signed off, transcribed from the
+    /// specification rather than from `constants.rs`. A typo in either
+    /// constant would otherwise be invisible: nothing else in this
+    /// program compares them against anything.
+    #[test]
+    fn the_recorded_holders_are_the_two_keys_the_specification_names() {
+        assert_eq!(
+            crate::constants::ALLENHARK_PRIMARY_HOLDER.to_string(),
+            "ALLENLMtV1zEAHT3xpVryqcbdPCB8c9JhM1Jdbe5XHg5"
+        );
+        assert_eq!(
+            crate::constants::ALLENHARK_SECONDARY_HOLDER.to_string(),
+            "A11ENCKCBxZxEbXQmqs6mTmJkP8gjcA7xqfLD5BxfRpp"
+        );
+        assert_ne!(
+            crate::constants::ALLENHARK_PRIMARY_HOLDER,
+            crate::constants::ALLENHARK_SECONDARY_HOLDER,
+            "two holders that are the same key are one holder"
+        );
+    }
 }

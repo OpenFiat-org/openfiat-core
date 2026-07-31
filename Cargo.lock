@@ -3558,6 +3558,8 @@ dependencies = [
  "openfiat-storage",
  "openfiat-types",
  "serde",
+ "serde_json",
+ "solana-pubkey 4.3.0",
  "tokio",
 ]
 

@@ -56,12 +56,22 @@ impl<S: KvStore + 'static> GovernanceService<S> {
         self.registry.local_vote_preview(id, Timestamp::now())
     }
 
+    /// `onchain_proposal_id` is the `openfiat-governance` program
+    /// `Proposal` id this proposal claims, or `None` for one that never
+    /// goes on chain. It is signed with the rest of the event and cannot
+    /// be amended afterwards — half of the join key described in
+    /// [`crate::onchain`]. The author is still responsible for the other
+    /// half: calling the program's `link_offchain_proposal` with
+    /// [`crate::onchain::offchain_id_hash`] of this id, without which the
+    /// claim stays unreciprocated and no node will adopt the chain's
+    /// answer for it.
     pub fn create_proposal(
         &mut self,
         id: impl Into<String>,
         title: impl Into<String>,
         summary: impl Into<String>,
         category: ProposalCategory,
+        onchain_proposal_id: Option<u64>,
     ) -> Result<ProposalId, GovernanceError> {
         let create = ProposalCreate {
             id: ProposalId::new(id),
@@ -70,6 +80,7 @@ impl<S: KvStore + 'static> GovernanceService<S> {
             category,
             author: self.gossip.node.local_peer_id(),
             author_public_key: self.gossip.public_key(),
+            onchain_proposal_id,
             timestamp: Timestamp::now(),
         };
         let bytes = json::to_bytes(&create).map_err(|_| GovernanceError::MalformedProposal)?;

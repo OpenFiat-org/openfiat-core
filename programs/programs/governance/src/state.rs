@@ -32,6 +32,67 @@ pub struct GovernanceConfig {
     pub deposit_vault_bump: u8,
 }
 
+/// AllenHark's first-year governance exception and, more importantly, the
+/// moment it ends (OFS-4100 §5.1). Singleton, at
+/// `[EMERGENCY_AUTHORITY_SEED]`.
+///
+/// # Why this is a separate account and not four fields on `GovernanceConfig`
+///
+/// `GovernanceConfig` is a live singleton — one already exists on devnet
+/// at `CQJG481GTPh7x6Y3eL39753tFDwChQQVzZ8mNrXKZTSq`, and it is the only
+/// account this program owns there. Growing an `#[account]` struct makes
+/// every already-allocated account of that type too small to deserialize,
+/// so folding the sunset into `GovernanceConfig` would brick the deployed
+/// config and take every instruction that reads it down with it. The same
+/// reasoning that gave [`ProposalAction`] its own account applies here,
+/// with the difference that this time the affected account demonstrably
+/// exists.
+///
+/// # Why it is non-extendable, and how you can check
+///
+/// `expires_at` is written exactly once, by `init`, as
+/// `initialized_at + FIRST_YEAR_SECS`. **No instruction in this program
+/// takes this account as `mut`.** There is no `update_emergency_authority`,
+/// no field on `GovernanceConfig` that feeds into the deadline, and no
+/// proposal action that reaches it — so there is no transaction anyone
+/// can send, holder or admin or a passed governance vote, that moves it.
+/// That is a structural property, not a policy one: you can verify it by
+/// reading this program's IDL and observing that `emergency_authority`
+/// appears as a writable account in exactly the two instructions that
+/// create it, and `tests/governance.ts` does exactly that so a future
+/// instruction cannot quietly acquire write access.
+///
+/// The deadline is also not a parameter. Neither creation instruction
+/// accepts one, so nothing about the initializing transaction — not its
+/// sender, not its arguments — can influence how long the window lasts.
+/// The only lever anyone has is *when* the clock starts, and starting it
+/// can only ever bring the deadline nearer, never push it out.
+#[account]
+#[derive(InitSpace)]
+pub struct EmergencyAuthority {
+    /// Copied from [`crate::constants::ALLENHARK_PRIMARY_HOLDER`], not
+    /// taken from the caller. Stored anyway rather than left implicit in
+    /// the program binary, because §5.1 requires both holders to be
+    /// presented as first-class authorities "in every application,
+    /// explorer and document" — and an explorer can read an account,
+    /// while reading a constant means trusting whoever published the
+    /// source.
+    pub primary_holder: Pubkey,
+    /// Copied from [`crate::constants::ALLENHARK_SECONDARY_HOLDER`].
+    /// Equal in authority to `primary_holder`: §5.1 is explicit that
+    /// **either key alone suffices**, which is what makes the exception
+    /// survive the loss of one key and not survive the compromise of one.
+    pub secondary_holder: Pubkey,
+    /// When the window opened, kept beside `expires_at` so an auditor can
+    /// confirm the span is exactly `FIRST_YEAR_SECS` without knowing what
+    /// the clock read that day.
+    pub initialized_at: i64,
+    /// When the exception ends. Written once by `init` and never again by
+    /// anything — see the type-level doc.
+    pub expires_at: i64,
+    pub bump: u8,
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]
 pub enum ProposalState {
     Draft,
@@ -87,6 +148,40 @@ pub struct Proposal {
     /// nothing yet.
     pub executed: bool,
     pub bump: u8,
+    /// SHA-256 of the off-chain `openfiat-governance` proposal id this
+    /// on-chain proposal is the chain-side half of, or all zeroes for
+    /// "none claimed". Written once by `link_offchain_proposal` and never
+    /// again.
+    ///
+    /// # Why a join key had to exist at all
+    ///
+    /// Off-chain proposals are gossiped records keyed by an author-chosen
+    /// string; on-chain proposals are accounts keyed by a `u64`. Nothing
+    /// correlated the two, so an interface that showed "the" proposal
+    /// could not tell whether the chain agreed with it — it was showing
+    /// one of two records and implying the other. `title_hash` and
+    /// `summary_hash` look like they could serve, but neither pins its
+    /// hash function anywhere and both describe *content*, which two
+    /// unrelated proposals may legitimately share.
+    ///
+    /// # Why hashing the id rather than storing it
+    ///
+    /// An off-chain id is a variable-length string, and a `String` field
+    /// on an `#[account]` means either a length cap invented here or an
+    /// account whose size depends on user input. A 32-byte digest is
+    /// fixed, costs nothing to compare, and the preimage is public — it
+    /// is the id, which travels in the clear in every gossiped proposal
+    /// event — so this hides nothing an observer needs.
+    ///
+    /// # Why this alone is a claim and not a link
+    ///
+    /// A proposer writes this unilaterally, so on its own it says only
+    /// "this on-chain proposal claims that off-chain one". The off-chain
+    /// proposal makes the matching claim in the other direction, inside
+    /// the signed `ProposalCreate` event its author fixed at creation.
+    /// The link exists only when both claims agree; see
+    /// `openfiat_governance::onchain` for the side that checks it.
+    pub offchain_id_hash: [u8; 32],
 }
 
 /// What a proposal, if it passes, is authorized to *do* (OFS-4200 §6,

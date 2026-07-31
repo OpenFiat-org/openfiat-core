@@ -87,6 +87,17 @@ pub struct Proposal {
     pub author_public_key: PublicKey,
     pub status: ProposalStatus,
     pub votes: Vec<CastVote>,
+    /// The `openfiat-governance` program `Proposal` this claims to be the
+    /// off-chain half of — the `u64` that seeds its PDA — or `None` for a
+    /// proposal that never goes on chain.
+    ///
+    /// Fixed at creation, because it travels inside the signed
+    /// `ProposalCreate` event and there is no event that amends it. That
+    /// is what makes it usable as half of a join key: an on-chain
+    /// proposal's proposer cannot induce an off-chain proposal to claim
+    /// it after the fact. See [`crate::onchain`] for the other half and
+    /// for why one half alone proves nothing.
+    pub onchain_proposal_id: Option<u64>,
     pub voting_closes_at: Timestamp,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,

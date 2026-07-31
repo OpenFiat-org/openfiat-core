@@ -37,6 +37,13 @@ pub const PROPOSAL_ACTION_SEED: &[u8] = b"proposal_action";
 /// remove: a single key able to block a delisting indefinitely. The
 /// bound does not remove the delay power, it caps it at something the
 /// protocol can wait out.
+///
+/// OFS-4100 §5.1 puts this ceiling *inside* the first-year exception
+/// rather than beside it, because writing `vote_lock_secs` is the delay
+/// power: "left unbounded it is an emergency power wearing a different
+/// hat". This bound is the first of its two limits — how far the delay
+/// may be pushed. [`FIRST_YEAR_SECS`] is the second — how long the power
+/// to push it exists at all. `update_governance_config` enforces both.
 #[constant]
 pub const MAX_VOTE_LOCK_SECS: i64 = 30 * 24 * 60 * 60;
 
@@ -44,6 +51,55 @@ pub const MAX_VOTE_LOCK_SECS: i64 = 30 * 24 * 60 * 60;
 /// program in this workspace.
 #[constant]
 pub const BPS_DENOMINATOR: u64 = 10_000;
+
+/// PDA seed for the singleton `EmergencyAuthority` (OFS-4100 §5.1).
+#[constant]
+pub const EMERGENCY_AUTHORITY_SEED: &[u8] = b"emergency_authority";
+
+/// How long AllenHark's governance exception lasts: one year from the
+/// moment [`crate::state::EmergencyAuthority`] is created, and not one
+/// second longer (OFS-4100 §5.1, "The first year after initialization,
+/// and no longer").
+///
+/// A compiled-in duration rather than an initialization parameter, and
+/// that is the entire point. `expires_at` is computed from this once, at
+/// `init`, and no instruction in this program ever takes the account
+/// mutably again — so there is no transaction, privileged or otherwise,
+/// that can move the deadline. A sunset a governance vote can postpone is
+/// not a sunset; a sunset whose holder can rewrite its own deadline is
+/// not one either. Extending it requires a program upgrade, which is a
+/// visible, separately-authorized act rather than a governance action.
+///
+/// 365 days flat, not 365.25: a deadline anyone can recompute from
+/// `initialized_at` with integer arithmetic is worth more here than one
+/// that tracks the leap cycle to within six hours.
+#[constant]
+pub const FIRST_YEAR_SECS: i64 = 365 * 24 * 60 * 60;
+
+/// The first of AllenHark's two governance exception keys (OFS-4100
+/// §5.1).
+///
+/// **Either key alone suffices — this is not a 2-of-2.** Both are
+/// first-class authorities and must be presented as such wherever they
+/// appear; §5.1 is explicit that neither is a footnote to the other.
+/// Recorded on-chain by `initialize_emergency_authority` so an explorer
+/// can read the holders off the account rather than trusting a document.
+///
+/// Compiled in rather than passed at initialization, because a holder
+/// supplied by whoever happened to submit the initialization transaction
+/// is a holder that transaction's sender chose. These are the values
+/// OFS-4100 signed off, and `initialize_emergency_authority` therefore
+/// needs no parameters at all — which is also what makes it safe to leave
+/// permissionless.
+#[constant]
+pub const ALLENHARK_PRIMARY_HOLDER: Pubkey =
+    pubkey!("ALLENLMtV1zEAHT3xpVryqcbdPCB8c9JhM1Jdbe5XHg5");
+
+/// AllenHark's second governance exception key (OFS-4100 §5.1). See
+/// [`ALLENHARK_PRIMARY_HOLDER`] — the two are equal in authority.
+#[constant]
+pub const ALLENHARK_SECONDARY_HOLDER: Pubkey =
+    pubkey!("A11ENCKCBxZxEbXQmqs6mTmJkP8gjcA7xqfLD5BxfRpp");
 
 /// PDA seed for a `BanRecord`: `[BAN_SEED, wallet]` (OFS-7100 §12).
 ///

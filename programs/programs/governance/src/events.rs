@@ -333,3 +333,41 @@ pub struct TreasurySpendAuthorized {
     pub authorized_amount: u64,
     pub timestamp: i64,
 }
+
+/// AllenHark's first-year exception opened, and — the part that matters —
+/// the exact moment it closes (OFS-4100 §5.1).
+///
+/// Emitted by both creation paths. Carries `expires_at` rather than only
+/// `initialized_at` plus an implied duration, because the deadline is the
+/// fact everyone downstream needs and deriving it from a constant means
+/// an indexer trusting its own copy of that constant. There is no
+/// matching `EmergencyAuthorityUpdated`, and there is no instruction that
+/// could emit one: the deadline this announces is the deadline forever.
+#[event]
+pub struct EmergencyAuthorityInitialized {
+    pub emergency_authority: Pubkey,
+    /// Both holders, because §5.1 requires each to be presented as a
+    /// first-class authority rather than one with the other as a
+    /// footnote. Either key alone suffices; this is not a 2-of-2.
+    pub primary_holder: Pubkey,
+    pub secondary_holder: Pubkey,
+    pub initialized_at: i64,
+    pub expires_at: i64,
+}
+
+/// An on-chain proposal declared which off-chain proposal it is the
+/// chain-side half of.
+///
+/// Emitted so an indexer can build the off-chain-to-on-chain join without
+/// scanning every `Proposal` account for a field that is usually zero.
+/// It records a *claim*, not a confirmed link — the off-chain half has to
+/// name this proposal back before the two are joined, and only a reader
+/// holding both records can tell. The field name says `offchain_id_hash`
+/// rather than `offchain_proposal` for that reason.
+#[event]
+pub struct OffchainProposalLinked {
+    pub proposal: Pubkey,
+    pub proposal_id: u64,
+    pub offchain_id_hash: [u8; 32],
+    pub timestamp: i64,
+}

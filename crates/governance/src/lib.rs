@@ -10,12 +10,16 @@
 
 pub mod error;
 pub mod events;
+pub mod onchain;
 pub mod protocol;
 pub mod record;
 pub mod service;
 pub mod store;
 
 pub use error::GovernanceError;
+pub use onchain::{
+    ChainAgreement, OnchainProposal, OnchainProposalState, ProposalChainView, offchain_id_hash,
+};
 pub use record::{CastVote, Proposal, ProposalCategory, ProposalId, ProposalStatus, VoteChoice};
 pub use service::GovernanceService;
 pub use store::{GovernanceRegistry, VotePreview};

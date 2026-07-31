@@ -1,7 +1,13 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
-use crate::{constants::*, error::ErrorCode, events::GovernanceConfigInitialized, state::*};
+use crate::instructions::initialize_emergency_authority::write_emergency_authority;
+use crate::{
+    constants::*,
+    error::ErrorCode,
+    events::{EmergencyAuthorityInitialized, GovernanceConfigInitialized},
+    state::*,
+};
 
 #[derive(Accounts)]
 pub struct InitializeGovernanceConfig<'info> {
@@ -30,6 +36,26 @@ pub struct InitializeGovernanceConfig<'info> {
         token::token_program = token_program,
     )]
     pub deposit_vault: InterfaceAccount<'info, TokenAccount>,
+
+    /// AllenHark's first-year exception, created here so its clock starts
+    /// at governance genesis — OFS-4100 §5.1 measures the window from
+    /// "initialization", and this is that moment.
+    ///
+    /// Created atomically with the config rather than left to a follow-up
+    /// transaction because `update_governance_config` requires it: a
+    /// deployment that had a config but no `EmergencyAuthority` would
+    /// have an unconfigurable governance program. It takes no parameters,
+    /// so this adds nothing to `InitializeGovernanceConfigParams` and no
+    /// existing caller has to change — Anchor resolves the address from
+    /// its constant seed.
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + EmergencyAuthority::INIT_SPACE,
+        seeds = [EMERGENCY_AUTHORITY_SEED],
+        bump
+    )]
+    pub emergency_authority: Account<'info, EmergencyAuthority>,
 
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
@@ -67,6 +93,18 @@ pub fn handle_initialize_governance_config(
 
     let deposit_vault = ctx.accounts.deposit_vault.key();
     let now = Clock::get()?.unix_timestamp;
+
+    // The sunset is set here, from a compiled-in duration, and nothing in
+    // this program ever writes it again.
+    let emergency_authority = &mut ctx.accounts.emergency_authority;
+    write_emergency_authority(emergency_authority, now, ctx.bumps.emergency_authority)?;
+    emit!(EmergencyAuthorityInitialized {
+        emergency_authority: emergency_authority.key(),
+        primary_holder: emergency_authority.primary_holder,
+        secondary_holder: emergency_authority.secondary_holder,
+        initialized_at: emergency_authority.initialized_at,
+        expires_at: emergency_authority.expires_at,
+    });
 
     let governance_config = &mut ctx.accounts.governance_config;
     governance_config.admin = ctx.accounts.admin.key();

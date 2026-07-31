@@ -18,6 +18,16 @@ pub struct ProposalCreate {
     pub category: ProposalCategory,
     pub author: PeerId,
     pub author_public_key: PublicKey,
+    /// The on-chain `Proposal` id this proposal claims, or `None`.
+    ///
+    /// **This field changes the signed transcript.** It is inside the
+    /// bytes `SignedProposalCreate::sign` covers, which is the whole
+    /// point — an off-chain claim on an on-chain proposal is only worth
+    /// anything if the author signed it — but it also means a client that
+    /// omits the field signs different bytes from one that includes it,
+    /// and every node verifying will reject the mismatch. Clients, SDKs
+    /// and nodes have to move together; see [`crate::onchain`].
+    pub onchain_proposal_id: Option<u64>,
     pub timestamp: Timestamp,
 }
 

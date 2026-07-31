@@ -5,6 +5,7 @@ use crate::error::GovernanceError;
 use crate::events::{
     SignedProposalActivate, SignedProposalCreate, SignedProposalWithdraw, SignedVoteCast,
 };
+use crate::onchain::{ChainAgreement, ProposalChainView};
 use crate::protocol;
 use crate::record::{CastVote, Proposal, ProposalId, ProposalStatus};
 use openfiat_crypto::verify;
@@ -72,6 +73,7 @@ impl<S: KvStore> GovernanceRegistry<S> {
             author_public_key: create.author_public_key,
             status: ProposalStatus::Voting,
             votes: Vec::new(),
+            onchain_proposal_id: create.onchain_proposal_id,
             voting_closes_at,
             created_at: create.timestamp,
             updated_at: create.timestamp,
@@ -186,21 +188,14 @@ impl<S: KvStore> GovernanceRegistry<S> {
     /// `Activated` are off-chain lifecycle states the program knows nothing
     /// about, and `Voting` is not a resolution.
     ///
-    /// # Its caller does not exist yet, and why
+    /// # Prefer [`Self::adopt_onchain_resolution`]
     ///
-    /// The chain-resolution poll that should call this needs to find the
-    /// on-chain proposal corresponding to an off-chain [`ProposalId`], and
-    /// **there is no link between them**: off-chain ids are strings chosen
-    /// by the author, on-chain proposals are keyed by a `u64`, and the
-    /// on-chain record holds only `title_hash`/`summary_hash` whose hash
-    /// function is not pinned anywhere. Establishing that link changes a
-    /// signed event's wire format, so it is a protocol decision rather than
-    /// an implementation detail.
-    ///
-    /// This is a seam waiting on that decision, not a feature pretending to
-    /// work. Until it is called, proposals stay `Voting` locally — which is
-    /// exactly what they did before, since the local tally was never wired
-    /// into the running node either.
+    /// This takes the resolution as an argument and trusts it. It is the
+    /// low-level half, kept public for tests and for callers that have
+    /// already established the link themselves. Everything reading a real
+    /// chain should go through `adopt_onchain_resolution`, which will not
+    /// adopt an outcome from an account that has not been joined to this
+    /// proposal in both directions.
     pub fn apply_onchain_resolution(
         &self,
         id: &ProposalId,
@@ -223,6 +218,101 @@ impl<S: KvStore> GovernanceRegistry<S> {
         proposal.updated_at = now;
         self.put(&proposal);
         Ok(())
+    }
+
+    /// Adopt the chain's answer for `id`, given the on-chain account this
+    /// node read for it — the caller [`Self::apply_onchain_resolution`]
+    /// was waiting for.
+    ///
+    /// `onchain` is `None` when the account could not be fetched, was not
+    /// a `Proposal`, or was owned by another program. All of those mean
+    /// "this node cannot state an outcome", which is not a reason to
+    /// invent one.
+    ///
+    /// Returns what the two records say about each other, so a caller can
+    /// distinguish a proposal it adopted from one it declined to adopt
+    /// and *why*:
+    ///
+    /// * [`ChainAgreement::LinkedAwaitingAdoption`] is the case that
+    ///   writes: the link holds, the chain has resolved, and local state
+    ///   is still `Voting`. This is where the chain's answer lands.
+    /// * [`ChainAgreement::LinkedDisagreed`] writes nothing, because
+    ///   local state has already left `Voting` — it was adopted,
+    ///   withdrawn or activated — and letting a later read flip a settled
+    ///   outcome would make the local record depend on poll ordering. The
+    ///   return value is what lets the caller surface the divergence
+    ///   instead of it passing unnoticed.
+    /// * [`ChainAgreement::ClaimNotReciprocated`] writes nothing,
+    ///   deliberately. An unreciprocated claim is an outcome belonging to
+    ///   some other proposal, and adopting it would let anyone resolve
+    ///   anyone's proposal by creating an on-chain one that names it.
+    ///
+    /// Idempotent: once a proposal has left `Voting`,
+    /// `apply_onchain_resolution` refuses to move it again, so a poll may
+    /// re-read the same account every tick without effect.
+    pub fn adopt_onchain_resolution(
+        &self,
+        id: &ProposalId,
+        onchain: Option<&crate::onchain::OnchainProposal>,
+        now: Timestamp,
+    ) -> Result<ChainAgreement, GovernanceError> {
+        let proposal = self.get(id).ok_or(GovernanceError::ProposalNotFound)?;
+        let agreement = crate::onchain::compare(&proposal, onchain);
+        if agreement == ChainAgreement::LinkedAwaitingAdoption {
+            let resolved = onchain
+                .and_then(|onchain| onchain.state.resolution())
+                .expect("LinkedAwaitingAdoption implies the chain resolved");
+            // `InvalidStateTransition` here means the proposal had
+            // already left `Voting` — a re-read of something already
+            // adopted, withdrawn or activated. Not an error for a poll.
+            match self.apply_onchain_resolution(id, resolved, now) {
+                Ok(()) | Err(GovernanceError::InvalidStateTransition) => {}
+                Err(other) => return Err(other),
+            }
+        }
+        Ok(agreement)
+    }
+
+    /// The off-chain proposal beside the chain's record of it, and the
+    /// verdict on whether they agree — the read a client needs in order
+    /// to show both rather than one and imply the other.
+    ///
+    /// Pure: unlike [`Self::adopt_onchain_resolution`] it writes nothing,
+    /// so an interface can render the disagreement without the act of
+    /// looking resolving it.
+    pub fn chain_view(
+        &self,
+        id: &ProposalId,
+        onchain: Option<crate::onchain::OnchainProposal>,
+    ) -> Option<ProposalChainView> {
+        let offchain = self.get(id)?;
+        let agreement = crate::onchain::compare(&offchain, onchain.as_ref());
+        Some(ProposalChainView {
+            offchain,
+            onchain,
+            agreement,
+        })
+    }
+
+    /// Every proposal that claims an on-chain counterpart and has not
+    /// been resolved locally yet — i.e. exactly the set a chain-resolution
+    /// poll needs to fetch accounts for.
+    ///
+    /// Returns the off-chain id paired with the on-chain `u64`, because a
+    /// poll needs the first to write the answer back and the second to
+    /// derive the PDA. Proposals that claim nothing are skipped: there is
+    /// no account to read, and a poll that fetched one anyway would be
+    /// asking the chain about a proposal that was never put to it.
+    pub fn pending_onchain_resolutions(&self) -> Vec<(ProposalId, u64)> {
+        self.all()
+            .into_iter()
+            .filter(|proposal| proposal.status == ProposalStatus::Voting)
+            .filter_map(|proposal| {
+                proposal
+                    .onchain_proposal_id
+                    .map(|onchain_id| (proposal.id, onchain_id))
+            })
+            .collect()
     }
 
     /// An **unverified preview** of how the votes this node happens to
@@ -257,13 +347,14 @@ impl<S: KvStore> GovernanceRegistry<S> {
     ///
     /// The governance program's `tally_and_finalize` already decides, on
     /// chain, from stake-weighted votes every node can verify. That result
-    /// is authoritative and this crate should adopt it rather than
-    /// recompute it. Adopting it needs a link from an off-chain
-    /// [`ProposalId`] to the on-chain proposal's `u64` id, which does not
-    /// exist yet — see the note in `protocol`.
+    /// is authoritative and this crate adopts it rather than recomputing
+    /// it — see [`Self::adopt_onchain_resolution`], and [`crate::onchain`]
+    /// for the two-sided join that says which on-chain proposal is this
+    /// one.
     ///
-    /// Until then a proposal stays `Voting` in local state. Callers wanting
-    /// to know whether the window has closed should compare
+    /// A proposal with no on-chain counterpart, or one whose counterpart
+    /// this node has not read, stays `Voting` in local state. Callers
+    /// wanting to know whether the window has closed should compare
     /// [`Proposal::voting_closes_at`] against the clock, which is a fact
     /// this node can establish on its own, rather than reading a status it
     /// cannot substantiate.
@@ -357,6 +448,16 @@ mod tests {
         author: &Keypair,
         id: &str,
     ) -> (GovernanceRegistry<MemoryStore>, ProposalId) {
+        registry_claiming_onchain(author, id, None)
+    }
+
+    /// `onchain_proposal_id` is the off-chain half of the join key — the
+    /// on-chain `Proposal` this one claims to be.
+    fn registry_claiming_onchain(
+        author: &Keypair,
+        id: &str,
+        onchain_proposal_id: Option<u64>,
+    ) -> (GovernanceRegistry<MemoryStore>, ProposalId) {
         let registry = GovernanceRegistry::new(MemoryStore::new());
         let create = ProposalCreate {
             id: ProposalId::new(id),
@@ -365,6 +466,7 @@ mod tests {
             category: ProposalCategory::Protocol,
             author: peer_id_from_public_key(&author.public_key()).unwrap(),
             author_public_key: author.public_key(),
+            onchain_proposal_id,
             timestamp: Timestamp::now(),
         };
         let id = registry
@@ -410,6 +512,7 @@ mod tests {
             category: ProposalCategory::Protocol,
             author: peer_id_from_public_key(&author.public_key()).unwrap(),
             author_public_key: author.public_key(),
+            onchain_proposal_id: None,
             timestamp: Timestamp::now(),
         };
         registry
@@ -523,6 +626,195 @@ mod tests {
             registry.get(&id).unwrap().status,
             ProposalStatus::Voting,
             "zero verifiable votes is not a rejection"
+        );
+    }
+
+    /// An on-chain `Proposal` account's raw bytes, built the same way
+    /// `crate::onchain`'s own tests build them, so these exercise the
+    /// real decoder rather than a hand-made struct.
+    fn onchain_proposal(
+        id: u64,
+        state: u8,
+        offchain_id_hash: [u8; 32],
+    ) -> crate::onchain::OnchainProposal {
+        // discriminator(8) + the rest of the layout, all zero except the
+        // fields these tests care about.
+        let mut bytes = vec![0u8; 200];
+        bytes[..8].copy_from_slice(&[26, 94, 189, 187, 116, 136, 53, 33]);
+        bytes[8..16].copy_from_slice(&id.to_le_bytes());
+        bytes[163] = state;
+        bytes[164] = 1; // quorum_met
+        bytes[168..200].copy_from_slice(&offchain_id_hash);
+        crate::onchain::decode_proposal(crate::onchain::GOVERNANCE_PROGRAM_ID, &bytes)
+            .expect("the fixture must be a decodable Proposal account")
+    }
+
+    #[test]
+    fn the_chain_resolves_a_proposal_that_names_it_and_that_it_names_back() {
+        // The end-to-end shape of the wiring: a proposal claiming
+        // on-chain id 7, an on-chain proposal 7 claiming it back, and the
+        // chain's Accepted becoming the local status. Before this, the
+        // status could only be set by a caller that did not exist.
+        let author = Keypair::generate();
+        let (registry, id) = registry_claiming_onchain(&author, "ofip-0001", Some(7));
+        let onchain = onchain_proposal(7, 2, crate::onchain::offchain_id_hash(&id));
+
+        let agreement = registry
+            .adopt_onchain_resolution(&id, Some(&onchain), Timestamp::now())
+            .unwrap();
+        assert_eq!(
+            agreement,
+            crate::onchain::ChainAgreement::LinkedAwaitingAdoption
+        );
+        assert_eq!(registry.get(&id).unwrap().status, ProposalStatus::Accepted);
+    }
+
+    #[test]
+    fn a_chain_outcome_belonging_to_another_proposal_resolves_nothing() {
+        // The attack the two-sided join exists to stop: anyone may create
+        // an on-chain proposal, so if a one-sided claim were enough, a
+        // stranger could resolve somebody else's proposal by creating an
+        // on-chain one and letting the poll adopt its tally.
+        let author = Keypair::generate();
+        let (registry, id) = registry_claiming_onchain(&author, "ofip-0001", Some(7));
+        let unrelated = onchain_proposal(
+            7,
+            2,
+            crate::onchain::offchain_id_hash(&ProposalId::new("ofip-9999")),
+        );
+
+        let agreement = registry
+            .adopt_onchain_resolution(&id, Some(&unrelated), Timestamp::now())
+            .unwrap();
+        assert_eq!(
+            agreement,
+            crate::onchain::ChainAgreement::ClaimNotReciprocated
+        );
+        assert_eq!(
+            registry.get(&id).unwrap().status,
+            ProposalStatus::Voting,
+            "an unreciprocated claim must not move the status"
+        );
+    }
+
+    #[test]
+    fn a_node_that_could_not_read_the_account_resolves_nothing() {
+        // A `GossipOnly` node, or one whose RPC call failed. It must stay
+        // at "I do not know" rather than fall back to a local guess —
+        // the same principle `local_vote_preview` exists to protect.
+        let author = Keypair::generate();
+        let (registry, id) = registry_claiming_onchain(&author, "ofip-0001", Some(7));
+        let agreement = registry
+            .adopt_onchain_resolution(&id, None, Timestamp::now())
+            .unwrap();
+        assert_eq!(
+            agreement,
+            crate::onchain::ChainAgreement::ClaimNotReciprocated
+        );
+        assert_eq!(registry.get(&id).unwrap().status, ProposalStatus::Voting);
+    }
+
+    #[test]
+    fn re_reading_the_same_account_is_harmless() {
+        // A poll re-reads every tick. The second adoption must not be an
+        // error, or a poll would log a failure on every proposal it had
+        // already settled.
+        let author = Keypair::generate();
+        let (registry, id) = registry_claiming_onchain(&author, "ofip-0001", Some(7));
+        let onchain = onchain_proposal(7, 3, crate::onchain::offchain_id_hash(&id));
+        for _ in 0..3 {
+            registry
+                .adopt_onchain_resolution(&id, Some(&onchain), Timestamp::now())
+                .unwrap();
+        }
+        assert_eq!(registry.get(&id).unwrap().status, ProposalStatus::Rejected);
+    }
+
+    #[test]
+    fn the_chain_overrides_a_local_status_that_contradicts_it() {
+        // The disagreement case, and the reason the return value exists:
+        // the chain wins, and the caller is told a divergence happened
+        // rather than the overwrite being silent.
+        let author = Keypair::generate();
+        let (registry, id) = registry_claiming_onchain(&author, "ofip-0001", Some(7));
+        let hash = crate::onchain::offchain_id_hash(&id);
+        registry
+            .adopt_onchain_resolution(&id, Some(&onchain_proposal(7, 2, hash)), Timestamp::now())
+            .unwrap();
+        assert_eq!(registry.get(&id).unwrap().status, ProposalStatus::Accepted);
+
+        // The chain now says Rejected for the same proposal. Local state
+        // has already left `Voting`, so it stays put — an accepted
+        // proposal is not un-accepted by a later read, which would
+        // otherwise let a stale or reordered chain read flip a settled
+        // outcome. The divergence is still reported.
+        let agreement = registry
+            .adopt_onchain_resolution(&id, Some(&onchain_proposal(7, 3, hash)), Timestamp::now())
+            .unwrap();
+        assert_eq!(agreement, crate::onchain::ChainAgreement::LinkedDisagreed);
+    }
+
+    #[test]
+    fn a_poll_is_only_asked_to_fetch_proposals_that_claim_a_counterpart() {
+        let author = Keypair::generate();
+        let (registry, claiming) = registry_claiming_onchain(&author, "ofip-0001", Some(42));
+        // A second proposal in the same registry that never went on chain.
+        let create = ProposalCreate {
+            id: ProposalId::new("ofip-0002"),
+            title: "Purely informational".to_string(),
+            summary: "Never goes on chain.".to_string(),
+            category: ProposalCategory::Governance,
+            author: peer_id_from_public_key(&author.public_key()).unwrap(),
+            author_public_key: author.public_key(),
+            onchain_proposal_id: None,
+            timestamp: Timestamp::now(),
+        };
+        registry
+            .apply_create(SignedProposalCreate::sign(create, &author))
+            .unwrap();
+
+        assert_eq!(
+            registry.pending_onchain_resolutions(),
+            vec![(claiming.clone(), 42)]
+        );
+
+        // Once resolved it drops out, so a poll's workload shrinks as
+        // proposals settle rather than growing forever.
+        registry
+            .adopt_onchain_resolution(
+                &claiming,
+                Some(&onchain_proposal(
+                    42,
+                    2,
+                    crate::onchain::offchain_id_hash(&claiming),
+                )),
+                Timestamp::now(),
+            )
+            .unwrap();
+        assert!(registry.pending_onchain_resolutions().is_empty());
+    }
+
+    #[test]
+    fn a_chain_view_shows_both_records_rather_than_one_and_an_implication() {
+        // What a client gets: the off-chain record, the chain's record,
+        // and an explicit verdict — instead of one record presented as if
+        // it were both.
+        let author = Keypair::generate();
+        let (registry, id) = registry_claiming_onchain(&author, "ofip-0001", Some(7));
+        let onchain = onchain_proposal(7, 2, crate::onchain::offchain_id_hash(&id));
+
+        let view = registry.chain_view(&id, Some(onchain.clone())).unwrap();
+        assert_eq!(view.offchain.status, ProposalStatus::Voting);
+        assert_eq!(view.onchain.as_ref().unwrap().id, 7);
+        assert_eq!(
+            view.agreement,
+            crate::onchain::ChainAgreement::LinkedAwaitingAdoption,
+            "the chain has decided but this node has not adopted it yet"
+        );
+        assert_eq!(
+            registry.get(&id).unwrap().status,
+            ProposalStatus::Voting,
+            "reading the view must not resolve anything"
         );
     }
 

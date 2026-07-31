@@ -14,8 +14,19 @@ openfiat-gossip = { path = "../gossip", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
+# Only for `onchain::onchain_proposal_address`: deriving the governance
+# program's `Proposal` PDA needs real ed25519 off-curve checking, and a
+# hand-rolled version would be a second implementation of an address
+# derivation that must agree with the chain exactly. This is the address
+# type alone — no RPC client, no transaction machinery; this crate still
+# has no chain connectivity of its own.
+solana-pubkey = { version = "4", features = ["curve25519"] }
 
 [dev-dependencies]
+# Only so `onchain`'s tests can re-read the program's own generated IDL
+# and the deployment record, the two artefacts its hard-coded layout and
+# program id are transcribed from.
+serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
 libp2p = { version = "0.56.0", features = ["request-response"] }
