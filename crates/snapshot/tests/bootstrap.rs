@@ -109,8 +109,16 @@ fn make_node_with(seed: u8, producer: &Keypair, anchors: TrustAnchors) -> TestNo
     // fresh node believes. Without it every import here fails as
     // `UntrustedFirstSnapshot` — which is the anchor gate working, and is
     // asserted directly in `a_fresh_node_refuses_a_snapshot_from_a_stranger`.
-    let snapshots =
-        SnapshotService::with_anchors(gossip, Rc::clone(&store), Rc::clone(&services), anchors);
+    let snapshots = SnapshotService::with_anchors(
+        gossip,
+        Rc::clone(&store),
+        Rc::clone(&services),
+        anchors,
+        // This harness snapshots one records-only column family, so
+        // there is nothing self-describing to check. What a real node
+        // passes is `openfiat_rpc::state::verify_snapshot_entry`.
+        openfiat_snapshot::state::accept_any,
+    );
 
     TestNode {
         store,

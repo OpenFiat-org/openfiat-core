@@ -27,7 +27,12 @@
 use openfiat_crypto::Cid;
 use openfiat_storage::KvStore;
 
-const COLUMN_FAMILY: &str = "pinned_content";
+/// Where a node's blocks live.
+///
+/// Public because it is now part of a snapshot — the node composing the
+/// column families has to name it, and a second spelling of it somewhere
+/// else is a column family that silently stops being carried.
+pub const COLUMN_FAMILY: &str = "pinned_content";
 
 /// The largest single block this node will hold.
 ///

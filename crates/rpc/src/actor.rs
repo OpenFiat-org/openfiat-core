@@ -634,7 +634,7 @@ fn advertise_public_api<S: KvStore + 'static>(
     // Derived from the identity, not random: re-registering on every
     // restart must update the same record rather than accumulating one
     // dead entry per boot.
-    let service_id = ServiceId::new(format!("node-{}", hex_peer(&provider)));
+    let service_id = ServiceId::new(format!("node-{}", keypair.public_key()));
 
     let registration = Registration {
         service_id,
@@ -726,7 +726,7 @@ fn register_as_snapshot_provider<S: KvStore + 'static>(
     let registration = Registration {
         // Derived from the identity, like the public-API record's, so a
         // restart updates one entry instead of leaving a dead one per boot.
-        service_id: ServiceId::new(format!("snapshot-{}", hex_peer(&provider))),
+        service_id: ServiceId::new(format!("snapshot-{}", keypair.public_key())),
         service_type: ServiceType::Infrastructure(InfrastructureService::SnapshotProvider),
         provider: provider.clone(),
         provider_public_key: keypair.public_key(),
@@ -755,14 +755,6 @@ fn register_as_snapshot_provider<S: KvStore + 'static>(
         }
         Err(err) => tracing::warn!(?err, "could not register this node as a snapshot provider"),
     }
-}
-
-fn hex_peer(peer: &openfiat_types::PeerId) -> String {
-    peer.as_bytes()
-        .iter()
-        .take(8)
-        .map(|b| format!("{b:02x}"))
-        .collect()
 }
 
 /// One sweep of the record families that expire.
@@ -1719,6 +1711,23 @@ where
                     .expect("nothing else can already be serving bitswap on this node");
                 control
             });
+            // A node that does not serve content holds none, and nothing
+            // else would ever release what it has: the eviction sweep runs
+            // inside `poll_content`, which only runs when serving is on.
+            // Two ways to arrive here with content on disk — an operator
+            // who turned serving off, and a snapshot that brought blocks
+            // with it, since a snapshot carries the producer's content
+            // whatever the importer's configuration.
+            if !network.serve_content {
+                let released = state.held_content.evict_outside(&[]);
+                if released > 0 {
+                    tracing::info!(
+                        released,
+                        "released content blocks this node is not configured to serve"
+                    );
+                }
+            }
+
             // Joining the public IPFS DHT, which is what makes the content
             // this node serves findable by anyone who has not heard of
             // OpenFiat. Only when it serves content at all — a node with

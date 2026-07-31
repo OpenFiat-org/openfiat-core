@@ -8,6 +8,7 @@ use crate::error::SnapshotError;
 use crate::events::SignedSnapshotAnnounce;
 use crate::protocol;
 use crate::record::{SnapshotId, SnapshotMetadata};
+use crate::state::EntryVerifier;
 use crate::trust::TrustAnchors;
 use openfiat_registry::Registry;
 use openfiat_serialization::wire;
@@ -30,22 +31,42 @@ pub struct SnapshotIndex<S> {
     /// Who this node will take a *first* snapshot from, when it has no
     /// checkpoint of its own to judge one against.
     anchors: TrustAnchors,
+    /// What this node will accept into each column family, entry by
+    /// entry — see [`crate::state::EntryVerifier`].
+    ///
+    /// Held on the index rather than passed to `import`, so that every
+    /// path into the store goes through it. A parameter would be a
+    /// parameter some future call site passes `accept_any` to, and the
+    /// one place that must never happen is the one that writes a peer's
+    /// bytes into this node's content store.
+    verify_entry: EntryVerifier,
 }
 
 impl<S: KvStore> SnapshotIndex<S> {
-    pub fn new(store: S, services: Rc<Registry<S>>) -> Self {
-        Self::with_anchors(store, services, TrustAnchors::pinned())
+    /// `verify_entry` is stated rather than defaulted: a default would be
+    /// `accept_any`, and a node that composes a self-verifying column
+    /// family and forgets to say so imports whatever a producer put in
+    /// it. Pass `openfiat_snapshot::state::accept_any` when the answer is
+    /// genuinely that there is nothing to check.
+    pub fn new(store: S, services: Rc<Registry<S>>, verify_entry: EntryVerifier) -> Self {
+        Self::with_anchors(store, services, TrustAnchors::pinned(), verify_entry)
     }
 
     /// The pinned anchors plus whatever the operator added — see
     /// `crate::trust`. Separate from `new` so the common case cannot
     /// forget them: `new` is anchored too, and there is no constructor
     /// that produces an unanchored index.
-    pub fn with_anchors(store: S, services: Rc<Registry<S>>, anchors: TrustAnchors) -> Self {
+    pub fn with_anchors(
+        store: S,
+        services: Rc<Registry<S>>,
+        anchors: TrustAnchors,
+        verify_entry: EntryVerifier,
+    ) -> Self {
         Self {
             store,
             services,
             anchors,
+            verify_entry,
         }
     }
 
@@ -174,6 +195,13 @@ impl<S: KvStore> SnapshotIndex<S> {
         {
             return Err(SnapshotError::StaleSnapshot);
         }
+        // Before the size check rather than after: `size_bytes` is a
+        // number in somebody else's announcement, and the two failures
+        // say different things. "Larger than this node will hold" is
+        // about this node; "not the size announced" is about the bytes.
+        if metadata.size_bytes > codec::MAX_SNAPSHOT_BYTES {
+            return Err(SnapshotError::SnapshotTooLarge);
+        }
         if compressed_bytes.len() as u64 != metadata.size_bytes {
             return Err(SnapshotError::SizeMismatch);
         }
@@ -182,7 +210,12 @@ impl<S: KvStore> SnapshotIndex<S> {
             return Err(SnapshotError::StateRootMismatch);
         }
 
-        let restored = crate::state::restore(&self.store, &state_bytes, RESERVED_COLUMN_FAMILIES)?;
+        let restored = crate::state::restore(
+            &self.store,
+            &state_bytes,
+            RESERVED_COLUMN_FAMILIES,
+            self.verify_entry,
+        )?;
         // Last, and only once the state it describes is actually on disk:
         // a checkpoint advanced ahead of the state would tell this node's
         // gossip catch-up to resume from a slot whose state it does not
@@ -278,6 +311,7 @@ mod tests {
             store,
             services,
             crate::trust::TrustAnchors::with_operator(&[key]).unwrap(),
+            crate::state::accept_any,
         )
     }
 
@@ -321,7 +355,11 @@ mod tests {
     #[test]
     fn an_unregistered_announcer_is_rejected() {
         let services = Rc::new(Registry::new(Rc::new(MemoryStore::new())));
-        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), services);
+        let index = SnapshotIndex::new(
+            Rc::new(MemoryStore::new()),
+            services,
+            crate::state::accept_any,
+        );
         let stranger = Keypair::generate();
         let result = index.apply_announce(SignedSnapshotAnnounce::sign(
             announce(&stranger, "snap-1", 100, b"state"),
@@ -381,6 +419,62 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_the_importer_refuses_stops_a_snapshot_that_verifies_perfectly() {
+        // The state root is computed by the producer over whatever they
+        // assembled, so a blob full of contents this node will not stand
+        // behind passes every check above and must still be refused. The
+        // announcement here is genuine: signed, registry-authorized,
+        // anchored, and hashing to its own bytes.
+        fn refuse_advertisements(family: &str, _key: &[u8], _value: &[u8]) -> bool {
+            family != "advertisements"
+        }
+
+        let (provider, services) = registered_provider(1);
+        let store = Rc::new(MemoryStore::new());
+        let key = bs58::encode(provider.public_key().as_bytes()).into_string();
+        let index = SnapshotIndex::with_anchors(
+            Rc::clone(&store),
+            services,
+            crate::trust::TrustAnchors::with_operator(&[key]).unwrap(),
+            refuse_advertisements,
+        );
+        let blob = state_blob("ad-1", "state this importer will not accept");
+        let metadata = announce(&provider, "snap-1", 100, &blob);
+        seed(&index, &provider, &metadata);
+
+        assert_eq!(
+            index.import(&metadata.id, &blob),
+            Err(SnapshotError::UnverifiableEntry)
+        );
+        assert_eq!(store.get("advertisements", b"ad-1").unwrap(), None);
+        assert_eq!(
+            index.checkpoint_slot(),
+            None,
+            "a refused import must not advance the checkpoint past state \
+             this node does not have"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_larger_than_this_node_will_hold_is_refused_before_it_is_read() {
+        // Snapshots carry content blocks now, so their size follows real
+        // trading volume and somebody else's retention window. Without a
+        // ceiling, an announcement is an instruction to allocate whatever
+        // the producer says.
+        let (provider, services) = registered_provider(1);
+        let index = trusting(Rc::new(MemoryStore::new()), services, &provider);
+        let blob = state_blob("ad-1", "small");
+        let mut metadata = announce(&provider, "snap-1", 100, &blob);
+        metadata.size_bytes = codec::MAX_SNAPSHOT_BYTES + 1;
+        seed(&index, &provider, &metadata);
+
+        assert_eq!(
+            index.import(&metadata.id, &blob),
+            Err(SnapshotError::SnapshotTooLarge)
+        );
+    }
+
+    #[test]
     fn a_tampered_state_blob_fails_state_root_verification() {
         let (provider, services) = registered_provider(1);
         let store = Rc::new(MemoryStore::new());
@@ -428,7 +522,11 @@ mod tests {
     #[test]
     fn importing_a_snapshot_this_node_never_verified_is_refused() {
         let (_, services) = registered_provider(1);
-        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), services);
+        let index = SnapshotIndex::new(
+            Rc::new(MemoryStore::new()),
+            services,
+            crate::state::accept_any,
+        );
         let stranger = Keypair::generate();
         let blob = state_blob("ad-1", "fabricated state");
         let metadata = announce(&stranger, "snap-forged", 9_000, &blob);
@@ -446,7 +544,11 @@ mod tests {
     #[test]
     fn a_producer_deregistered_since_announcing_can_no_longer_be_imported_from() {
         let (provider, services) = registered_provider(1);
-        let index = SnapshotIndex::new(Rc::new(MemoryStore::new()), Rc::clone(&services));
+        let index = SnapshotIndex::new(
+            Rc::new(MemoryStore::new()),
+            Rc::clone(&services),
+            crate::state::accept_any,
+        );
         let blob = state_blob("ad-1", "state");
         let metadata = announce(&provider, "snap-1", 100, &blob);
         seed(&index, &provider, &metadata);

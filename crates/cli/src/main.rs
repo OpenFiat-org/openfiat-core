@@ -66,12 +66,14 @@ use std::sync::Arc;
 /// the single definition of what makes up this node's worldview) plus the
 /// three that are deliberately node-local and so are not snapshotted:
 /// the gossip event log and the two snapshot bookkeeping families.
-const NODE_LOCAL_COLUMN_FAMILIES: &[&str] = &[
-    "gossip_events",
-    "snapshot_metadata",
-    "snapshot_checkpoint",
-    "pinned_content",
-];
+///
+/// `pinned_content` used to be here too. It is snapshotted now — a node
+/// bootstrapping from a peer comes up able to serve the evidence its
+/// records reference instead of refetching it for hours — so it comes
+/// from the snapshotted set, and listing it twice would open the same
+/// column family twice.
+const NODE_LOCAL_COLUMN_FAMILIES: &[&str] =
+    &["gossip_events", "snapshot_metadata", "snapshot_checkpoint"];
 
 fn column_families() -> Vec<&'static str> {
     openfiat_rpc::SNAPSHOT_COLUMN_FAMILIES
@@ -675,4 +677,31 @@ async fn shutdown_signal() {
         () = terminate => {}
     }
     tracing::info!("shutdown signal received, closing gracefully");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_column_family_is_opened_twice() {
+        // The two lists are maintained by different people for different
+        // reasons, and a family named in both is a family RocksDB is
+        // asked to open twice. `pinned_content` was in both the moment it
+        // became part of a snapshot.
+        let families = column_families();
+        let unique: std::collections::HashSet<_> = families.iter().collect();
+        assert_eq!(unique.len(), families.len(), "{families:?}");
+    }
+
+    #[test]
+    fn the_content_a_node_serves_is_part_of_its_snapshotted_state() {
+        // It was excluded on the grounds that a peer could refetch it
+        // from IPFS, which is exactly the availability this network is
+        // paid to stop assuming.
+        assert!(
+            openfiat_rpc::SNAPSHOT_COLUMN_FAMILIES
+                .contains(&openfiat_content::CONTENT_COLUMN_FAMILY)
+        );
+    }
 }

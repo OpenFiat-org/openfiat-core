@@ -25,12 +25,18 @@ pub struct SnapshotService<S> {
 impl<S: KvStore + 'static> SnapshotService<S> {
     /// `services` is the shared handle from `RegistryService::registry`
     /// on the same node — see `SnapshotIndex`.
-    pub fn new(gossip: GossipService<S>, store: S, services: Rc<Registry<S>>) -> Self {
+    pub fn new(
+        gossip: GossipService<S>,
+        store: S,
+        services: Rc<Registry<S>>,
+        verify_entry: crate::state::EntryVerifier,
+    ) -> Self {
         Self::with_anchors(
             gossip,
             store,
             services,
             crate::trust::TrustAnchors::pinned(),
+            verify_entry,
         )
     }
 
@@ -44,8 +50,14 @@ impl<S: KvStore + 'static> SnapshotService<S> {
         store: S,
         services: Rc<Registry<S>>,
         anchors: crate::trust::TrustAnchors,
+        verify_entry: crate::state::EntryVerifier,
     ) -> Self {
-        let registry = Rc::new(SnapshotIndex::with_anchors(store, services, anchors));
+        let registry = Rc::new(SnapshotIndex::with_anchors(
+            store,
+            services,
+            anchors,
+            verify_entry,
+        ));
         let handler_registry = Rc::clone(&registry);
         gossip.add_event_handler(move |event| handler_registry.apply_event(event));
         Self { gossip, registry }

@@ -34,6 +34,12 @@ pub async fn download(
     location: &SnapshotLocation,
     size_bytes: u64,
 ) -> Result<Vec<u8>, SnapshotError> {
+    // Checked before a request is made, not after the body arrives: the
+    // point of the cap is that this node never allocates that much, and
+    // `size_bytes` is known from the announcement it already verified.
+    if size_bytes > crate::codec::MAX_SNAPSHOT_BYTES {
+        return Err(SnapshotError::SnapshotTooLarge);
+    }
     let mut response = client
         .get(location.as_str())
         .timeout(DOWNLOAD_TIMEOUT)

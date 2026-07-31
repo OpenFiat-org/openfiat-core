@@ -335,6 +335,22 @@ Size follows your `--retention` window, since a snapshot carries the state
 the node actually holds. An archival node's snapshots grow without bound;
 a 30-day node's do not.
 
+A snapshot also carries the **content blocks** the node holds — the
+attachments its records reference — so a node bootstrapping from one comes
+up able to serve and earn straight away, instead of freeloading for hours
+while it refetches evidence its peers already have. It used to leave them
+out on the grounds that a peer could refetch from IPFS, which is exactly
+the availability this network is paid to stop assuming: it is somebody
+else's problem right up until the uploader stops paying.
+
+That makes size real rather than trivial. Retention is what bounds it —
+the content in a snapshot is the content in the node's window, with no
+second policy to keep in step — and there is a hard ceiling of **2 GiB**
+on the whole file, because every stage of the pipeline holds it in memory.
+A node whose state outgrows that fails to produce and says so, rather than
+writing an hourly file its peers would refuse; the fix is a shorter
+`--retention`.
+
 ### What a node will accept
 
 A snapshot is the importing node's **entire worldview**, so accepting a bad
@@ -342,6 +358,14 @@ one is worse than failing to start. Before a single byte reaches the store,
 the node checks the announcement was signed, the producer is a registered
 snapshot provider, the download is the announced size, and the decompressed
 bytes hash to the announced `state_root`.
+
+Every content block is additionally checked against the CID it arrives
+under. A block *is* the hash of its own bytes, so a pair that disagrees
+with itself is either corruption or an attempt to make your node serve
+somebody else's bytes under an identifier a signed record points at — to
+challengers, and to browsers. One bad block refuses the whole snapshot;
+the state root cannot stand in for this, because the producer computed it
+over whatever they assembled.
 
 Those checks establish that the bytes are what the announcer *said* they
 were — not that the announcer is honest. Nothing in the protocol

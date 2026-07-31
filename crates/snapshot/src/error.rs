@@ -55,6 +55,18 @@ pub enum SnapshotError {
     /// The snapshot tried to write a column family that is this node's
     /// own snapshot bookkeeping — see `crate::state::restore`.
     ReservedColumnFamily,
+    /// An entry in the snapshot failed the importing node's own check on
+    /// what that column family may contain — see
+    /// [`crate::state::EntryVerifier`].
+    ///
+    /// Distinct from [`Self::StateRootMismatch`], which it can coexist
+    /// with only in the sense that both mean "do not import this". The
+    /// state root proves the blob is what the producer announced; it says
+    /// nothing about whether the producer put honest contents inside it.
+    UnverifiableEntry,
+    /// The snapshot is larger than this node will hold in memory —
+    /// [`crate::codec::MAX_SNAPSHOT_BYTES`].
+    SnapshotTooLarge,
     /// A column family could not be read while assembling a snapshot —
     /// an incomplete snapshot is never produced in its place.
     StateUnreadable,
@@ -85,6 +97,8 @@ impl SnapshotError {
             Self::DownloadFailed => ErrorCode::NetworkError,
             Self::StaleSnapshot => ErrorCode::InvalidRequest,
             Self::ReservedColumnFamily => ErrorCode::SnapshotVerificationFailed,
+            Self::UnverifiableEntry => ErrorCode::SnapshotVerificationFailed,
+            Self::SnapshotTooLarge => ErrorCode::SnapshotVerificationFailed,
             Self::StateUnreadable => ErrorCode::DatabaseError,
             Self::StateUnwritable => ErrorCode::DatabaseError,
         }

@@ -83,12 +83,30 @@ pub struct PendingVoteVerification {
 /// - `snapshot_metadata` and `snapshot_checkpoint` — node-local snapshot
 ///   bookkeeping, which `openfiat_snapshot::store::RESERVED_COLUMN_FAMILIES`
 ///   also refuses to let an import overwrite.
-/// - `pinned_content` — the file bytes an opted-in node keeps so it can
-///   answer a retrievability challenge. Deliberately excluded: it is the
-///   one column family holding bulk data rather than records, a node that
-///   did not opt in has none of it, and a node that did can re-fetch any
-///   of it from IPFS. Shipping it would make a snapshot larger than the
-///   state it describes, to save a peer a fetch it can do itself.
+///
+/// # `pinned_content` is in the list, and used not to be
+///
+/// It was excluded on the grounds that it is bulk data and "a peer can
+/// re-fetch it from IPFS". That reasoning treats availability as somebody
+/// else's problem, which is exactly what fails when an uploader stops
+/// paying their pinning service — the failure this network's content
+/// premium exists to prevent. A node bootstrapping from a snapshot came
+/// up able to answer records and unable to serve a single byte of the
+/// evidence they reference, freeloading for hours while it refetched
+/// content its peers already had.
+///
+/// Size is real now rather than trivial, and two things bound it. The
+/// column family *is* the node's retention window — eviction sweeps it
+/// every pinning tick — so an archival node ships everything and a
+/// rolling node ships its window, without a second policy to keep in
+/// step. And `openfiat_snapshot::codec::MAX_SNAPSHOT_BYTES` is the
+/// ceiling on the whole blob, which a producer hits before its peers do.
+///
+/// The import side is not optional: see [`verify_snapshot_entry`]. A
+/// block that does not hash to its key is corruption or an attempt to
+/// make this node serve someone else's bytes under a trusted CID, and the
+/// state root does not catch it — the state root proves the blob is what
+/// the producer announced, not that the producer filled it honestly.
 pub const SNAPSHOT_COLUMN_FAMILIES: &[&str] = &[
     "advertisements",
     "reservations",
@@ -104,7 +122,40 @@ pub const SNAPSHOT_COLUMN_FAMILIES: &[&str] = &[
     "oracle_records",
     "risk_records",
     "sessions",
+    openfiat_content::CONTENT_COLUMN_FAMILY,
 ];
+
+/// What this node will accept into each column family of a snapshot.
+///
+/// Records pass: an entry in `settlements` is whatever the network says
+/// it is, and a producer able to forge one could have gossiped it
+/// instead, so refusing it here would buy nothing.
+///
+/// Content blocks are checked, because they are the one thing in this
+/// store that an importer can judge for itself. A CID *is* the hash of
+/// the block it names, so a key/value pair either agrees with itself or
+/// does not — and one that does not is either corruption or a producer
+/// arranging for this node to serve their bytes under an identifier
+/// somebody else's signed record points at. This node would then hand
+/// those bytes to a challenger and to any browser that asked.
+///
+/// A snapshot's state root cannot substitute for this. It proves the blob
+/// is the one the producer announced and signed; the producer computed it
+/// over whatever they assembled.
+pub fn verify_snapshot_entry(column_family: &str, key: &[u8], value: &[u8]) -> bool {
+    if column_family != openfiat_content::CONTENT_COLUMN_FAMILY {
+        return true;
+    }
+    let Ok(spelling) = std::str::from_utf8(key) else {
+        return false;
+    };
+    let Ok(cid) = openfiat_crypto::Cid::parse(spelling) else {
+        return false;
+    };
+    // The same two conditions `HeldContent::keep` applies to a block
+    // arriving from a peer, because a snapshot is a peer's bytes too.
+    value.len() <= openfiat_content::MAX_BLOCK_BYTES && cid.matches(value)
+}
 
 /// The OFS specifications this node implements, as it tells peers.
 ///
@@ -348,6 +399,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             Rc::clone(&store),
             Rc::clone(&services),
             trusted_snapshot_providers,
+            verify_snapshot_entry,
         ));
         let sessions = Rc::new(SessionRegistry::new(Rc::clone(&store)));
         let is_rpc_connected = chain_mode.is_rpc_connected();

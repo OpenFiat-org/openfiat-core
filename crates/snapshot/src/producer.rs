@@ -73,6 +73,15 @@ pub fn produce<S: KvStore>(
     let state_root = codec::state_root(&state_bytes);
     let compressed = codec::compress(&state_bytes, compression)?;
 
+    // A node whose own state has outgrown what a peer will import must
+    // find out here, on its own machine, rather than by writing an hourly
+    // file that every peer refuses. Now that a snapshot carries content
+    // blocks this is reachable by an archival node on a busy network, and
+    // the fix is a shorter retention window.
+    if compressed.len() as u64 > codec::MAX_SNAPSHOT_BYTES {
+        return Err(SnapshotError::SnapshotTooLarge);
+    }
+
     write_atomically(&path, &compressed)?;
     prune(&config.directory, config.retain);
 

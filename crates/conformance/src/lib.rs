@@ -90,7 +90,14 @@ impl<S: KvStore + 'static> FullNode<S> {
         ));
         let oracles = Rc::new(OracleIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let risk = Rc::new(RiskIndex::new(Rc::clone(&store), Rc::clone(&services)));
-        let snapshots = Rc::new(SnapshotIndex::new(Rc::clone(&store), Rc::clone(&services)));
+        // This harness never imports a snapshot — it exercises the
+        // gossip surface — so there is genuinely nothing here to check.
+        // A real node passes `openfiat_rpc::state::verify_snapshot_entry`.
+        let snapshots = Rc::new(SnapshotIndex::new(
+            Rc::clone(&store),
+            Rc::clone(&services),
+            openfiat_snapshot::state::accept_any,
+        ));
         let sessions = Rc::new(SessionRegistry::new(Rc::clone(&store)));
         let chain = ChainBridge::install(&mut gossip);
 

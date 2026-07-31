@@ -65,7 +65,7 @@ pub use challenge::{ChallengeOutcome, challengeable, judge};
 pub use error::ContentError;
 pub use events::SignedAttachmentPublish;
 pub use gateway::{DEFAULT_GATEWAY, GatewayFetcher};
-pub use held::{HeldContent, MAX_BLOCK_BYTES};
+pub use held::{COLUMN_FAMILY as CONTENT_COLUMN_FAMILY, HeldContent, MAX_BLOCK_BYTES};
 pub use kubo::KuboClient;
 pub use openfiat_crypto::Cid;
 pub use pinning::{PinError, PinningClient};

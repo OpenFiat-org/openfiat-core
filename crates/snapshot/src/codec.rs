@@ -5,6 +5,30 @@ use crate::error::SnapshotError;
 use crate::record::CompressionMethod;
 use openfiat_crypto::hash::sha256;
 
+/// The largest snapshot this node will produce, download, or import.
+///
+/// # Why there has to be one now
+///
+/// A snapshot used to be records only — a few megabytes of advertisements
+/// and settlements, where `size_bytes` from a signed announcement was
+/// bound enough. Now it carries the content blocks a node holds, so its
+/// size follows real trading volume and the operator's retention window,
+/// and both of those are numbers somebody else chose.
+///
+/// Every stage of the pipeline holds the whole thing in memory: the
+/// producer serializes into a `Vec`, the fetcher downloads into one, the
+/// importer decompresses into another. So this is a memory bound, not a
+/// policy about how much content is worth keeping. Two gibibytes is the
+/// largest a node with a few gigabytes of RAM can move through that
+/// pipeline without the import being the thing that kills it.
+///
+/// A producer whose state exceeds this fails to produce, loudly, rather
+/// than writing a file every peer would refuse. The fix is a shorter
+/// `--retention`: the node keeps serving what it holds either way, and
+/// what it stops doing is handing its whole archive to newcomers in one
+/// blob.
+pub const MAX_SNAPSHOT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 /// §10: "a cryptographic digest representing the complete snapshot state."
 pub fn state_root(state_bytes: &[u8]) -> [u8; 32] {
     sha256(state_bytes)
