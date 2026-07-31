@@ -72,8 +72,23 @@ use std::sync::Arc;
 /// records reference instead of refetching it for hours — so it comes
 /// from the snapshotted set, and listing it twice would open the same
 /// column family twice.
-const NODE_LOCAL_COLUMN_FAMILIES: &[&str] =
-    &["gossip_events", "snapshot_metadata", "snapshot_checkpoint"];
+///
+/// `peers` was missing from both lists, which is the failure this
+/// constant's own doc comment describes, made real: `PeerCache::upsert`
+/// discards its result, so on a RocksDB node every write of a discovered
+/// peer failed silently and `getPeers` answered with an empty list
+/// forever — on a node that was connected to a peer at that moment. The
+/// network looked like one node because nothing could record the second.
+/// Node-local rather than snapshotted: who this node happens to be
+/// connected to is not part of the worldview it replicates, and handing a
+/// bootstrapping node somebody else's peer table would tell it about
+/// connections it does not have.
+const NODE_LOCAL_COLUMN_FAMILIES: &[&str] = &[
+    "gossip_events",
+    "snapshot_metadata",
+    "snapshot_checkpoint",
+    "peers",
+];
 
 fn column_families() -> Vec<&'static str> {
     openfiat_rpc::SNAPSHOT_COLUMN_FAMILIES
@@ -681,6 +696,44 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
+    /// Every column family any part of this node writes to must be opened
+    /// at startup.
+    ///
+    /// `Database::open` takes the full set up front and a `put` to one that
+    /// was never opened fails — and every call site in this workspace
+    /// discards that result, so the failure is silent. `peers` was missing,
+    /// which meant a RocksDB node recorded no discovered peer at all and
+    /// `getPeers` answered with an empty list while the node was connected
+    /// to somebody. It looked like a network of one.
+    ///
+    /// Asserted against the names the owning crates declare, so a crate
+    /// that adds or renames a family fails here rather than in production
+    /// silence.
+    #[test]
+    fn every_column_family_the_node_writes_to_is_opened() {
+        let opened = super::column_families();
+        for required in [
+            // openfiat_discovery::cache
+            "peers",
+            // openfiat_gossip's event log, and snapshot bookkeeping
+            "gossip_events",
+            "snapshot_metadata",
+            "snapshot_checkpoint",
+        ] {
+            assert!(
+                opened.contains(&required),
+                "`{required}` is written by this node but never opened, so every \
+                 write to it fails silently"
+            );
+        }
+        for snapshotted in openfiat_rpc::SNAPSHOT_COLUMN_FAMILIES {
+            assert!(
+                opened.contains(snapshotted),
+                "`{snapshotted}` is not opened"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

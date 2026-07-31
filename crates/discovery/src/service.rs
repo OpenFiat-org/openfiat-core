@@ -155,6 +155,14 @@ impl<S: KvStore> DiscoveryService<S> {
                 self.self_addresses.push(address.to_string());
             }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                // Logged as well as recorded. Without this, a connection
+                // that succeeded and a dial that was never made look
+                // identical from the log, and `getPeers` cannot tell them
+                // apart either: it reports the discovery *cache*, which is
+                // populated by the OFS-1100 exchange rather than by the
+                // connection, so an empty list means "no peer record" and
+                // not necessarily "no peer".
+                tracing::info!(peer = %peer_id, "connected to a peer");
                 self.on_connected(*peer_id, node);
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
