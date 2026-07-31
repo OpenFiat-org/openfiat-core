@@ -4,7 +4,8 @@
 
 use crate::error::AdvertisementError;
 use crate::events::{
-    SignedAdvertisementCreate, SignedAdvertisementDisable, SignedAdvertisementPriceUpdate,
+    SignedAdvertisementCreate, SignedAdvertisementPriceUpdate, SignedAdvertisementStatusSet,
+    SignedAdvertisementTermsUpdate,
 };
 use crate::protocol;
 use crate::record::{Advertisement, AdvertisementId, AdvertisementStatus, Direction};
@@ -69,6 +70,14 @@ impl<S: KvStore> AdvertisementRegistry<S> {
         if self.get(&id).is_some() {
             return Err(AdvertisementError::DuplicateAdvertisementId);
         }
+        // Checked here as well as on a terms update, because an
+        // advertisement created unusable is the same problem as one edited
+        // into being unusable, and nothing else on the path was checking.
+        Self::check_terms(
+            &signed.create.min_trade,
+            &signed.create.max_trade,
+            &signed.create.payment_methods,
+        )?;
         let create = signed.create;
         self.put(&Advertisement {
             id: create.id,
@@ -89,42 +98,122 @@ impl<S: KvStore> AdvertisementRegistry<S> {
         Ok(id)
     }
 
-    /// §21/§24: only the original merchant may disable their own ad.
-    pub fn apply_disable(
+    /// §16/§18/§21: the merchant moving their own advertisement between
+    /// states — pausing it, taking it down, deleting it, or putting it
+    /// back up.
+    ///
+    /// Reactivation is the case this exists for. Until it did, the only
+    /// status event was a disable, so an advertisement §18 auto-disabled
+    /// when its liquidity hit zero stayed disabled however much liquidity
+    /// the merchant added afterwards. Two rules bound it:
+    ///
+    /// - a deleted advertisement stays deleted (§21). Reviving a retired
+    ///   id would make deletion a suggestion, and every reservation and
+    ///   settlement that referenced it would suddenly point at a live ad
+    ///   again;
+    /// - an advertisement with no liquidity cannot be made active,
+    ///   because §18 would disable it on the next reservation anyway. The
+    ///   alternative is an order book entry that exists to fail.
+    pub fn apply_status_set(
         &self,
-        signed: SignedAdvertisementDisable,
+        signed: SignedAdvertisementStatusSet,
     ) -> Result<(), AdvertisementError> {
-        let mut ad = self
-            .get(&signed.disable.id)
-            .ok_or(AdvertisementError::AdvertisementNotFound)?;
-        if ad.merchant != signed.disable.merchant {
-            return Err(AdvertisementError::UnauthorizedUpdate);
-        }
-        let bytes = json::to_bytes(&signed.disable)
-            .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
-        verify(&ad.merchant_public_key, &bytes, &signed.signature)
-            .map_err(|_| AdvertisementError::InvalidSignature)?;
+        let bytes =
+            json::to_bytes(&signed.set).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        let mut ad = self.authorize(
+            &signed.set.id,
+            &signed.set.merchant,
+            &bytes,
+            &signed.signature,
+        )?;
 
-        ad.status = AdvertisementStatus::Disabled;
-        ad.updated_at = signed.disable.timestamp;
+        if signed.set.status == AdvertisementStatus::Active
+            && ad.available_liquidity.base_units() == 0
+        {
+            return Err(AdvertisementError::InsufficientLiquidity);
+        }
+
+        ad.status = signed.set.status;
+        ad.updated_at = signed.set.timestamp;
         self.put(&ad);
         Ok(())
+    }
+
+    /// §6: the merchant changing what they will trade, in place.
+    ///
+    /// The whole value is that the id survives. Republishing under a new
+    /// id — which is what a merchant had to do before this — orphans
+    /// every reservation, settlement and review that named the old one.
+    pub fn apply_terms_update(
+        &self,
+        signed: SignedAdvertisementTermsUpdate,
+    ) -> Result<(), AdvertisementError> {
+        let bytes = json::to_bytes(&signed.update)
+            .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        let mut ad = self.authorize(
+            &signed.update.id,
+            &signed.update.merchant,
+            &bytes,
+            &signed.signature,
+        )?;
+
+        Self::check_terms(
+            &signed.update.min_trade,
+            &signed.update.max_trade,
+            &signed.update.payment_methods,
+        )?;
+
+        ad.min_trade = signed.update.min_trade;
+        ad.max_trade = signed.update.max_trade;
+        ad.payment_methods = signed.update.payment_methods;
+        ad.updated_at = signed.update.timestamp;
+        self.put(&ad);
+        Ok(())
+    }
+
+    /// The checks every merchant-signed edit shares: the advertisement
+    /// exists, it is not deleted, the signer is its merchant, and the
+    /// signature is over what arrived.
+    ///
+    /// One function rather than three copies, because the copies had
+    /// already begun to drift — `apply_disable` and `apply_pricing_update`
+    /// both matched the merchant before verifying the signature, which is
+    /// harmless but means an unauthenticated caller can distinguish "not
+    /// your ad" from "no such ad". Checking authorship *after* the
+    /// signature closes that, and closes it in one place.
+    fn authorize(
+        &self,
+        id: &AdvertisementId,
+        merchant: &openfiat_types::PeerId,
+        signed_bytes: &[u8],
+        signature: &openfiat_types::Signature,
+    ) -> Result<Advertisement, AdvertisementError> {
+        let ad = self
+            .get(id)
+            .ok_or(AdvertisementError::AdvertisementNotFound)?;
+        verify(&ad.merchant_public_key, signed_bytes, signature)
+            .map_err(|_| AdvertisementError::InvalidSignature)?;
+        if ad.merchant != *merchant {
+            return Err(AdvertisementError::UnauthorizedUpdate);
+        }
+        if ad.status == AdvertisementStatus::Deleted {
+            return Err(AdvertisementError::AdvertisementDeleted);
+        }
+        Ok(ad)
     }
 
     pub fn apply_pricing_update(
         &self,
         signed: SignedAdvertisementPriceUpdate,
     ) -> Result<(), AdvertisementError> {
-        let mut ad = self
-            .get(&signed.update.id)
-            .ok_or(AdvertisementError::AdvertisementNotFound)?;
-        if ad.merchant != signed.update.merchant {
-            return Err(AdvertisementError::UnauthorizedUpdate);
-        }
         let bytes = json::to_bytes(&signed.update)
             .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
-        verify(&ad.merchant_public_key, &bytes, &signed.signature)
-            .map_err(|_| AdvertisementError::InvalidSignature)?;
+        let mut ad = self.authorize(
+            &signed.update.id,
+            &signed.update.merchant,
+            &bytes,
+            &signed.signature,
+        )?;
 
         ad.pricing = signed.update.pricing;
         ad.updated_at = signed.update.timestamp;
@@ -178,6 +267,33 @@ impl<S: KvStore> AdvertisementRegistry<S> {
     }
 
     /// Apply a gossip event to this index, if it's one of ours.
+    /// Terms an advertisement cannot be traded against.
+    ///
+    /// A floor above the ceiling matches nothing, and an advertisement
+    /// with no payment method has no way for a buyer to pay. Both are
+    /// worse than an advertisement that does not exist, because both show
+    /// up in the order book and fail at reservation — after a buyer has
+    /// chosen them.
+    ///
+    /// Decimals must agree, for the reason [`Amount::checked_add`] gives:
+    /// comparing a floor in lamports against a ceiling in cents produces a
+    /// number, and it is not an answer to the question anyone asked.
+    fn check_terms(
+        min_trade: &Amount,
+        max_trade: &Amount,
+        payment_methods: &[String],
+    ) -> Result<(), AdvertisementError> {
+        if payment_methods.is_empty() {
+            return Err(AdvertisementError::UnusableTerms);
+        }
+        if min_trade.decimals() != max_trade.decimals()
+            || min_trade.base_units() > max_trade.base_units()
+        {
+            return Err(AdvertisementError::UnusableTerms);
+        }
+        Ok(())
+    }
+
     pub fn apply_event(&self, event: &EventEnvelope) {
         if event.ofs_spec != protocol::OFS_SPEC {
             return;
@@ -188,9 +304,14 @@ impl<S: KvStore> AdvertisementRegistry<S> {
                     let _ = self.apply_create(signed);
                 }
             }
-            protocol::EVENT_DISABLED => {
+            protocol::EVENT_STATUS_SET => {
                 if let Ok(signed) = wire::from_bytes(&event.payload) {
-                    let _ = self.apply_disable(signed);
+                    let _ = self.apply_status_set(signed);
+                }
+            }
+            protocol::EVENT_TERMS_UPDATED => {
+                if let Ok(signed) = wire::from_bytes(&event.payload) {
+                    let _ = self.apply_terms_update(signed);
                 }
             }
             protocol::EVENT_PRICING_UPDATED => {
@@ -311,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn disabling_from_a_different_merchant_is_rejected() {
+    fn a_status_change_from_a_different_merchant_is_rejected() {
         let registry = AdvertisementRegistry::new(MemoryStore::new());
         let owner = Keypair::generate();
         let id = registry
@@ -322,15 +443,234 @@ mod tests {
             .unwrap();
 
         let attacker = Keypair::generate();
-        let signed = crate::events::SignedAdvertisementDisable::sign(
-            crate::events::AdvertisementDisable {
+        let signed = crate::events::SignedAdvertisementStatusSet::sign(
+            crate::events::AdvertisementStatusSet {
                 id,
                 merchant: peer_id_from_public_key(&owner.public_key()).unwrap(),
+                status: AdvertisementStatus::Disabled,
                 timestamp: Timestamp::now(),
             },
             &attacker,
         );
-        let result = registry.apply_disable(signed);
-        assert_eq!(result, Err(AdvertisementError::InvalidSignature));
+        assert_eq!(
+            registry.apply_status_set(signed),
+            Err(AdvertisementError::InvalidSignature)
+        );
+    }
+
+    fn status_set(
+        keypair: &Keypair,
+        id: &AdvertisementId,
+        status: AdvertisementStatus,
+    ) -> crate::events::SignedAdvertisementStatusSet {
+        crate::events::SignedAdvertisementStatusSet::sign(
+            crate::events::AdvertisementStatusSet {
+                id: id.clone(),
+                merchant: peer_id_from_public_key(&keypair.public_key()).unwrap(),
+                status,
+                timestamp: Timestamp::now(),
+            },
+            keypair,
+        )
+    }
+
+    fn live_ad(
+        registry: &AdvertisementRegistry<MemoryStore>,
+        keypair: &Keypair,
+    ) -> AdvertisementId {
+        registry
+            .apply_create(SignedAdvertisementCreate::sign(
+                create(keypair, "ad-1", 1_000_000),
+                keypair,
+            ))
+            .unwrap()
+    }
+
+    /// The case the whole event exists for. An advertisement §18
+    /// auto-disabled when its liquidity ran out used to stay disabled
+    /// forever, however much liquidity the merchant added afterwards —
+    /// the only status event was a disable.
+    #[test]
+    fn a_merchant_can_put_a_disabled_advertisement_back_up() {
+        let registry = AdvertisementRegistry::new(MemoryStore::new());
+        let owner = Keypair::generate();
+        let id = live_ad(&registry, &owner);
+
+        registry
+            .apply_status_set(status_set(&owner, &id, AdvertisementStatus::Disabled))
+            .unwrap();
+        registry
+            .apply_status_set(status_set(&owner, &id, AdvertisementStatus::Active))
+            .unwrap();
+
+        assert_eq!(
+            registry.get(&id).unwrap().status,
+            AdvertisementStatus::Active
+        );
+    }
+
+    #[test]
+    fn a_merchant_can_go_on_vacation_and_come_back() {
+        let registry = AdvertisementRegistry::new(MemoryStore::new());
+        let owner = Keypair::generate();
+        let id = live_ad(&registry, &owner);
+
+        registry
+            .apply_status_set(status_set(&owner, &id, AdvertisementStatus::Vacation))
+            .unwrap();
+        // §16: paused is not the same as broken, and a paused ad is not
+        // offered for trading.
+        assert!(registry.find_active(Direction::Sell).is_empty());
+
+        registry
+            .apply_status_set(status_set(&owner, &id, AdvertisementStatus::Active))
+            .unwrap();
+        assert_eq!(registry.find_active(Direction::Sell).len(), 1);
+    }
+
+    /// §21. Reviving a retired id would make deletion a suggestion, and
+    /// every reservation and settlement that named it would point at a
+    /// live advertisement again.
+    #[test]
+    fn a_deleted_advertisement_cannot_be_brought_back_or_edited() {
+        let registry = AdvertisementRegistry::new(MemoryStore::new());
+        let owner = Keypair::generate();
+        let id = live_ad(&registry, &owner);
+
+        registry
+            .apply_status_set(status_set(&owner, &id, AdvertisementStatus::Deleted))
+            .unwrap();
+
+        assert_eq!(
+            registry.apply_status_set(status_set(&owner, &id, AdvertisementStatus::Active)),
+            Err(AdvertisementError::AdvertisementDeleted)
+        );
+        assert_eq!(
+            registry.apply_terms_update(terms(&owner, &id, 1, 2, &["Bank Transfer"])),
+            Err(AdvertisementError::AdvertisementDeleted)
+        );
+    }
+
+    /// §18 again, from the other side: an advertisement with nothing to
+    /// sell must not be reactivated into the order book, because the next
+    /// reservation would disable it anyway.
+    #[test]
+    fn an_advertisement_with_no_liquidity_cannot_be_reactivated() {
+        let registry = AdvertisementRegistry::new(MemoryStore::new());
+        let owner = Keypair::generate();
+        let id = registry
+            .apply_create(SignedAdvertisementCreate::sign(
+                create(&owner, "ad-1", 0),
+                &owner,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            registry.apply_status_set(status_set(&owner, &id, AdvertisementStatus::Active)),
+            Err(AdvertisementError::InsufficientLiquidity)
+        );
+    }
+
+    fn terms(
+        keypair: &Keypair,
+        id: &AdvertisementId,
+        min: u64,
+        max: u64,
+        methods: &[&str],
+    ) -> crate::events::SignedAdvertisementTermsUpdate {
+        crate::events::SignedAdvertisementTermsUpdate::sign(
+            crate::events::AdvertisementTermsUpdate {
+                id: id.clone(),
+                merchant: peer_id_from_public_key(&keypair.public_key()).unwrap(),
+                min_trade: Amount::new(min, 6),
+                max_trade: Amount::new(max, 6),
+                payment_methods: methods.iter().map(|m| (*m).to_string()).collect(),
+                timestamp: Timestamp::now(),
+            },
+            keypair,
+        )
+    }
+
+    /// The id surviving is the entire point: republishing under a new one
+    /// orphans every reservation, settlement and review that named it.
+    #[test]
+    fn a_merchant_can_change_limits_and_payment_methods_in_place() {
+        let registry = AdvertisementRegistry::new(MemoryStore::new());
+        let owner = Keypair::generate();
+        let id = live_ad(&registry, &owner);
+
+        registry
+            .apply_terms_update(terms(
+                &owner,
+                &id,
+                5_000_000,
+                50_000_000_000,
+                &["Bank Transfer", "Mobile Money"],
+            ))
+            .unwrap();
+
+        let ad = registry.get(&id).unwrap();
+        assert_eq!(ad.min_trade, Amount::new(5_000_000, 6));
+        assert_eq!(ad.max_trade, Amount::new(50_000_000_000, 6));
+        assert_eq!(ad.payment_methods, vec!["Bank Transfer", "Mobile Money"]);
+        assert_eq!(ad.id, id);
+    }
+
+    #[test]
+    fn a_terms_update_from_a_different_merchant_is_rejected() {
+        let registry = AdvertisementRegistry::new(MemoryStore::new());
+        let owner = Keypair::generate();
+        let id = live_ad(&registry, &owner);
+
+        let attacker = Keypair::generate();
+        let forged = crate::events::SignedAdvertisementTermsUpdate::sign(
+            crate::events::AdvertisementTermsUpdate {
+                id: id.clone(),
+                merchant: peer_id_from_public_key(&owner.public_key()).unwrap(),
+                min_trade: Amount::new(1, 6),
+                max_trade: Amount::new(2, 6),
+                payment_methods: vec!["Anything".to_string()],
+                timestamp: Timestamp::now(),
+            },
+            &attacker,
+        );
+        assert_eq!(
+            registry.apply_terms_update(forged),
+            Err(AdvertisementError::InvalidSignature)
+        );
+        assert_eq!(
+            registry.get(&id).unwrap().min_trade,
+            Amount::new(10_000_000, 6)
+        );
+    }
+
+    /// Terms nobody can trade against are worse than no advertisement:
+    /// they show up in the order book and fail at reservation, after a
+    /// buyer has already chosen them.
+    #[test]
+    fn terms_that_match_nothing_are_refused_on_update_and_on_create() {
+        let registry = AdvertisementRegistry::new(MemoryStore::new());
+        let owner = Keypair::generate();
+        let id = live_ad(&registry, &owner);
+
+        // A floor above the ceiling.
+        assert_eq!(
+            registry.apply_terms_update(terms(&owner, &id, 100, 10, &["Mobile Money"])),
+            Err(AdvertisementError::UnusableTerms)
+        );
+        // No way for a buyer to pay.
+        assert_eq!(
+            registry.apply_terms_update(terms(&owner, &id, 10, 100, &[])),
+            Err(AdvertisementError::UnusableTerms)
+        );
+
+        // And the same rule at creation, which nothing was checking.
+        let mut unusable = create(&owner, "ad-2", 1_000_000);
+        unusable.min_trade = Amount::new(100, 6);
+        unusable.max_trade = Amount::new(10, 6);
+        assert_eq!(
+            registry.apply_create(SignedAdvertisementCreate::sign(unusable, &owner)),
+            Err(AdvertisementError::UnusableTerms)
+        );
     }
 }

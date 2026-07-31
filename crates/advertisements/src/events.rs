@@ -1,12 +1,34 @@
-//! Signed advertisement lifecycle events (§23): Created, Disabled, and a
-//! merchant-initiated price update (§17's "Price changes" refresh
-//! trigger). Liquidity changes are deliberately *not* a signed event type
-//! here — §10 says inventory management is automatic, driven by
-//! reservation/settlement activity, not a fresh merchant signature per
-//! trade (see [`crate::store::AdvertisementRegistry::reserve_liquidity`]).
+//! Signed advertisement lifecycle events (§23): Created, a status change,
+//! a terms change, and a merchant-initiated price update (§17's "Price
+//! changes" refresh trigger). Liquidity changes are deliberately *not* a
+//! signed event type here — §10 says inventory management is automatic,
+//! driven by reservation/settlement activity, not a fresh merchant
+//! signature per trade (see
+//! [`crate::store::AdvertisementRegistry::reserve_liquidity`]).
+//!
+//! # What a merchant could not do until these existed
+//!
+//! Two things, and both of them are ordinary daily operations rather than
+//! edge cases.
+//!
+//! An advertisement's status was one-way. The only status event was
+//! `Disable`, so of the four states [`crate::record::AdvertisementStatus`]
+//! defines, three were unreachable: a merchant could not go on vacation
+//! (§16), could not delete an ad (§21), and — worst — could not turn an ad
+//! back on. An ad auto-disabled by §18 when its liquidity hit zero stayed
+//! disabled forever, however much liquidity the merchant added afterwards.
+//! [`AdvertisementStatusSet`] replaces `Disable` rather than joining it:
+//! two events that both set a status is a rule with two places to be
+//! wrong.
+//!
+//! Trade limits and payment methods were fixed at creation. A merchant who
+//! wanted to raise their ceiling or add a payment method had to disable
+//! the advertisement and publish a new one, losing its id — and with it
+//! every reservation, settlement and review that referenced it.
+//! [`AdvertisementTermsUpdate`] changes them in place.
 
 use crate::error::AdvertisementError;
-use crate::record::{AdvertisementId, Direction, PricingModel};
+use crate::record::{AdvertisementId, AdvertisementStatus, Direction, PricingModel};
 use openfiat_crypto::{Keypair, MintAddress, verify};
 use openfiat_network::identity::peer_id_from_public_key;
 use openfiat_types::{Amount, FiatCurrency, PeerId, PublicKey, Signature, Timestamp};
@@ -71,26 +93,71 @@ impl SignedAdvertisementCreate {
     }
 }
 
+/// A merchant moving their advertisement between the states in
+/// [`AdvertisementStatus`] — pausing it for a holiday, taking it down,
+/// deleting it, or putting it back up.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct AdvertisementDisable {
+pub struct AdvertisementStatusSet {
     pub id: AdvertisementId,
     pub merchant: PeerId,
+    pub status: AdvertisementStatus,
     pub timestamp: Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SignedAdvertisementDisable {
-    pub disable: AdvertisementDisable,
+pub struct SignedAdvertisementStatusSet {
+    pub set: AdvertisementStatusSet,
     pub signature: Signature,
 }
 
-impl SignedAdvertisementDisable {
-    pub fn sign(disable: AdvertisementDisable, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&disable)
-            .expect("AdvertisementDisable always serializes");
+impl SignedAdvertisementStatusSet {
+    pub fn sign(set: AdvertisementStatusSet, keypair: &Keypair) -> Self {
+        let bytes = openfiat_serialization::json::to_bytes(&set)
+            .expect("AdvertisementStatusSet always serializes");
         Self {
             signature: keypair.sign(&bytes),
-            disable,
+            set,
+        }
+    }
+}
+
+/// A merchant changing what they will trade, without losing the
+/// advertisement's identity.
+///
+/// Every field is the new value in full, not a delta. A partial update
+/// would mean "unchanged" and "cleared" look identical on the wire for
+/// `payment_methods`, and a merchant removing their last payment method
+/// is a thing that must be refusable rather than ambiguous.
+///
+/// The price is *not* here. It changes far more often than these do —
+/// [`AdvertisementPriceUpdate`] exists for exactly that reason — and
+/// folding the two together would make every price tick restate the trade
+/// limits, so a stale client that re-sent an old form would silently roll
+/// them back.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AdvertisementTermsUpdate {
+    pub id: AdvertisementId,
+    pub merchant: PeerId,
+    /// Denominated in the asset, like the record's own fields.
+    pub min_trade: Amount,
+    pub max_trade: Amount,
+    pub payment_methods: Vec<String>,
+    pub timestamp: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SignedAdvertisementTermsUpdate {
+    pub update: AdvertisementTermsUpdate,
+    pub signature: Signature,
+}
+
+impl SignedAdvertisementTermsUpdate {
+    pub fn sign(update: AdvertisementTermsUpdate, keypair: &Keypair) -> Self {
+        let bytes = openfiat_serialization::json::to_bytes(&update)
+            .expect("AdvertisementTermsUpdate always serializes");
+        Self {
+            signature: keypair.sign(&bytes),
+            update,
         }
     }
 }

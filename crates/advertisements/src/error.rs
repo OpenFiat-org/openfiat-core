@@ -19,6 +19,15 @@ pub enum AdvertisementError {
     /// §10: a reservation would exceed the advertisement's available
     /// liquidity.
     InsufficientLiquidity,
+    /// §21: a deleted advertisement is gone. Nothing reactivates it, and
+    /// nothing edits it — the id has been retired, and a client that
+    /// could revive one would make deletion a suggestion.
+    AdvertisementDeleted,
+    /// `min_trade` above `max_trade`, or an advertisement with no payment
+    /// method. Both describe an advertisement nobody can trade against,
+    /// which is worse than one that does not exist: it appears in the
+    /// order book and fails at reservation.
+    UnusableTerms,
 }
 
 impl AdvertisementError {
@@ -31,6 +40,8 @@ impl AdvertisementError {
             Self::NegativeLiquidity => ErrorCode::InvalidAdvertisement,
             Self::AdvertisementNotFound => ErrorCode::AdvertisementNotFound,
             Self::InsufficientLiquidity => ErrorCode::InsufficientAvailableLiquidity,
+            Self::AdvertisementDeleted => ErrorCode::AdvertisementNotFound,
+            Self::UnusableTerms => ErrorCode::InvalidAdvertisement,
         }
     }
 }

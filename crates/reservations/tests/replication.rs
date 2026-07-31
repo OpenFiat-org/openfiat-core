@@ -44,7 +44,7 @@ fn seeded_ad_registry(
         pricing: PricingModel::Fixed {
             price: Amount::new(129_000_000, 6),
         },
-        payment_methods: vec![],
+        payment_methods: vec!["Mobile Money".to_string()],
         timestamp: Timestamp::now(),
     };
     registry

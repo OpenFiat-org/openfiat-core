@@ -4,7 +4,8 @@ use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, meth
 use crate::error::RpcError;
 use crate::state::NodeState;
 use openfiat_advertisements::events::{
-    SignedAdvertisementCreate, SignedAdvertisementDisable, SignedAdvertisementPriceUpdate,
+    SignedAdvertisementCreate, SignedAdvertisementPriceUpdate, SignedAdvertisementStatusSet,
+    SignedAdvertisementTermsUpdate,
 };
 use openfiat_advertisements::pricing::{MidPrice, PriceQuote};
 use openfiat_advertisements::protocol;
@@ -204,24 +205,54 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
             },
         ),
     );
-    // §18/§21: without this a merchant could publish an ad and never take
-    // it down through any client — see `AdvertisementRegistry::apply_disable`.
+    // §16/§18/§21: pause for a holiday, take it down, delete it, or put
+    // it back up. This was `sendAdvertisementDisable`, which could only
+    // do the third of those — an ad auto-disabled when its liquidity ran
+    // out could never be reactivated through any client.
     table.register(
-        "sendAdvertisementDisable",
+        "sendAdvertisementStatusSet",
         method_fn(
             |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
                 let bytes = decode_bytes(&params.data)?;
-                let signed: SignedAdvertisementDisable =
+                let signed: SignedAdvertisementStatusSet =
                     json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
-                let gossip_bytes =
-                    wire::to_bytes(&signed).expect("SignedAdvertisementDisable always serializes");
+                let gossip_bytes = wire::to_bytes(&signed)
+                    .expect("SignedAdvertisementStatusSet always serializes");
                 state
                     .advertisements
-                    .apply_disable(signed)
+                    .apply_status_set(signed)
                     .map_err(|e| RpcError::Application(e.code()))?;
                 crate::dispatch::originate(
                     state,
-                    protocol::EVENT_DISABLED,
+                    protocol::EVENT_STATUS_SET,
+                    protocol::OFS_SPEC,
+                    Priority::Advertisement,
+                    gossip_bytes,
+                );
+                Ok(())
+            },
+        ),
+    );
+    // §6: trade limits and payment methods, changed in place. Without
+    // this a merchant raising their ceiling had to delete the ad and
+    // publish a new one, orphaning every reservation, settlement and
+    // review that named the old id.
+    table.register(
+        "sendAdvertisementTermsUpdate",
+        method_fn(
+            |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
+                let bytes = decode_bytes(&params.data)?;
+                let signed: SignedAdvertisementTermsUpdate =
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes = wire::to_bytes(&signed)
+                    .expect("SignedAdvertisementTermsUpdate always serializes");
+                state
+                    .advertisements
+                    .apply_terms_update(signed)
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_TERMS_UPDATED,
                     protocol::OFS_SPEC,
                     Priority::Advertisement,
                     gossip_bytes,
@@ -263,7 +294,8 @@ mod tests {
     use super::*;
     use crate::dispatch::{MethodTable, encode_bytes};
     use openfiat_advertisements::events::{
-        AdvertisementCreate, AdvertisementDisable, AdvertisementPriceUpdate,
+        AdvertisementCreate, AdvertisementPriceUpdate, AdvertisementStatusSet,
+        AdvertisementTermsUpdate,
     };
     use openfiat_advertisements::record::{AdvertisementStatus, Direction, PricingModel};
     use openfiat_crypto::{Keypair, MintAddress};
@@ -400,11 +432,9 @@ mod tests {
         AdvertisementId::new(id)
     }
 
-    /// The interlock this whole change exists to unlock: before
-    /// `sendAdvertisementDisable` was registered, nothing could reach
-    /// `AdvertisementRegistry::apply_disable` — a merchant could publish an
-    /// ad and never take it down through any client. Proves the method is
-    /// actually reachable through the table, not just present in the crate.
+    /// Proves the method is reachable through the table, not merely
+    /// present in the crate — a merchant with no way to take their own
+    /// advertisement down is the state this surface exists to leave.
     #[test]
     fn the_owning_merchant_can_disable_their_own_advertisement() {
         let (table, state) = table_and_state();
@@ -417,22 +447,96 @@ mod tests {
             Timestamp::from_millis(1_000),
         );
 
-        let signed = SignedAdvertisementDisable::sign(
-            AdvertisementDisable {
+        let signed = SignedAdvertisementStatusSet::sign(
+            AdvertisementStatusSet {
                 id: id.clone(),
                 merchant: peer_id_from_public_key(&owner.public_key()).unwrap(),
+                status: AdvertisementStatus::Disabled,
                 timestamp: Timestamp::from_millis(2_000),
             },
             &owner,
         );
         table
-            .dispatch(&state, "sendAdvertisementDisable", params(&signed))
-            .expect("the owner's own disable must be accepted");
+            .dispatch(&state, "sendAdvertisementStatusSet", params(&signed))
+            .expect("the owner's own status change must be accepted");
 
         assert_eq!(
             state.advertisements.get(&id).unwrap().status,
             AdvertisementStatus::Disabled
         );
+    }
+
+    /// The other half of a status being settable rather than one-way: a
+    /// merchant who took their advertisement down has to be able to put
+    /// it back up through the same surface.
+    #[test]
+    fn an_advertisement_can_be_taken_down_and_put_back_up() {
+        let (table, state) = table_and_state();
+        let owner = Keypair::generate();
+        let id = create_advertisement(
+            &table,
+            &state,
+            &owner,
+            "ad-1",
+            Timestamp::from_millis(1_000),
+        );
+        let merchant = peer_id_from_public_key(&owner.public_key()).unwrap();
+
+        for (status, at) in [
+            (AdvertisementStatus::Vacation, 2_000),
+            (AdvertisementStatus::Active, 3_000),
+        ] {
+            let signed = SignedAdvertisementStatusSet::sign(
+                AdvertisementStatusSet {
+                    id: id.clone(),
+                    merchant: merchant.clone(),
+                    status,
+                    timestamp: Timestamp::from_millis(at),
+                },
+                &owner,
+            );
+            table
+                .dispatch(&state, "sendAdvertisementStatusSet", params(&signed))
+                .expect("the owner may set their own advertisement's status");
+            assert_eq!(state.advertisements.get(&id).unwrap().status, status);
+        }
+    }
+
+    /// A merchant raising their ceiling or adding a payment method used to
+    /// mean deleting the advertisement and publishing a new one, which
+    /// orphans every reservation and settlement that named the old id.
+    /// The id surviving is what this asserts.
+    #[test]
+    fn a_merchant_can_change_their_terms_without_losing_the_advertisement() {
+        let (table, state) = table_and_state();
+        let owner = Keypair::generate();
+        let id = create_advertisement(
+            &table,
+            &state,
+            &owner,
+            "ad-1",
+            Timestamp::from_millis(1_000),
+        );
+
+        let signed = SignedAdvertisementTermsUpdate::sign(
+            AdvertisementTermsUpdate {
+                id: id.clone(),
+                merchant: peer_id_from_public_key(&owner.public_key()).unwrap(),
+                min_trade: Amount::new(2_000_000, 6),
+                max_trade: Amount::new(80_000_000_000, 6),
+                payment_methods: vec!["Bank Transfer".to_string(), "M-Pesa".to_string()],
+                timestamp: Timestamp::from_millis(2_000),
+            },
+            &owner,
+        );
+        table
+            .dispatch(&state, "sendAdvertisementTermsUpdate", params(&signed))
+            .expect("the owner may change their own terms");
+
+        let ad = state.advertisements.get(&id).unwrap();
+        assert_eq!(ad.id, id);
+        assert_eq!(ad.max_trade, Amount::new(80_000_000_000, 6));
+        assert_eq!(ad.payment_methods, vec!["Bank Transfer", "M-Pesa"]);
     }
 
     #[test]
@@ -449,10 +553,11 @@ mod tests {
 
         // The attacker names the real merchant but signs with its own key.
         let attacker = Keypair::generate();
-        let forged = SignedAdvertisementDisable::sign(
-            AdvertisementDisable {
+        let forged = SignedAdvertisementStatusSet::sign(
+            AdvertisementStatusSet {
                 id: id.clone(),
                 merchant: peer_id_from_public_key(&owner.public_key()).unwrap(),
+                status: AdvertisementStatus::Disabled,
                 timestamp: Timestamp::from_millis(2_000),
             },
             &attacker,
@@ -460,9 +565,9 @@ mod tests {
 
         assert!(
             table
-                .dispatch(&state, "sendAdvertisementDisable", params(&forged))
+                .dispatch(&state, "sendAdvertisementStatusSet", params(&forged))
                 .is_err(),
-            "a disable must be verified against the key already on file"
+            "a status change must be verified against the key already on file"
         );
         assert_eq!(
             state.advertisements.get(&id).unwrap().status,

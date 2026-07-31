@@ -207,7 +207,7 @@ mod tests {
                     max_trade: Amount::new(u64::MAX, decimals),
                     initial_liquidity: Amount::new(u64::MAX, decimals),
                     pricing: PricingModel::Fixed { price },
-                    payment_methods: vec![],
+                    payment_methods: vec!["Mobile Money".to_string()],
                     timestamp: Timestamp::from_millis(1),
                 },
                 &merchant,

@@ -74,7 +74,7 @@ fn network_with_a_trade() -> (
                 max_trade: Amount::new(10_000_000, 6),
                 initial_liquidity: Amount::new(10_000_000, 6),
                 pricing: PricingModel::Fixed { price },
-                payment_methods: vec![],
+                payment_methods: vec!["Mobile Money".to_string()],
                 timestamp: Timestamp::from_millis(500),
             },
             &seller,

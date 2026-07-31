@@ -1,14 +1,15 @@
 //! Drives one node's advertisement index: applies incoming gossip events
 //! automatically (via `GossipService`'s event hook) and provides the
-//! create/disable/update-pricing operations that originate new ones.
+//! create/status/terms/pricing operations that originate new ones.
 
 use crate::error::AdvertisementError;
 use crate::events::{
-    AdvertisementCreate, AdvertisementDisable, AdvertisementPriceUpdate, SignedAdvertisementCreate,
-    SignedAdvertisementDisable, SignedAdvertisementPriceUpdate,
+    AdvertisementCreate, AdvertisementPriceUpdate, AdvertisementStatusSet,
+    AdvertisementTermsUpdate, SignedAdvertisementCreate, SignedAdvertisementPriceUpdate,
+    SignedAdvertisementStatusSet, SignedAdvertisementTermsUpdate,
 };
 use crate::protocol;
-use crate::record::{Advertisement, AdvertisementId, Direction, PricingModel};
+use crate::record::{Advertisement, AdvertisementId, AdvertisementStatus, Direction, PricingModel};
 use crate::store::AdvertisementRegistry;
 use openfiat_crypto::MintAddress;
 use openfiat_gossip::GossipService;
@@ -104,19 +105,52 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
         Ok(signed.create.id)
     }
 
-    pub fn disable(&mut self, id: AdvertisementId) -> Result<(), AdvertisementError> {
-        let disable = AdvertisementDisable {
+    /// Pauses, disables, deletes, or reactivates an advertisement.
+    ///
+    /// `set_status(id, Disabled)` is what `disable` used to be. The
+    /// other three states were unreachable.
+    pub fn set_status(
+        &mut self,
+        id: AdvertisementId,
+        status: AdvertisementStatus,
+    ) -> Result<(), AdvertisementError> {
+        let set = AdvertisementStatusSet {
             id,
             merchant: self.gossip.node.local_peer_id(),
+            status,
+            timestamp: Timestamp::now(),
+        };
+        let bytes = json::to_bytes(&set).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        let signed = SignedAdvertisementStatusSet {
+            signature: self.gossip.sign(&bytes),
+            set,
+        };
+        self.originate(protocol::EVENT_STATUS_SET, &signed)
+    }
+
+    /// Changes trade limits and payment methods, keeping the id.
+    pub fn update_terms(
+        &mut self,
+        id: AdvertisementId,
+        min_trade: Amount,
+        max_trade: Amount,
+        payment_methods: Vec<String>,
+    ) -> Result<(), AdvertisementError> {
+        let update = AdvertisementTermsUpdate {
+            id,
+            merchant: self.gossip.node.local_peer_id(),
+            min_trade,
+            max_trade,
+            payment_methods,
             timestamp: Timestamp::now(),
         };
         let bytes =
-            json::to_bytes(&disable).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
-        let signed = SignedAdvertisementDisable {
+            json::to_bytes(&update).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        let signed = SignedAdvertisementTermsUpdate {
             signature: self.gossip.sign(&bytes),
-            disable,
+            update,
         };
-        self.originate(protocol::EVENT_DISABLED, &signed)
+        self.originate(protocol::EVENT_TERMS_UPDATED, &signed)
     }
 
     pub fn update_pricing(

@@ -128,11 +128,26 @@ async fn a_created_and_then_disabled_advertisement_replicates_to_the_whole_clust
         assert_eq!(ad.status, AdvertisementStatus::Active);
     }
 
-    all[1].disable(ad_id.clone()).unwrap();
+    all[1]
+        .set_status(ad_id.clone(), AdvertisementStatus::Disabled)
+        .unwrap();
     drive_until(&mut all, |services| {
         services
             .iter()
             .all(|s| s.get(&ad_id).unwrap().status == AdvertisementStatus::Disabled)
+    })
+    .await;
+
+    // And back. A status that only travelled one way is what this event
+    // replaced — every node has to converge on the reactivation too, or a
+    // merchant's advertisement comes back for some peers and not others.
+    all[1]
+        .set_status(ad_id.clone(), AdvertisementStatus::Active)
+        .unwrap();
+    drive_until(&mut all, |services| {
+        services
+            .iter()
+            .all(|s| s.get(&ad_id).unwrap().status == AdvertisementStatus::Active)
     })
     .await;
 }

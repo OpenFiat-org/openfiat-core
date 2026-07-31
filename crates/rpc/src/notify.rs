@@ -77,17 +77,23 @@ impl<S: KvStore> NotificationDispatcher<S> {
         let source = *event.id.as_bytes();
         match (event.ofs_spec, event.event_type.as_str()) {
             (openfiat_advertisements::protocol::OFS_SPEC, name)
-                if name == openfiat_advertisements::protocol::EVENT_DISABLED =>
+                if name == openfiat_advertisements::protocol::EVENT_STATUS_SET =>
             {
                 let Ok(signed) = wire::from_bytes::<
-                    openfiat_advertisements::events::SignedAdvertisementDisable,
+                    openfiat_advertisements::events::SignedAdvertisementStatusSet,
                 >(&event.payload) else {
                     return;
                 };
+                // Only when the advertisement stops trading. A merchant
+                // putting one back up does not need to be told they did.
+                if signed.set.status == openfiat_advertisements::record::AdvertisementStatus::Active
+                {
+                    return;
+                }
                 self.notify(
                     NotificationTrigger::AdvertisementDisabled,
                     &source,
-                    &[signed.disable.merchant],
+                    &[signed.set.merchant],
                 );
             }
             (openfiat_reservations::protocol::OFS_SPEC, name)
