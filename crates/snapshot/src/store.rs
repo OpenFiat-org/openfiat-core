@@ -77,12 +77,10 @@ impl<S: KvStore> SnapshotIndex<S> {
             .collect()
     }
 
-    /// §13/§20: the highest-height snapshot this node currently knows
+    /// §13/§20: the highest-slot snapshot this node currently knows
     /// about, from any provider.
     pub fn latest(&self) -> Option<SnapshotMetadata> {
-        self.all()
-            .into_iter()
-            .max_by_key(|metadata| metadata.height)
+        self.all().into_iter().max_by_key(|metadata| metadata.slot)
     }
 
     /// §5/§24: whether `producer` is on file *right now* as a snapshot
@@ -159,20 +157,20 @@ impl<S: KvStore> SnapshotIndex<S> {
         // against, so every check above passes on a well-formed forgery:
         // they establish that the bytes are what the announcer said, not
         // that the announcer is telling the truth. Nothing in the protocol
-        // establishes what the correct state root at a height IS. So the
+        // establishes what the correct state root at a slot IS. So the
         // first snapshot — and only the first — must come from a pinned
         // anchor. After this import the node has its own basis, and
         // registration governs. See `crate::trust`.
-        if self.checkpoint_height().is_none() && !self.anchors.trusts(&metadata.producer) {
+        if self.checkpoint_slot().is_none() && !self.anchors.trusts(&metadata.producer) {
             return Err(SnapshotError::UntrustedFirstSnapshot);
         }
         // Only a node that has already imported something can be rolled
         // backwards. A node with no checkpoint has no state to lose and
-        // must be able to import *any* height — including 0, which is
+        // must be able to import *any* slot — including 0, which is
         // what a brand-new cluster's first snapshot legitimately carries.
         if self
-            .checkpoint_height()
-            .is_some_and(|current| metadata.height <= current)
+            .checkpoint_slot()
+            .is_some_and(|current| metadata.slot <= current)
         {
             return Err(SnapshotError::StaleSnapshot);
         }
@@ -187,22 +185,22 @@ impl<S: KvStore> SnapshotIndex<S> {
         let restored = crate::state::restore(&self.store, &state_bytes, RESERVED_COLUMN_FAMILIES)?;
         // Last, and only once the state it describes is actually on disk:
         // a checkpoint advanced ahead of the state would tell this node's
-        // gossip catch-up to resume from a height whose state it does not
+        // gossip catch-up to resume from a slot whose state it does not
         // have.
         self.store
             .put(
                 CHECKPOINT_COLUMN_FAMILY,
                 CHECKPOINT_KEY,
-                &metadata.height.to_le_bytes(),
+                &metadata.slot.to_le_bytes(),
             )
             .map_err(|_| SnapshotError::StateUnwritable)?;
         Ok(restored)
     }
 
-    /// §9/§18: the height of the most recent snapshot this node has
+    /// §9/§18: the slot of the most recent snapshot this node has
     /// actually imported — where gossip catch-up replay should resume
     /// from, instead of full history replay.
-    pub fn checkpoint_height(&self) -> Option<u64> {
+    pub fn checkpoint_slot(&self) -> Option<u64> {
         let bytes = self
             .store
             .get(CHECKPOINT_COLUMN_FAMILY, CHECKPOINT_KEY)
@@ -265,7 +263,7 @@ mod tests {
     /// An index that trusts `provider` for a first snapshot.
     ///
     /// Most tests here are about the *import pipeline* — size, digest,
-    /// height ordering — not about who is trusted, and a randomly seeded
+    /// slot ordering — not about who is trusted, and a randomly seeded
     /// test provider is naturally not a pinned anchor. Adding it through
     /// the real additive path keeps those tests aimed at what they mean to
     /// assert, and keeps the anchor gate itself covered by the tests that
@@ -293,12 +291,12 @@ mod tests {
         state::serialize(&source, &["advertisements"]).unwrap()
     }
 
-    fn announce(provider: &Keypair, id: &str, height: u64, state_bytes: &[u8]) -> SnapshotMetadata {
+    fn announce(provider: &Keypair, id: &str, slot: u64, state_bytes: &[u8]) -> SnapshotMetadata {
         SnapshotMetadata {
             id: SnapshotId::new(id),
             snapshot_version: 1,
             protocol_version: protocol::SUPPORTED_PROTOCOL_VERSION,
-            height,
+            slot,
             created_at: Timestamp::now(),
             state_root: codec::state_root(state_bytes),
             size_bytes: state_bytes.len() as u64,
@@ -342,7 +340,7 @@ mod tests {
                 &provider,
             ))
             .unwrap();
-        assert_eq!(index.get(&id).unwrap().height, 100);
+        assert_eq!(index.get(&id).unwrap().slot, 100);
     }
 
     #[test]
@@ -361,7 +359,7 @@ mod tests {
                 &provider,
             ))
             .unwrap();
-        assert_eq!(index.latest().unwrap().height, 250);
+        assert_eq!(index.latest().unwrap().slot, 250);
     }
 
     #[test]
@@ -379,7 +377,7 @@ mod tests {
             Some(b"the full marketplace state".to_vec()),
             "import must land the state, not merely return it"
         );
-        assert_eq!(index.checkpoint_height(), Some(4217));
+        assert_eq!(index.checkpoint_slot(), Some(4217));
     }
 
     #[test]
@@ -401,7 +399,7 @@ mod tests {
             index.import(&metadata.id, &corrupted),
             Err(SnapshotError::StateRootMismatch)
         );
-        assert_eq!(index.checkpoint_height(), None);
+        assert_eq!(index.checkpoint_slot(), None);
         assert_eq!(
             store.get("advertisements", b"ad-1").unwrap(),
             None,
@@ -439,7 +437,7 @@ mod tests {
             index.import(&metadata.id, &blob),
             Err(SnapshotError::UnknownSnapshot)
         );
-        assert_eq!(index.checkpoint_height(), None);
+        assert_eq!(index.checkpoint_slot(), None);
     }
 
     /// A registration can lapse between announcing and importing, and by
@@ -473,7 +471,7 @@ mod tests {
         seed(&index, &provider, &metadata);
 
         assert_eq!(index.import(&metadata.id, &blob).unwrap(), 1);
-        assert_eq!(index.checkpoint_height(), Some(0));
+        assert_eq!(index.checkpoint_slot(), Some(0));
     }
 
     /// Import now *writes* state, so replaying an older snapshot would
@@ -498,7 +496,7 @@ mod tests {
             index.import(&older.id, &older_blob),
             Err(SnapshotError::StaleSnapshot)
         );
-        assert_eq!(index.checkpoint_height(), Some(500));
+        assert_eq!(index.checkpoint_slot(), Some(500));
         assert_eq!(
             store.get("advertisements", b"ad-1").unwrap(),
             Some(b"newer state".to_vec())

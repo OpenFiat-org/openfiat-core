@@ -234,6 +234,20 @@ check it got what was advertised.
 which snapshots exist from gossip, picks the highest it can verify, and
 downloads it from the URL in the announcement.
 
+### How a snapshot is tagged
+
+By the **Solana slot its state is current as of** — the same clock Solana's
+own snapshots use, borrowed rather than reinvented. A node that has never
+observed a slot produces nothing and says so: it cannot honestly state when
+its state is from, and every peer orders candidates by that number, so a
+fabricated one would either bury an honest producer or promote itself above
+one. This is not a requirement to run an RPC connection — a `GossipOnly`
+node learns slots over the chain bridge.
+
+The slot says *when* the state was captured, not *what* it contains. Two
+nodes snapshotting at the same slot may hold slightly different gossip
+state, because propagation is not instant.
+
 **Producing them is on by default too**, and also needs no configuration —
 the node works out its own download URL from the addresses it has learned
 it is reachable at, and serves the file from the RPC port it is already

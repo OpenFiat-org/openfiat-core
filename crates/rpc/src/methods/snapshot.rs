@@ -49,10 +49,10 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
         ),
     );
     table.register(
-        "getCheckpointHeight",
+        "getCheckpointSlot",
         method_fn(
             |state: &NodeState<S>, _params: serde_json::Value| -> Result<Option<u64>, RpcError> {
-                Ok(state.snapshots.checkpoint_height())
+                Ok(state.snapshots.checkpoint_slot())
             },
         ),
     );

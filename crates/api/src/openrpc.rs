@@ -61,7 +61,7 @@ const NO_PARAM_METHODS: &[&str] = &[
     "getOracleRecords",
     "getSnapshots",
     "getLatestSnapshot",
-    "getCheckpointHeight",
+    "getCheckpointSlot",
     "getChainStatus",
     "getLatestBlockhash",
     "getPeers",

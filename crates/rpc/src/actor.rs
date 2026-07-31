@@ -1287,7 +1287,20 @@ fn poll_snapshot_production<S: KvStore + 'static>(
         return;
     }
     let store = Rc::clone(&state.store);
-    let height = state.gossip.borrow().event_count() as u64;
+    // A snapshot says when its state is current as of, and this node must
+    // have genuinely observed that moment rather than invent a number. A
+    // GossipOnly node learns slots over the chain bridge, so this is not a
+    // requirement to hold an RPC connection — only to have heard from the
+    // network at all.
+    let Some((_, slot)) = state.chain.current_blockhash() else {
+        eprintln!(
+            "openfiat-node: no snapshot written — this node has not observed a Solana slot yet, \
+             so it cannot say what its state is current as of. An RpcConnected node learns one on \
+             its first chain poll; a GossipOnly node learns one from the first peer carrying a \
+             BlockhashAnnounced."
+        );
+        return;
+    };
     let (producer, producer_public_key) = {
         let gossip = state.gossip.borrow();
         (gossip.node.local_peer_id(), gossip.public_key())
@@ -1332,7 +1345,7 @@ fn poll_snapshot_production<S: KvStore + 'static>(
         crate::state::SNAPSHOT_COLUMN_FAMILIES,
         config,
         &base_urls,
-        height,
+        slot,
         producer,
         producer_public_key,
     ) {
@@ -1369,7 +1382,7 @@ fn poll_snapshot_production<S: KvStore + 'static>(
             println!(
                 "openfiat-node: announced snapshot {} at height {} ({} bytes) from {}",
                 id.as_str(),
-                metadata.height,
+                metadata.slot,
                 metadata.size_bytes,
                 produced.path.display()
             );
@@ -1386,7 +1399,7 @@ fn poll_snapshot_production<S: KvStore + 'static>(
 /// Bootstraps this node from the best snapshot it knows of, if it has
 /// never imported one (OFS-1300 §13-17).
 ///
-/// Runs only while `checkpoint_height()` is `None`: once a snapshot has
+/// Runs only while `checkpoint_slot()` is `None`: once a snapshot has
 /// landed, this node's state comes from gossip, and re-importing would
 /// overwrite newer state with older — which `SnapshotIndex::import`
 /// refuses anyway, but there is no reason to ask.
@@ -1410,11 +1423,11 @@ async fn poll_snapshot_bootstrap<S: KvStore + 'static>(
     state: &NodeState<S>,
     client: &reqwest::Client,
 ) {
-    if state.snapshots.checkpoint_height().is_some() {
+    if state.snapshots.checkpoint_slot().is_some() {
         return;
     }
     let mut candidates = state.snapshots.all();
-    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.height));
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.slot));
 
     for candidate in candidates {
         match openfiat_snapshot::fetch::fetch_and_import(&state.snapshots, client, &candidate.id)
@@ -1426,7 +1439,7 @@ async fn poll_snapshot_bootstrap<S: KvStore + 'static>(
                      state entries imported, gossip catch-up resumes from there instead of \
                      full replay",
                     candidate.id.as_str(),
-                    candidate.height
+                    candidate.slot
                 );
                 return;
             }
@@ -2659,7 +2672,7 @@ mod tests {
             state: &NodeState<MemoryStore>,
             keypair: &Keypair,
             id: &str,
-            height: u64,
+            slot: u64,
             location: &str,
             bytes: &[u8],
         ) -> SnapshotId {
@@ -2667,7 +2680,7 @@ mod tests {
                 id: SnapshotId::new(id),
                 snapshot_version: 1,
                 protocol_version: openfiat_snapshot::protocol::SUPPORTED_PROTOCOL_VERSION,
-                height,
+                slot,
                 created_at: Timestamp::now(),
                 state_root: openfiat_snapshot::codec::state_root(bytes),
                 size_bytes: bytes.len() as u64,
@@ -2691,6 +2704,62 @@ mod tests {
         /// every peer, itself included — production would be on and do
         /// nothing, which is the state the removed flag already produced
         /// once.
+        /// A node that has not observed a slot writes nothing.
+        ///
+        /// It cannot say what its state is current as of, and a snapshot
+        /// whose slot was invented is worse than no snapshot: every peer
+        /// orders candidates by that number, so a fabricated one either
+        /// buries an honest producer or promotes itself above one.
+        #[test]
+        fn a_node_that_has_never_seen_a_slot_produces_nothing() {
+            let directory = std::env::temp_dir().join(format!(
+                "openfiat-actor-noslot-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&directory);
+
+            let keypair = Keypair::from_seed([44u8; 32]);
+            let state = NodeState::new(
+                Node::new(&keypair).unwrap(),
+                MemoryStore::new(),
+                Keypair::from_seed([44u8; 32]),
+                Vec::new(),
+                NodeChainMode::GossipOnly,
+                openfiat_snapshot::trust::TrustAnchors::pinned(),
+            );
+            // Deliberately no `record_blockhash` — this node has heard
+            // nothing from the chain, directly or over gossip.
+            assert!(state.chain.current_blockhash().is_none());
+
+            let config = openfiat_snapshot::SnapshotConfig {
+                directory: directory.clone(),
+                // A documentation-range IP, not a `.example` hostname:
+                // the registry refuses RFC 2606 reserved suffixes, so a
+                // `.example` endpoint would fail self-registration and this
+                // test would pass without ever reaching the slot check.
+                public_urls: vec![
+                    openfiat_snapshot::SnapshotLocation::parse("http://203.0.113.9:7080").unwrap(),
+                ],
+                ..openfiat_snapshot::SnapshotConfig::default()
+            };
+            let advert = SnapshotProviderAdvert {
+                region: None,
+                payout_wallet: "11111111111111111111111111111111".to_string(),
+                capabilities: vec!["retention:archival".to_string()],
+            };
+            poll_snapshot_production(&state, &config, &advert, &keypair);
+
+            assert!(
+                std::fs::read_dir(&directory)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                    || std::fs::read_dir(&directory).unwrap().count() == 0,
+                "a node with no slot must write no snapshot"
+            );
+            assert!(state.snapshots.latest().is_none(), "and must announce none");
+            let _ = std::fs::remove_dir_all(&directory);
+        }
+
         #[test]
         fn a_node_that_was_never_registered_registers_itself_and_produces() {
             let directory = std::env::temp_dir().join(format!(
@@ -2716,6 +2785,13 @@ mod tests {
                 NodeChainMode::GossipOnly,
                 openfiat_snapshot::trust::TrustAnchors::pinned(),
             );
+            // A snapshot records the slot its state is current as of, so a
+            // node that has never seen one refuses to produce. Seeded here
+            // rather than stubbed away, because that refusal is a real
+            // behaviour with its own test below.
+            state
+                .chain
+                .record_blockhash("11111111111111111111111111111111", 412_000_000);
             let producer =
                 openfiat_network::identity::peer_id_from_public_key(&keypair.public_key()).unwrap();
             assert!(
@@ -2821,11 +2897,11 @@ mod tests {
             poll_snapshot_bootstrap(&state, &reqwest::Client::new()).await;
 
             assert_eq!(
-                state.snapshots.checkpoint_height(),
+                state.snapshots.checkpoint_slot(),
                 Some(100),
                 "the lower, reachable snapshot must be what this node bootstrapped from"
             );
-            assert_eq!(state.snapshots.get(&usable).unwrap().height, 100);
+            assert_eq!(state.snapshots.get(&usable).unwrap().slot, 100);
             assert_eq!(
                 state.store.get(CARRIED, b"svc-from-snapshot").unwrap(),
                 Some(b"payload".to_vec()),

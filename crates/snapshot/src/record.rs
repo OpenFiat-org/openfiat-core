@@ -45,11 +45,40 @@ pub struct SnapshotMetadata {
     /// §8's "OFS Version" — the protocol/schema version the snapshotted
     /// state was produced under; see `protocol::SUPPORTED_PROTOCOL_VERSION`.
     pub protocol_version: u32,
-    /// §9: monotonically increasing. `[PROPOSED — NEEDS SIGN-OFF]`: OFS-1300
-    /// doesn't define what a height actually counts; this workspace uses
-    /// the producing node's own local gossip event count at snapshot
-    /// creation time (see `SnapshotService::announce`).
-    pub height: u64,
+    /// The Solana slot this snapshot's state is current as of.
+    ///
+    /// # Why a slot, and not a height
+    ///
+    /// This was the producing node's own local gossip event count, which
+    /// could not do the job asked of it. That number is **per-producer**:
+    /// two nodes holding identical state report different values if they
+    /// have seen different numbers of events, and a node that joined late
+    /// reports a lower one than a node running since genesis. So comparing
+    /// two producers' numbers compared nothing, and the anti-rollback
+    /// check in `SnapshotIndex::import` was comparing another node's event
+    /// count against this node's own — different quantities entirely.
+    ///
+    /// A Solana slot is the one clock every participant already shares and
+    /// agrees on. Ordering two snapshots by it is meaningful whoever
+    /// produced them, and unlike a self-reported counter a claimed slot is
+    /// **checkable**: a node can compare it against its own view of the
+    /// chain and refuse one from an implausible future.
+    ///
+    /// # What it does and does not assert
+    ///
+    /// It says *when* the state was captured, not *what* it contains. Two
+    /// nodes snapshotting at the same slot may hold slightly different
+    /// gossip state, because propagation is not instant. Slot is a recency
+    /// anchor, not a proof of containment — the same thing Solana's own
+    /// snapshots mean by it. Establishing containment would need consensus
+    /// over off-chain state, which this protocol deliberately does not
+    /// have.
+    ///
+    /// A node that has never observed a slot cannot produce a snapshot. It
+    /// does not know what time it is, so it cannot honestly say when its
+    /// state is from — and a `GossipOnly` node learns slots over the chain
+    /// bridge, so this is not a requirement to run an RPC connection.
+    pub slot: u64,
     pub created_at: Timestamp,
     /// §10: a cryptographic digest of the *uncompressed* state bytes,
     /// verified after decompression on import.

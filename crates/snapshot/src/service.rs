@@ -63,8 +63,8 @@ impl<S: KvStore + 'static> SnapshotService<S> {
         self.registry.latest()
     }
 
-    pub fn checkpoint_height(&self) -> Option<u64> {
-        self.registry.checkpoint_height()
+    pub fn checkpoint_slot(&self) -> Option<u64> {
+        self.registry.checkpoint_slot()
     }
 
     /// The underlying index, for [`crate::fetch::fetch_and_import`] and
@@ -118,16 +118,18 @@ impl<S: KvStore + 'static> SnapshotService<S> {
     /// own gossip transport has learned it is reachable at — so a node
     /// announces a downloadable snapshot without being configured to.
     ///
-    /// `height` is `[PROPOSED — NEEDS SIGN-OFF]`'d to this node's local
-    /// gossip event count at generation time; see
-    /// `record::SnapshotMetadata::height`.
+    /// `slot` is the Solana slot this node's state is current as of, and
+    /// is supplied by the caller because this service has no chain access
+    /// of its own. It must be a slot the node has genuinely observed — see
+    /// `record::SnapshotMetadata::slot` for why a self-invented number
+    /// cannot do this job.
     pub fn produce_and_announce(
         &mut self,
         store: &S,
         column_families: &[&str],
         config: &SnapshotConfig,
+        slot: u64,
     ) -> Result<SnapshotMetadata, SnapshotError> {
-        let height = self.gossip.event_count() as u64;
         let (producer, producer_public_key) = self.identity();
         let base_urls = config.locations(&self.gossip.reachable_addresses());
         let produced = crate::producer::produce(
@@ -135,7 +137,7 @@ impl<S: KvStore + 'static> SnapshotService<S> {
             column_families,
             config,
             &base_urls,
-            height,
+            slot,
             producer,
             producer_public_key,
         )?;

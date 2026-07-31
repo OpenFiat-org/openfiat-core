@@ -31,8 +31,8 @@ pub struct ProducedSnapshot {
 /// result under `config.directory`, prunes older snapshots to
 /// `config.retain`, and returns the metadata describing what was written.
 ///
-/// `height` is this node's local gossip event count at production time —
-/// see [`SnapshotMetadata::height`] for why that is the workspace's
+/// `slot` is this node's local gossip event count at production time —
+/// see [`SnapshotMetadata::slot`] for why that is the workspace's
 /// answer to a quantity OFS-1300 §9 never defines.
 ///
 /// `base_urls` is where the caller has determined peers can reach this
@@ -50,7 +50,7 @@ pub fn produce<S: KvStore>(
     column_families: &[&str],
     config: &SnapshotConfig,
     base_urls: &[crate::location::SnapshotLocation],
-    height: u64,
+    slot: u64,
     producer: PeerId,
     producer_public_key: PublicKey,
 ) -> Result<ProducedSnapshot, SnapshotError> {
@@ -59,7 +59,7 @@ pub fn produce<S: KvStore>(
     }
 
     let created_at = Timestamp::now();
-    let id = SnapshotId::new(format!("snap-{height}-{}", created_at.as_millis()));
+    let id = SnapshotId::new(format!("snap-{slot}-{}", created_at.as_millis()));
     // A duplicate id would be rejected by every peer's index (§24: ids
     // are permanent), so catching it here keeps a node from overwriting a
     // file it is still serving and then announcing into a rejection.
@@ -86,7 +86,7 @@ pub fn produce<S: KvStore>(
             id,
             snapshot_version: 1,
             protocol_version: protocol::SUPPORTED_PROTOCOL_VERSION,
-            height,
+            slot,
             created_at,
             state_root,
             size_bytes: compressed.len() as u64,
@@ -141,7 +141,7 @@ fn prune(directory: &Path, retain: usize) {
     if files.len() <= retain {
         return;
     }
-    // Ids embed height then creation time, neither zero-padded, so
+    // Ids embed slot then creation time, neither zero-padded, so
     // sorting by name would order `snap-9-...` after `snap-10-...`.
     // Modification time is what actually holds.
     files.sort_by_key(|path| {
@@ -185,14 +185,14 @@ mod tests {
         path
     }
 
-    fn produce_into(store: &MemoryStore, directory: &Path, height: u64) -> ProducedSnapshot {
+    fn produce_into(store: &MemoryStore, directory: &Path, slot: u64) -> ProducedSnapshot {
         let keypair = Keypair::from_seed([9u8; 32]);
         produce(
             store,
             &["advertisements"],
             &config(directory),
             &base_urls(),
-            height,
+            slot,
             peer_id_from_public_key(&keypair.public_key()).unwrap(),
             keypair.public_key(),
         )
@@ -213,7 +213,7 @@ mod tests {
             produced.metadata.state_root,
             codec::state_root(&state_bytes)
         );
-        assert_eq!(produced.metadata.height, 4217);
+        assert_eq!(produced.metadata.slot, 4217);
         assert_eq!(
             produced.metadata.locations[0].as_str(),
             format!(
@@ -249,11 +249,11 @@ mod tests {
     fn production_prunes_down_to_the_retained_count() {
         let directory = temporary_directory("prune");
         let store = MemoryStore::new();
-        for height in 1..=4 {
+        for slot in 1..=4 {
             store
-                .put("advertisements", format!("ad-{height}").as_bytes(), b"x")
+                .put("advertisements", format!("ad-{slot}").as_bytes(), b"x")
                 .unwrap();
-            produce_into(&store, &directory, height);
+            produce_into(&store, &directory, slot);
         }
         let remaining = std::fs::read_dir(&directory).unwrap().count();
         assert_eq!(remaining, 2, "retain: 2");
@@ -271,9 +271,9 @@ mod tests {
         let directory = temporary_directory("prune-default");
         let store = MemoryStore::new();
         let mut newest = None;
-        for height in 1..=3 {
+        for slot in 1..=3 {
             store
-                .put("advertisements", format!("ad-{height}").as_bytes(), b"x")
+                .put("advertisements", format!("ad-{slot}").as_bytes(), b"x")
                 .unwrap();
             let keypair = Keypair::from_seed([9u8; 32]);
             let config = SnapshotConfig {
@@ -287,7 +287,7 @@ mod tests {
                     &["advertisements"],
                     &config,
                     &base_urls(),
-                    height,
+                    slot,
                     peer_id_from_public_key(&keypair.public_key()).unwrap(),
                     keypair.public_key(),
                 )

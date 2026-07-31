@@ -34,6 +34,10 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::time::Duration;
 
+/// A plausible devnet slot. Any value works — what matters is that the
+/// producer supplies one it observed rather than inventing a counter.
+const TEST_SLOT: u64 = 412_000_000;
+
 /// The state a snapshot carries in this test. One column family is
 /// enough to prove the mechanism, and the service registry is a good
 /// choice: it is real domain state with a real query behind it
@@ -259,13 +263,18 @@ async fn a_joining_node_downloads_verifies_and_imports_a_real_snapshot() {
         nodes[1].services.get(&merchant_service_id()).is_none(),
         "the joining node must start without the producer's state"
     );
-    assert_eq!(nodes[1].snapshots.checkpoint_height(), None);
+    assert_eq!(nodes[1].snapshots.checkpoint_slot(), None);
 
     let config = configured(&directory, address);
     let producer_store = Rc::clone(&nodes[0].store);
     let metadata = nodes[0]
         .snapshots
-        .produce_and_announce(&producer_store, SNAPSHOT_COLUMN_FAMILIES, &config)
+        .produce_and_announce(
+            &producer_store,
+            SNAPSHOT_COLUMN_FAMILIES,
+            &config,
+            TEST_SLOT,
+        )
         .expect("the producer is a registered snapshot provider");
     assert!(
         !metadata.locations.is_empty(),
@@ -295,8 +304,8 @@ async fn a_joining_node_downloads_verifies_and_imports_a_real_snapshot() {
         vec!["https://merchant.example.com/pickup".to_string()]
     );
     assert_eq!(
-        nodes[1].snapshots.checkpoint_height(),
-        Some(metadata.height),
+        nodes[1].snapshots.checkpoint_slot(),
+        Some(metadata.slot),
         "the joining node resumes from the snapshot height, not from full replay"
     );
 
@@ -464,7 +473,12 @@ async fn a_corrupted_download_is_rejected_and_changes_nothing() {
     let producer_store = Rc::clone(&nodes[0].store);
     let metadata = nodes[0]
         .snapshots
-        .produce_and_announce(&producer_store, SNAPSHOT_COLUMN_FAMILIES, &config)
+        .produce_and_announce(
+            &producer_store,
+            SNAPSHOT_COLUMN_FAMILIES,
+            &config,
+            TEST_SLOT,
+        )
         .unwrap();
     drive_until(&mut nodes, |nodes| nodes[1].snapshots.latest().is_some()).await;
 
@@ -488,7 +502,7 @@ async fn a_corrupted_download_is_rejected_and_changes_nothing() {
         "a rejected snapshot must not have written a single entry"
     );
     assert_eq!(
-        nodes[1].snapshots.checkpoint_height(),
+        nodes[1].snapshots.checkpoint_slot(),
         None,
         "a rejected snapshot must not advance the checkpoint"
     );
@@ -535,7 +549,12 @@ async fn a_fresh_node_refuses_a_first_snapshot_from_a_stranger() {
     let producer_store = Rc::clone(&nodes[0].store);
     let metadata = nodes[0]
         .snapshots
-        .produce_and_announce(&producer_store, SNAPSHOT_COLUMN_FAMILIES, &config)
+        .produce_and_announce(
+            &producer_store,
+            SNAPSHOT_COLUMN_FAMILIES,
+            &config,
+            TEST_SLOT,
+        )
         .expect("the producer is a registered snapshot provider");
     drive_until(&mut nodes, |nodes| nodes[1].snapshots.latest().is_some()).await;
 
@@ -550,7 +569,7 @@ async fn a_fresh_node_refuses_a_first_snapshot_from_a_stranger() {
     // The same announcement, into a node that holds no checkpoint and does
     // not trust this producer.
     let untrusting = make_untrusting_node(3, &producer_keypair);
-    assert_eq!(untrusting.snapshots.checkpoint_height(), None);
+    assert_eq!(untrusting.snapshots.checkpoint_slot(), None);
     untrusting
         .snapshots
         .index()
