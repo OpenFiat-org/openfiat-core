@@ -8,12 +8,14 @@ use crate::error::SnapshotError;
 use crate::events::SignedSnapshotAnnounce;
 use crate::protocol;
 use crate::record::{SnapshotId, SnapshotMetadata};
+use crate::stake::{ProviderStakes, StakeStanding};
 use crate::state::EntryVerifier;
 use crate::trust::TrustAnchors;
 use openfiat_registry::Registry;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
-use openfiat_types::{EventEnvelope, InfrastructureService, ServiceType};
+use openfiat_types::{EventEnvelope, InfrastructureService, ServiceType, Timestamp};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 const SNAPSHOTS_COLUMN_FAMILY: &str = "snapshot_metadata";
@@ -52,6 +54,14 @@ pub struct SnapshotIndex<S> {
     /// one place that must never happen is the one that writes a peer's
     /// bytes into this node's content store.
     verify_entry: EntryVerifier,
+    /// What this node has read from chain about who is actually staked as
+    /// a snapshot provider — see [`crate::stake`].
+    ///
+    /// Shared rather than owned, because the poll loop that reads the
+    /// chain lives outside this crate and must write into the same record
+    /// this index reads. A private copy is how the announce-time answer
+    /// and the import-time answer come to disagree.
+    stakes: Rc<RefCell<ProviderStakes>>,
 }
 
 impl<S: KvStore> SnapshotIndex<S> {
@@ -79,7 +89,41 @@ impl<S: KvStore> SnapshotIndex<S> {
             services,
             anchors,
             verify_entry,
+            // Unenforceable by default, and unlike `verify_entry` a
+            // default is safe here precisely because it is the strictest
+            // setting: a node that has not been told it can read the
+            // chain refuses to import from anyone outside its anchors.
+            // Getting this wrong fails closed.
+            stakes: Rc::new(RefCell::new(ProviderStakes::unenforceable())),
         }
+    }
+
+    /// Read this node's stake record from the same handle the chain poll
+    /// loop writes to.
+    ///
+    /// Consumed at construction rather than at each `import`, so that
+    /// there is exactly one record and no call site can supply a
+    /// permissive one of its own — the same argument `verify_entry` makes
+    /// for living on the index.
+    pub fn with_stakes(mut self, stakes: Rc<RefCell<ProviderStakes>>) -> Self {
+        self.stakes = stakes;
+        self
+    }
+
+    /// This node's stake record, for the poll loop that maintains it and
+    /// for diagnostics.
+    pub fn stakes(&self) -> &Rc<RefCell<ProviderStakes>> {
+        &self.stakes
+    }
+
+    /// Where `producer` stands against [`crate::stake::MINIMUM_PROVIDER_STAKE`]
+    /// as of `now`.
+    pub fn stake_standing(
+        &self,
+        producer: &openfiat_types::PeerId,
+        now: Timestamp,
+    ) -> StakeStanding {
+        self.stakes.borrow().standing(producer, now)
     }
 
     pub fn get(&self, id: &SnapshotId) -> Option<SnapshotMetadata> {
@@ -136,6 +180,21 @@ impl<S: KvStore> SnapshotIndex<S> {
 
     /// §5/§12/§24: only a registered snapshot provider may announce one,
     /// and every Snapshot ID is permanent.
+    ///
+    /// # Why the stake gate refuses only a *known* shortfall here
+    ///
+    /// An announcement is metadata. Holding one is harmless — nothing can
+    /// be imported from it that `import` would not check again — and
+    /// gossip never replays, so an announcement refused because this node
+    /// had not yet polled the chain is one it will not hear again until
+    /// the producer's next production interval. Refusing on "unread"
+    /// would therefore trade real availability for no security at all.
+    ///
+    /// A shortfall this node has actually *observed* is a different
+    /// matter: keeping and relaying that announcement means publishing a
+    /// claim this node knows to be unbacked. So the gate here fires only
+    /// on [`StakeStanding::Insufficient`], and the gate that protects the
+    /// node's state lives at [`Self::import`].
     pub fn apply_announce(
         &self,
         signed: SignedSnapshotAnnounce,
@@ -144,6 +203,11 @@ impl<S: KvStore> SnapshotIndex<S> {
         let metadata = signed.metadata;
         if !self.is_registered_provider(&metadata.producer) {
             return Err(SnapshotError::Unauthorized);
+        }
+        if let StakeStanding::Insufficient { .. } =
+            self.stake_standing(&metadata.producer, Timestamp::now())
+        {
+            return Err(SnapshotError::InsufficientProviderStake);
         }
         if self.get(&metadata.id).is_some() {
             return Err(SnapshotError::DuplicateSnapshotId);
@@ -172,11 +236,16 @@ impl<S: KvStore> SnapshotIndex<S> {
     ///    nothing.
     /// 2. **The producer must still be a registered provider** — see
     ///    `is_registered_provider`.
-    /// 3. **The snapshot must be newer than what this node already has.**
+    /// 3. **The producer must be a trust anchor, or hold a stake this
+    ///    node has read from chain and found sufficient** — see
+    ///    [`crate::stake`], which is the requirement `crate::trust` said
+    ///    governs after the first snapshot and which, until now, did not
+    ///    exist.
+    /// 4. **The snapshot must be newer than what this node already has.**
     ///    Unlike the earlier read-only version of this method, importing
     ///    now *writes state*, so replaying an old snapshot would silently
     ///    roll the node backwards.
-    /// 4. **Size, then digest, then write.** Nothing reaches the store
+    /// 5. **Size, then digest, then write.** Nothing reaches the store
     ///    until the decompressed bytes hash to the announced `state_root`.
     pub fn import(&self, id: &SnapshotId, compressed_bytes: &[u8]) -> Result<usize, SnapshotError> {
         let metadata = self.get(id).ok_or(SnapshotError::UnknownSnapshot)?;
@@ -196,6 +265,33 @@ impl<S: KvStore> SnapshotIndex<S> {
         // registration governs. See `crate::trust`.
         if self.checkpoint_slot().is_none() && !self.anchors.trusts(&metadata.producer) {
             return Err(SnapshotError::UntrustedFirstSnapshot);
+        }
+        // And after the first, `crate::trust` promised that "the stake
+        // requirement on registration governs instead". This is that
+        // requirement, and until now it did not exist: registration is
+        // free, so every check above passed for anyone willing to sign.
+        //
+        // An anchor is exempt because it holds the stronger credential.
+        // Requiring a pinned key to also post a bond adds nothing —
+        // whoever controls that key already decides what a bootstrapping
+        // node believes — while removing the exemption would leave a node
+        // whose RPC endpoint is momentarily down unable to bootstrap at
+        // all, which is the one thing the anchors exist to guarantee.
+        if !self.anchors.trusts(&metadata.producer) {
+            match self.stake_standing(&metadata.producer, Timestamp::now()) {
+                StakeStanding::Qualified => {}
+                StakeStanding::Insufficient { .. } => {
+                    return Err(SnapshotError::InsufficientProviderStake);
+                }
+                // Including `Unenforceable`, which is a `GossipOnly`
+                // node's permanent answer: it cannot read a stake, so for
+                // it the anchors govern every import and not merely the
+                // first. Said plainly rather than waved through — see
+                // `crate::stake`.
+                StakeStanding::Unread | StakeStanding::Unenforceable => {
+                    return Err(SnapshotError::ProviderStakeUnverified);
+                }
+            }
         }
         // Only a node that has already imported something can be rolled
         // backwards. A node with no checkpoint has no state to lose and
@@ -757,6 +853,251 @@ mod tests {
             .collect();
         ids.sort();
         assert_eq!(ids, ["hourly-2", "weekly-1"]);
+    }
+
+    /// Adds `provider` to an existing registry as a snapshot provider.
+    fn also_register(services: &Registry<TestStore>, provider: &Keypair, service_id: &str) {
+        services
+            .apply_registration(SignedRegistration::sign(
+                Registration {
+                    service_id: ServiceId::new(service_id),
+                    service_type: ServiceType::Infrastructure(
+                        InfrastructureService::SnapshotProvider,
+                    ),
+                    provider: peer_id_from_public_key(&provider.public_key()).unwrap(),
+                    provider_public_key: provider.public_key(),
+                    endpoints: vec![],
+                    supported_ofs: vec![1300],
+                    region: None,
+                    capabilities: vec![],
+                    branding: None,
+                    pricing: None,
+                    payout_wallet: None,
+                    timestamp: Timestamp::now(),
+                },
+                provider,
+            ))
+            .unwrap();
+    }
+
+    /// A node that has already bootstrapped from its anchor and now hears
+    /// from a second, unanchored registered provider — the state every
+    /// node is in a few minutes after it starts, and the one the stake
+    /// gate exists for.
+    ///
+    /// Returns the index, its shared stake record, the stranger, and the
+    /// stranger's newer snapshot.
+    #[allow(clippy::type_complexity)]
+    fn bootstrapped_node() -> (
+        SnapshotIndex<TestStore>,
+        TestStore,
+        Rc<RefCell<crate::stake::ProviderStakes>>,
+        Keypair,
+        (SnapshotMetadata, Vec<u8>),
+    ) {
+        let (anchor, services) = registered_provider(1);
+        let stranger = Keypair::from_seed([9u8; 32]);
+        also_register(&services, &stranger, "snapshot-svc-stranger");
+
+        let store = Rc::new(MemoryStore::new());
+        let stakes = Rc::new(RefCell::new(crate::stake::ProviderStakes::enforcing()));
+        let anchor_key = bs58::encode(anchor.public_key().as_bytes()).into_string();
+        let index = SnapshotIndex::with_anchors(
+            Rc::clone(&store),
+            services,
+            crate::trust::TrustAnchors::with_operator(&[anchor_key]).unwrap(),
+            crate::state::accept_any,
+        )
+        .with_stakes(Rc::clone(&stakes));
+
+        // A real first import from the anchor, so the node genuinely has
+        // a checkpoint rather than a test-set one.
+        let first = state_blob("ad-1", "the anchor's state");
+        let metadata = announce(&anchor, "snap-anchor", 100, &first);
+        seed(&index, &anchor, &metadata);
+        index.import(&metadata.id, &first).unwrap();
+        assert_eq!(index.checkpoint_slot(), Some(100));
+
+        let blob = state_blob("ad-1", "a stranger's replacement worldview");
+        let newer = announce(&stranger, "snap-stranger", 500, &blob);
+        (index, store, stakes, stranger, (newer, blob))
+    }
+
+    /// The gate this whole module exists for. Every other check passes:
+    /// the announcement is genuinely signed, the producer is genuinely a
+    /// registered snapshot provider, the slot is genuinely newer, the
+    /// bytes genuinely hash to the announced root. Registration is free,
+    /// so without a stake requirement all of that costs a signature — and
+    /// this import replaces the node's entire state with a stranger's.
+    ///
+    /// Remove the stake gate from `import` and this assertion fails with
+    /// `Ok(1)`, and the assertion below it finds the stranger's state on
+    /// disk.
+    #[test]
+    fn a_registered_provider_with_no_verified_stake_cannot_replace_this_nodes_worldview() {
+        let (index, store, _stakes, stranger, (newer, blob)) = bootstrapped_node();
+        seed(&index, &stranger, &newer);
+
+        assert_eq!(
+            index.import(&newer.id, &blob),
+            Err(SnapshotError::ProviderStakeUnverified)
+        );
+        assert_eq!(index.checkpoint_slot(), Some(100));
+        assert_eq!(
+            store.get("advertisements", b"ad-1").unwrap(),
+            Some(b"the anchor's state".to_vec()),
+            "a refused snapshot must leave the node's own state untouched"
+        );
+    }
+
+    /// And the same import once the chain has been read and the stake is
+    /// there — so the test above is proving a gate rather than a pipeline
+    /// that never worked.
+    #[test]
+    fn the_same_provider_is_imported_from_once_its_stake_has_been_read() {
+        let (index, store, stakes, stranger, (newer, blob)) = bootstrapped_node();
+        seed(&index, &stranger, &newer);
+        stakes.borrow_mut().observe(
+            peer_id_from_public_key(&stranger.public_key()).unwrap(),
+            crate::stake::MINIMUM_PROVIDER_STAKE,
+            Timestamp::now(),
+        );
+
+        assert_eq!(index.import(&newer.id, &blob).unwrap(), 1);
+        assert_eq!(index.checkpoint_slot(), Some(500));
+        assert_eq!(
+            store.get("advertisements", b"ad-1").unwrap(),
+            Some(b"a stranger's replacement worldview".to_vec())
+        );
+    }
+
+    /// One base unit short. A minimum that accepted "nearly" would not be
+    /// a minimum, and the boundary is where a rounding or unit error
+    /// (whole OPEN against base units — a factor of a billion) would show
+    /// up.
+    #[test]
+    fn a_provider_one_base_unit_short_of_the_minimum_is_refused() {
+        let (index, _store, stakes, stranger, (newer, blob)) = bootstrapped_node();
+        seed(&index, &stranger, &newer);
+        stakes.borrow_mut().observe(
+            peer_id_from_public_key(&stranger.public_key()).unwrap(),
+            crate::stake::MINIMUM_PROVIDER_STAKE - 1,
+            Timestamp::now(),
+        );
+
+        assert_eq!(
+            index.import(&newer.id, &blob),
+            Err(SnapshotError::InsufficientProviderStake)
+        );
+    }
+
+    /// A provider that qualified when it announced and has since unstaked
+    /// or been slashed. The signature on the announcement is still
+    /// perfect, and says nothing about whether the bond is still posted —
+    /// the same argument `is_registered_provider` already makes for
+    /// re-checking registration at import rather than only at announce.
+    #[test]
+    fn a_provider_that_unstaked_after_announcing_can_no_longer_be_imported_from() {
+        let (index, _store, stakes, stranger, (newer, blob)) = bootstrapped_node();
+        let peer = peer_id_from_public_key(&stranger.public_key()).unwrap();
+        stakes.borrow_mut().observe(
+            peer.clone(),
+            crate::stake::MINIMUM_PROVIDER_STAKE,
+            Timestamp::now(),
+        );
+        seed(&index, &stranger, &newer);
+
+        stakes.borrow_mut().observe(peer, 0, Timestamp::now());
+        assert_eq!(
+            index.import(&newer.id, &blob),
+            Err(SnapshotError::InsufficientProviderStake)
+        );
+    }
+
+    /// Announcements are metadata and cost nothing to hold, so an
+    /// unread stake must not lose one — gossip does not replay. A
+    /// shortfall this node has actually observed is different: keeping and
+    /// serving that announcement onward publishes a claim it knows to be
+    /// unbacked.
+    #[test]
+    fn an_unread_stake_keeps_an_announcement_and_an_observed_shortfall_drops_it() {
+        let (index, _store, stakes, stranger, (newer, _blob)) = bootstrapped_node();
+        let peer = peer_id_from_public_key(&stranger.public_key()).unwrap();
+
+        assert!(
+            index
+                .apply_announce(SignedSnapshotAnnounce::sign(newer.clone(), &stranger))
+                .is_ok(),
+            "an announcement heard before the first stake poll must not be thrown away"
+        );
+
+        stakes.borrow_mut().observe(peer, 1, Timestamp::now());
+        let another = announce(&stranger, "snap-stranger-2", 600, b"state");
+        assert_eq!(
+            index.apply_announce(SignedSnapshotAnnounce::sign(another, &stranger)),
+            Err(SnapshotError::InsufficientProviderStake)
+        );
+    }
+
+    /// The honest limit of this gate. A `GossipOnly` node has no RPC
+    /// endpoint, so it can never read a `StakeAccount` — and rather than
+    /// waving every registered provider through, it falls back to the one
+    /// credential it can evaluate locally: its anchors, applied to every
+    /// import instead of only the first. See `crate::stake`.
+    #[test]
+    fn a_gossip_only_node_imports_only_from_its_anchors_and_says_why() {
+        let (anchor, services) = registered_provider(1);
+        let stranger = Keypair::from_seed([9u8; 32]);
+        also_register(&services, &stranger, "snapshot-svc-stranger");
+        let store = Rc::new(MemoryStore::new());
+        let index = trusting(Rc::clone(&store), services, &anchor);
+
+        let first = state_blob("ad-1", "the anchor's state");
+        let metadata = announce(&anchor, "snap-anchor", 100, &first);
+        seed(&index, &anchor, &metadata);
+        index.import(&metadata.id, &first).unwrap();
+
+        let blob = state_blob("ad-1", "a stranger's replacement worldview");
+        let newer = announce(&stranger, "snap-stranger", 500, &blob);
+        seed(&index, &stranger, &newer);
+
+        assert_eq!(
+            index.import(&newer.id, &blob),
+            Err(SnapshotError::ProviderStakeUnverified),
+            "not `InsufficientProviderStake`: this node did not look, and cannot"
+        );
+        assert_eq!(
+            index.stake_standing(&newer.producer, Timestamp::now()),
+            crate::stake::StakeStanding::Unenforceable
+        );
+    }
+
+    /// The anchors are exempt, and that is not an oversight: whoever holds
+    /// a pinned key already decides what a bootstrapping node believes, so
+    /// a bond under it adds nothing — while removing the exemption would
+    /// leave a node whose RPC is momentarily down unable to bootstrap at
+    /// all, which is the one thing the anchors exist to guarantee.
+    #[test]
+    fn an_anchor_needs_no_stake_because_it_holds_the_stronger_credential() {
+        let (anchor, services) = registered_provider(1);
+        let store = Rc::new(MemoryStore::new());
+        let stakes = Rc::new(RefCell::new(crate::stake::ProviderStakes::enforcing()));
+        let key = bs58::encode(anchor.public_key().as_bytes()).into_string();
+        let index = SnapshotIndex::with_anchors(
+            Rc::clone(&store),
+            services,
+            crate::trust::TrustAnchors::with_operator(&[key]).unwrap(),
+            crate::state::accept_any,
+        )
+        .with_stakes(stakes);
+
+        for (id, slot, value) in [("snap-1", 100, "first"), ("snap-2", 200, "second")] {
+            let blob = state_blob("ad-1", value);
+            let metadata = announce(&anchor, id, slot, &blob);
+            seed(&index, &anchor, &metadata);
+            index.import(&metadata.id, &blob).unwrap();
+        }
+        assert_eq!(index.checkpoint_slot(), Some(200));
     }
 
     #[test]

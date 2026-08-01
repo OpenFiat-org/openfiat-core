@@ -19,6 +19,13 @@ openfiat-storage = { path = "../storage", version = "0.1.0" }
 # Trust anchors are written as base58 public keys, the form a key is
 # actually exchanged in — see `src/trust.rs`.
 bs58 = "0.5"
+# Deriving a provider's stake-account PDA, so the address this node reads
+# cannot belong to anyone but the provider that announced. Matches
+# `openfiat-governance`'s dependency exactly — the `curve25519` feature is
+# what `find_program_address` needs to reject on-curve candidates — and
+# deliberately *not* a Solana RPC client: this crate derives and decodes,
+# and the node's chain bridge does the fetching. See `src/stake.rs`.
+solana-pubkey = { version = "4", features = ["curve25519"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # The serving and fetching halves of §14. `axum` is the HTTP server this
 # node already runs (see `serve`'s module doc on why this merges into it
@@ -31,6 +38,9 @@ tokio-util = { version = "0.7", features = ["io"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
 
 [dev-dependencies]
+# Re-reads the deployment record and the programs' own generated IDL, so
+# a pinned program id or account layout cannot drift — see `src/stake.rs`.
+serde_json = "1"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net"] }
 futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
 libp2p = { version = "0.56.0", features = ["request-response"] }

@@ -41,6 +41,7 @@ use openfiat_serialization::wire;
 use openfiat_sessions::SessionRegistry;
 use openfiat_settlement::SettlementRegistry;
 use openfiat_snapshot::SnapshotIndex;
+use openfiat_snapshot::stake::ProviderStakes;
 use openfiat_storage::KvStore;
 use openfiat_trade::{CounterpartyView, TradeView};
 use openfiat_tradechannel::TradeChannelRegistry;
@@ -346,6 +347,16 @@ pub struct NodeState<S> {
     pub oracles: Rc<OracleIndex<Rc<S>>>,
     pub risk: Rc<RiskIndex<Rc<S>>>,
     pub snapshots: Rc<SnapshotIndex<Rc<S>>>,
+    /// What this node has read from chain about which snapshot providers
+    /// actually hold the stake it requires of them (OFS-4200 §5, via
+    /// `openfiat_snapshot::stake`).
+    ///
+    /// The same handle `snapshots` reads, not a second copy: the poll
+    /// loop that maintains it (`provider_stake::poll_provider_stake`)
+    /// writes here, and `SnapshotIndex::import` refuses on what it finds.
+    /// Held on `NodeState` so the loop can reach it without going through
+    /// the index it is a property of.
+    pub provider_stakes: Rc<RefCell<ProviderStakes>>,
     pub sessions: Rc<SessionRegistry<Rc<S>>>,
     pub chain: Rc<ChainState>,
     /// Per-epoch liveness observations feeding OFS-4100 §9.2's node
@@ -458,14 +469,29 @@ impl<S: KvStore + 'static> NodeState<S> {
         ));
         let oracles = Rc::new(OracleIndex::new(Rc::clone(&store), Rc::clone(&services)));
         let risk = Rc::new(RiskIndex::new(Rc::clone(&store), Rc::clone(&services)));
-        let snapshots = Rc::new(SnapshotIndex::with_anchors(
-            Rc::clone(&store),
-            Rc::clone(&services),
-            trusted_snapshot_providers,
-            verify_snapshot_entry,
-        ));
-        let sessions = Rc::new(SessionRegistry::new(Rc::clone(&store)));
         let is_rpc_connected = chain_mode.is_rpc_connected();
+        // A snapshot provider's stake is an on-chain fact, so only an
+        // `RpcConnected` node can enforce the requirement — see
+        // `openfiat_snapshot::stake`, which sets out plainly what a
+        // `GossipOnly` node can and cannot do about it. The mode is
+        // decided here, once, from the same `chain_mode` everything else
+        // reads, rather than inferred later from whether a client happens
+        // to be present.
+        let provider_stakes = Rc::new(RefCell::new(if is_rpc_connected {
+            ProviderStakes::enforcing()
+        } else {
+            ProviderStakes::unenforceable()
+        }));
+        let snapshots = Rc::new(
+            SnapshotIndex::with_anchors(
+                Rc::clone(&store),
+                Rc::clone(&services),
+                trusted_snapshot_providers,
+                verify_snapshot_entry,
+            )
+            .with_stakes(Rc::clone(&provider_stakes)),
+        );
+        let sessions = Rc::new(SessionRegistry::new(Rc::clone(&store)));
         let chain = Rc::new(ChainState::new(chain_mode));
         let chain_bridge = ChainBridge::install(&mut gossip);
 
@@ -628,6 +654,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             oracles,
             risk,
             snapshots,
+            provider_stakes,
             sessions,
             chain,
             reward_observations,

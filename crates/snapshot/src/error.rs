@@ -23,6 +23,37 @@ pub enum SnapshotError {
     /// against — see `crate::trust` for why a first snapshot is the one
     /// case where registration is not enough.
     UntrustedFirstSnapshot,
+    /// The producer's on-chain stake was read and is below what this node
+    /// requires of a snapshot provider — see [`crate::stake`].
+    ///
+    /// Distinct from [`Self::Unauthorized`]: the producer is registered,
+    /// and distinct from [`Self::ProviderStakeUnverified`]: this node
+    /// looked and the answer was no. Nobody but the provider can change
+    /// it, which is why it is not retryable.
+    InsufficientProviderStake,
+    /// This node requires a snapshot provider to hold stake and has no
+    /// current reading of this producer's — it has never polled for it,
+    /// every reading has aged out, or the node is `GossipOnly` and can
+    /// never read one.
+    ///
+    /// Not a judgement about the producer, which is exactly why it is its
+    /// own variant: reporting [`Self::InsufficientProviderStake`] here
+    /// would send an honest operator to top up a stake that was already
+    /// sufficient. Retryable, because on an `RpcConnected` node the next
+    /// revalidation genuinely may settle it — on a `GossipOnly` node it
+    /// never will, and `crate::stake` says so plainly.
+    ProviderStakeUnverified,
+    /// An account offered as a producer's stake is owned by some program
+    /// other than `openfiat-staking`.
+    ///
+    /// The attack this names: anyone may fund an account at an address of
+    /// their choosing, or deploy their own staking program, and fill it
+    /// with a qualifying balance.
+    ForeignStakeAccount,
+    /// An account owned by the staking program whose bytes do not decode
+    /// as a snapshot provider's `StakeAccount` — wrong discriminator,
+    /// wrong role, or too short.
+    MalformedStakeAccount,
     MalformedRecord,
     /// §24: a Snapshot ID that's already on file.
     DuplicateSnapshotId,
@@ -84,6 +115,15 @@ impl SnapshotError {
             // node trusting it, which is a state of the node rather than a
             // fault in the message.
             Self::UntrustedFirstSnapshot => ErrorCode::SnapshotVerificationFailed,
+            // Same distinction as above, drawn once more between the two
+            // stake outcomes: "you are short" is a fact about the
+            // producer and retrying changes nothing, while "this node has
+            // not read your stake" is a state of the node that a later
+            // poll may resolve.
+            Self::InsufficientProviderStake => ErrorCode::InvalidRequest,
+            Self::ProviderStakeUnverified => ErrorCode::SnapshotVerificationFailed,
+            Self::ForeignStakeAccount => ErrorCode::InvalidRequest,
+            Self::MalformedStakeAccount => ErrorCode::MalformedTransaction,
             Self::MalformedRecord => ErrorCode::DeserializationError,
             Self::DuplicateSnapshotId => ErrorCode::ResourceAlreadyExists,
             Self::UnsupportedCompression => ErrorCode::UnsupportedOperation,

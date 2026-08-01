@@ -39,6 +39,7 @@ pub mod reachable;
 pub mod record;
 pub mod serve;
 pub mod service;
+pub mod stake;
 pub mod state;
 pub mod store;
 pub mod trust;
@@ -48,6 +49,7 @@ pub use error::SnapshotError;
 pub use location::SnapshotLocation;
 pub use record::{CompressionMethod, SnapshotId, SnapshotMetadata};
 pub use service::SnapshotService;
+pub use stake::{MINIMUM_PROVIDER_STAKE, ProviderStakes, StakeStanding};
 pub use store::SnapshotIndex;
 
 /// Crate version, re-exported for diagnostics and `openfiat-node --version`.

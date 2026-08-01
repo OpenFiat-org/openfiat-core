@@ -3849,6 +3849,8 @@ dependencies = [
  "openfiat-types",
  "reqwest",
  "serde",
+ "serde_json",
+ "solana-pubkey 4.3.0",
  "tar",
  "tokio",
  "tokio-util",
