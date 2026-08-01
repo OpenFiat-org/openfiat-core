@@ -7,7 +7,12 @@ use anchor_spl::token_interface::{
 };
 use openfiat_programs_shared::VaultState;
 
-use crate::{constants::*, error::ErrorCode, events::ArbitrationDepositTaken, state::*};
+use crate::{
+    constants::*,
+    error::ErrorCode,
+    events::{ArbitrationDepositTaken, StakeRecoveryClaimRecorded},
+    state::*,
+};
 
 /// Opens a dispute case and freezes the trade escrow in one atomic step
 /// (Phase 4b, plan decision #2) — replaces Phase 4's standalone
@@ -44,6 +49,36 @@ use crate::{constants::*, error::ErrorCode, events::ArbitrationDepositTaken, sta
 /// funded OPEN vault before a merchant may list at all — which
 /// `charge_ad_listing_fee` already pushes them toward, since listing draws
 /// on the same vault.
+///
+/// # The shortfall is now a debt, not just a log line
+///
+/// OFS-4100 §9.3 makes the merchant's stake the backstop for exactly this
+/// case. Until now the shortfall was computed, emitted, and discarded, so
+/// nothing downstream could act on it: an under-funded merchant kept a
+/// full stake and the arbitrators who decided their case were paid out of
+/// a deposit that was never collected.
+///
+/// So opening a case now also records the shortfall on the merchant's
+/// [`StakeRecoveryClaim`], the account `openfiat-staking` reads before it
+/// will let stake leave. Recording it **here, at open** — rather than at
+/// resolution, which is where §9.3's table puts it — is the one decision
+/// in this design that is not a restatement of the specification, and it
+/// is what makes the rest of it enforceable:
+///
+/// A merchant's unbonding period is 24 hours (OFS-4100 §4). A dispute's
+/// commit and reveal windows can each run to a week. A debt that comes
+/// into existence when the case *closes* is therefore a debt against stake
+/// the merchant has had days to withdraw in full, entirely legally, while
+/// the case was still running. Recovery at close is not a weaker rule than
+/// recovery at open; against a merchant who is paying attention it is no
+/// rule at all.
+///
+/// Opening the debt at open costs the merchant nothing they do not already
+/// owe. The deposit is refundable — if the case does not go against them
+/// it returns to their vault, exactly as a deposit funded in cash would
+/// have. `[PROPOSED — NEEDS SIGN-OFF]`: the timing, and the consequence
+/// that a merchant who wins gets their deposit back as vault liquidity
+/// rather than as restored stake.
 #[derive(Accounts)]
 pub struct OpenDisputeCase<'info> {
     #[account(constraint = signer.key() == trade_escrow.buyer || signer.key() == trade_escrow.seller @ ErrorCode::NotAPartyToThisTrade)]
@@ -102,6 +137,24 @@ pub struct OpenDisputeCase<'info> {
         constraint = arbitration_pool.mint == deposit_mint.key(),
     )]
     pub arbitration_pool: Box<InterfaceAccount<'info, TokenAccount>>,
+
+    /// This merchant's running arbitration-deposit debt (OFS-4100 §9.3).
+    ///
+    /// `init_if_needed` rather than `init` because one merchant accrues
+    /// debt across many cases, and rather than a conditional init because
+    /// Anchor fixes the account list per instruction, not per branch — a
+    /// case that opens fully funded still passes the account and simply
+    /// leaves the counters alone. The rent is the opener's, once per
+    /// merchant, and it buys `openfiat-staking` an address it can derive
+    /// from a stake account's owner without asking anyone.
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = 8 + StakeRecoveryClaim::INIT_SPACE,
+        seeds = [STAKE_RECOVERY_CLAIM_SEED, trade_escrow.seller.as_ref(), deposit_mint.key().as_ref()],
+        bump
+    )]
+    pub stake_recovery_claim: Box<Account<'info, StakeRecoveryClaim>>,
 
     pub token_program: Interface<'info, TokenInterface>,
 
@@ -197,10 +250,40 @@ pub fn handle_open_dispute_case(
         timestamp: now,
     });
 
+    // Written unconditionally, incremented only when there is a shortfall.
+    // `init_if_needed` leaves an existing account's bytes intact, so these
+    // three are idempotent re-statements on every case after the first
+    // rather than a reset — and on the first they are what makes the
+    // account self-describing to a reader that only knows its address.
+    let claim_key = ctx.accounts.stake_recovery_claim.key();
+    let claim = &mut ctx.accounts.stake_recovery_claim;
+    claim.merchant = ctx.accounts.trade_escrow.seller;
+    claim.mint = ctx.accounts.deposit_mint.key();
+    claim.bump = ctx.bumps.stake_recovery_claim;
+    if shortfall > 0 {
+        claim.owed_total = claim
+            .owed_total
+            .checked_add(shortfall)
+            .ok_or(ErrorCode::Overflow)?;
+        claim.case_count = claim.case_count.checked_add(1).ok_or(ErrorCode::Overflow)?;
+        emit!(StakeRecoveryClaimRecorded {
+            reservation_id: ctx.accounts.trade_escrow.reservation_id,
+            merchant: claim.merchant,
+            claim: claim_key,
+            mint: claim.mint,
+            shortfall,
+            owed_total: claim.owed_total,
+            credited_total: claim.credited_total,
+            case_count: claim.case_count,
+            timestamp: now,
+        });
+    }
+
     let dispute_case = &mut ctx.accounts.dispute_case;
     dispute_case.deposit_vault = ctx.accounts.merchant_open_vault.key();
     dispute_case.deposit_mint = ctx.accounts.deposit_mint.key();
     dispute_case.deposit = deposit;
+    dispute_case.deposit_shortfall = shortfall;
     dispute_case.outcome = None;
     dispute_case.winning_weight = 0;
     dispute_case.reward_pool = 0;

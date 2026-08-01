@@ -42,4 +42,16 @@ pub enum ErrorCode {
     StakeAccountAlreadyMigrated,
     #[msg("Account is not the canonical stake account for the owner and role it claims")]
     NotAStakeAccount,
+    #[msg("Account is not an openfiat-escrow stake recovery claim for this merchant and mint")]
+    NotARecoveryClaim,
+    #[msg("Account is not the canonical stake recovery receipt for this merchant")]
+    NotARecoveryReceipt,
+    #[msg("This merchant owes nothing that has not already been recovered")]
+    NothingToRecover,
+    #[msg("This stake account holds no balance left to recover from")]
+    NoStakeToRecoverFrom,
+    #[msg(
+        "This merchant's arbitration deposit debt must be recovered before stake may be withdrawn"
+    )]
+    StakeRecoveryOutstanding,
 }

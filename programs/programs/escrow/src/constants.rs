@@ -49,6 +49,20 @@ pub const DISPUTE_CASE_SEED: &[u8] = b"dispute_case";
 #[constant]
 pub const ARBITRATION_POOL_SEED: &[u8] = b"arbitration_pool";
 
+/// PDA seed for a [`StakeRecoveryClaim`](crate::state::StakeRecoveryClaim):
+/// `[SEED, merchant, mint]` (OFS-4100 §9.3).
+///
+/// Keyed by the merchant's **wallet**, not by a reservation id, and that
+/// is load-bearing rather than incidental. `openfiat-staking` has to reach
+/// this account knowing nothing but the owner of a stake account it is
+/// already holding, exactly as the ban-list gate reaches a `BanRecord`
+/// from a signer's key. A per-case seed would leave staking unable to
+/// derive an address at all, since it has no way to enumerate a merchant's
+/// disputes — and an address the caller supplies is an address the caller
+/// chooses.
+#[constant]
+pub const STAKE_RECOVERY_CLAIM_SEED: &[u8] = b"stake_recovery_claim";
+
 /// Basis-points denominator (10_000 = 100%), matching `presale`'s constant.
 #[constant]
 pub const BPS_DENOMINATOR: u64 = 10_000;

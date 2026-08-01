@@ -1,3 +1,4 @@
+pub mod absorb_stake_recovery;
 pub mod approve_settlement;
 pub mod cancel_reservation;
 pub mod charge_ad_listing_fee;
@@ -17,9 +18,11 @@ pub mod release_escrow;
 pub mod reserve_liquidity;
 pub mod reveal_dispute_vote;
 pub mod shared_logic;
+pub mod top_up_arbitration_deposit;
 pub mod update_fee_config;
 pub mod withdraw_liquidity;
 
+pub use absorb_stake_recovery::*;
 pub use approve_settlement::*;
 pub use cancel_reservation::*;
 pub use charge_ad_listing_fee::*;
@@ -38,5 +41,6 @@ pub use open_dispute_case::*;
 pub use release_escrow::*;
 pub use reserve_liquidity::*;
 pub use reveal_dispute_vote::*;
+pub use top_up_arbitration_deposit::*;
 pub use update_fee_config::*;
 pub use withdraw_liquidity::*;

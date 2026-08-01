@@ -1,5 +1,6 @@
 pub mod constants;
 pub mod error;
+pub mod escrow_claim;
 pub mod events;
 pub mod instructions;
 pub mod state;
@@ -86,6 +87,15 @@ pub mod staking {
 
     pub fn slash(ctx: Context<Slash>, misconduct_code: u16) -> Result<()> {
         crate::instructions::slash::handle_slash(ctx, misconduct_code)
+    }
+
+    /// Takes a merchant's stake to cover an arbitration deposit their
+    /// liquidity vault could not (OFS-4100 §9.3). Permissionless, and it
+    /// accepts no amount — see `recover_stake_shortfall` for why a relay
+    /// that trusted its caller about the size of a debt would be a theft
+    /// primitive rather than a backstop.
+    pub fn recover_stake_shortfall(ctx: Context<RecoverStakeShortfall>) -> Result<()> {
+        crate::instructions::recover_stake_shortfall::handle_recover_stake_shortfall(ctx)
     }
 
     /// `epoch` is the reward cranker's own epoch number — recorded in the

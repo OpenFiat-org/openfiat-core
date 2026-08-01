@@ -154,4 +154,19 @@ pub mod escrow {
     pub fn execute_dispute_outcome(ctx: Context<ExecuteDisputeOutcome>) -> Result<()> {
         crate::instructions::execute_dispute_outcome::handle_execute_dispute_outcome(ctx)
     }
+
+    /// Credits a merchant's OPEN vault with stake `openfiat-staking` has
+    /// already recovered against their arbitration-deposit debt
+    /// (OFS-4100 §9.3). Permissionless and parameterless — see
+    /// `absorb_stake_recovery`.
+    pub fn absorb_stake_recovery(ctx: Context<AbsorbStakeRecovery>) -> Result<()> {
+        crate::instructions::absorb_stake_recovery::handle_absorb_stake_recovery(ctx)
+    }
+
+    /// Moves vault liquidity into the arbitration pool to make an
+    /// under-funded deposit good, while the case is still open.
+    /// Permissionless — see `top_up_arbitration_deposit`.
+    pub fn top_up_arbitration_deposit(ctx: Context<TopUpArbitrationDeposit>) -> Result<()> {
+        crate::instructions::top_up_arbitration_deposit::handle_top_up_arbitration_deposit(ctx)
+    }
 }

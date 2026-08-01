@@ -24,6 +24,16 @@ pub const REWARDS_VAULT_SEED: &[u8] = b"rewards_vault";
 #[constant]
 pub const STAKE_ACCOUNT_SEED: &[u8] = b"stake";
 
+/// PDA seed for a [`StakeRecoveryReceipt`](crate::state::StakeRecoveryReceipt):
+/// `[SEED, merchant]` (OFS-4100 §9.3).
+///
+/// Keyed by wallet alone, matching the claim it is paired against in
+/// `openfiat-escrow` — that account is per `(merchant, mint)` and this one
+/// per merchant, which is the same key in practice because a stake vault
+/// holds exactly one mint and `staking_config.mint` pins which.
+#[constant]
+pub const STAKE_RECOVERY_RECEIPT_SEED: &[u8] = b"stake_recovery_receipt";
+
 /// Basis-points denominator (10_000 = 100%), matching every other program
 /// in this workspace.
 #[constant]

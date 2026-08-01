@@ -321,6 +321,31 @@ pub struct DisputeCase {
     /// opens the case anyway rather than letting an underfunded merchant
     /// block a buyer's dispute.
     pub deposit: u64,
+    /// How much of this case's deposit the merchant's vault could **not**
+    /// cover at open time, and has not been made good since (OFS-4100
+    /// §9.3).
+    ///
+    /// The complement of [`Self::deposit`] against the filing fee that was
+    /// configured when the case opened — latched here rather than
+    /// recomputed from `FeeConfig` later, because governance can move
+    /// `dispute_filing_fee` mid-case and a debt must not change size
+    /// because a parameter did.
+    ///
+    /// `top_up_arbitration_deposit` draws it down as the vault is refilled
+    /// — whether from the merchant's own deposit or from
+    /// `absorb_stake_recovery` crediting what `openfiat-staking` took out
+    /// of their stake. Zero means this case's deposit is whole.
+    ///
+    /// Placed in declaration order rather than appended, on the same
+    /// grounds [`Self::case_seed`] was: no live `DisputeCase` exists to
+    /// migrate. Re-verified against devnet immediately before this field
+    /// was added — a `getProgramAccounts` sweep of
+    /// `HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP` returned one
+    /// `FeeConfig`, two `LiquidityVault`s and three `TradeEscrowVault`s,
+    /// and **no** account carrying `DisputeCase`'s discriminator. A single
+    /// pre-existing open case would have made this an appended field or a
+    /// migration instead, because everything below it would shift.
+    pub deposit_shortfall: u64,
     /// Set by `execute_dispute_outcome`. `Some` when a round produced a
     /// stake-weighted verdict; stays `None` when the case exhausted its
     /// rounds without deciding — which is what separates a deposit that
@@ -342,4 +367,178 @@ pub struct DisputeCase {
     /// settlement if `execute_dispute_outcome` is somehow re-entered.
     pub deposit_settled: bool,
     pub bump: u8,
+}
+
+/// One merchant's standing debt for arbitration deposits their OPEN
+/// liquidity vault could not cover (OFS-4100 §9.3), and the ledger the
+/// stake-recovery relay runs against.
+///
+/// # Why this account exists at all
+///
+/// §9.3 makes stake the backstop for the arbitration deposit: "a merchant
+/// with an empty liquidity vault does not become undisputable". Without
+/// something recording *how much* they failed to cover, that sentence has
+/// no on-chain referent — `open_dispute_case` computed the shortfall,
+/// emitted it in an event, and threw the number away.
+///
+/// An event is not a proof. `openfiat-staking` cannot read this program's
+/// logs, and a relay that told it "this merchant owes 10 OPEN" would be a
+/// theft primitive: whoever submits the transaction decides how much stake
+/// moves. So the debt is an account, at an address `openfiat-staking`
+/// re-derives from the stake account's own owner, and the amount is one it
+/// reads rather than one it is handed. See
+/// [`staking::escrow_claim`](../../staking/src/escrow_claim.rs) for the
+/// reading half.
+///
+/// # Two monotone counters, one writer each
+///
+/// [`Self::owed_total`] only ever grows, and only this program writes it.
+/// `staking::StakeRecoveryReceipt::recovered_total` only ever grows, and
+/// only *that* program writes it. What is still owed is their difference,
+/// computed independently by each side from the other's account.
+///
+/// That is the whole reason no CPI is needed in either direction — OFS-4200
+/// §1 forbids `escrow -> staking`, and `staking -> escrow` would close a
+/// Cargo dependency cycle besides. Neither program ever writes the other's
+/// state; each publishes a counter the other can read.
+///
+/// [`Self::credited_total`] is this program's own view of that same
+/// recovery: how much of what staking has already moved has been turned
+/// into vault liquidity by `absorb_stake_recovery`. It lags
+/// `recovered_total` between the two transactions and never leads it.
+#[account]
+#[derive(InitSpace)]
+pub struct StakeRecoveryClaim {
+    pub merchant: Pubkey,
+    /// The OPEN mint the debt is denominated in — the same mint the
+    /// deposit was taken in, and the mint `openfiat-staking`'s vault
+    /// holds. Pinned into the PDA seeds so a claim under one mint can
+    /// never be satisfied out of a stake denominated in another.
+    pub mint: Pubkey,
+    /// Monotone. `open_dispute_case` adds each case's shortfall as it
+    /// opens; nothing ever reduces it, because a debt that shrank when it
+    /// was paid would leave the two programs unable to agree on whether it
+    /// had been.
+    pub owed_total: u64,
+    /// Monotone, and never above the staking receipt's `recovered_total`.
+    /// `absorb_stake_recovery` advances it as it credits recovered tokens
+    /// to the merchant's vault.
+    pub credited_total: u64,
+    /// How many cases have contributed to [`Self::owed_total`]. Recorded
+    /// so an under-funded merchant is visible as a pattern rather than as
+    /// a single number that could be one large case or twenty small ones.
+    pub case_count: u32,
+    pub bump: u8,
+}
+
+impl StakeRecoveryClaim {
+    /// What `openfiat-staking` has moved but this program has not yet
+    /// turned into vault liquidity.
+    pub fn absorbable(&self, recovered_total: u64) -> u64 {
+        recovered_total.saturating_sub(self.credited_total)
+    }
+}
+
+/// The allocation must cover what `openfiat-staking`'s decoder reads, or a
+/// freshly-created claim would be shorter than its own prefix and every
+/// recovery would fail on a length check.
+///
+/// A `const` assertion rather than a test: both sides are compile-time
+/// constants, so this is a build failure at the point of the mistake
+/// rather than a red test somebody has to run.
+const _: () = assert!(
+    8 + StakeRecoveryClaim::INIT_SPACE >= staking::escrow_claim::CLAIM_PREFIX_LEN,
+    "StakeRecoveryClaim must be allocated at least as long as the prefix staking decodes"
+);
+
+/// The half of the stake-recovery relay that cannot be checked by the
+/// compiler on its own.
+///
+/// `openfiat-staking` reads [`StakeRecoveryClaim`] as raw bytes, because
+/// this program already depends on that one and the reverse dependency
+/// would be a cycle. Everything it needs to do that — the program id, the
+/// seeds, the discriminator, the field offsets — is a constant it declares
+/// for itself, and nothing in the type system forces those constants to
+/// agree with the account this program actually writes.
+///
+/// These tests are that force. They live here rather than in `staking`
+/// because this side owns the definitions and this side is where a change
+/// would originate: whoever renames a field or reorders the struct gets
+/// the failure in the file they edited.
+///
+/// Each failure mode they rule out is silent in production. A wrong
+/// program id or seed derives a permanently empty address, so every
+/// merchant reads as debt-free. A wrong discriminator makes every claim
+/// unreadable, so recovery never runs. Wrong offsets read a plausible
+/// number out of the wrong bytes and move stake against it — the only one
+/// of the three that loses money rather than failing closed, and the
+/// reason the offsets are asserted against a real serialized account
+/// rather than by inspection.
+#[cfg(test)]
+mod stake_recovery_relay_agreement {
+    use super::*;
+    use anchor_lang::Discriminator;
+    use staking::escrow_claim;
+
+    #[test]
+    fn staking_holds_this_programs_id() {
+        assert_eq!(escrow_claim::ESCROW_PROGRAM_ID, crate::ID);
+    }
+
+    #[test]
+    fn staking_holds_the_same_seeds() {
+        assert_eq!(
+            escrow_claim::STAKE_RECOVERY_CLAIM_SEED,
+            crate::constants::STAKE_RECOVERY_CLAIM_SEED
+        );
+        assert_eq!(
+            escrow_claim::LIQUIDITY_VAULT_TOKENS_SEED,
+            crate::constants::LIQUIDITY_VAULT_TOKENS_SEED
+        );
+    }
+
+    #[test]
+    fn staking_holds_the_same_discriminator() {
+        assert_eq!(
+            &escrow_claim::STAKE_RECOVERY_CLAIM_DISCRIMINATOR[..],
+            StakeRecoveryClaim::DISCRIMINATOR
+        );
+    }
+
+    /// Serializes a real claim exactly as Anchor stores one, then reads it
+    /// back through the decoder `staking` will use on chain.
+    #[test]
+    fn stakings_decoder_reads_what_this_program_writes() {
+        let merchant = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let claim = StakeRecoveryClaim {
+            merchant,
+            mint,
+            owed_total: 7_000_000_009,
+            credited_total: 3,
+            case_count: 2,
+            bump: 254,
+        };
+
+        let mut data = StakeRecoveryClaim::DISCRIMINATOR.to_vec();
+        anchor_lang::AnchorSerialize::serialize(&claim, &mut data).unwrap();
+        assert!(data.len() >= escrow_claim::CLAIM_PREFIX_LEN);
+
+        assert_eq!(
+            &data[escrow_claim::CLAIM_MERCHANT_OFFSET..escrow_claim::CLAIM_MERCHANT_OFFSET + 32],
+            merchant.as_ref()
+        );
+        assert_eq!(
+            &data[escrow_claim::CLAIM_MINT_OFFSET..escrow_claim::CLAIM_MINT_OFFSET + 32],
+            mint.as_ref()
+        );
+        assert_eq!(
+            u64::from_le_bytes(
+                data[escrow_claim::CLAIM_OWED_TOTAL_OFFSET..escrow_claim::CLAIM_PREFIX_LEN]
+                    .try_into()
+                    .unwrap()
+            ),
+            claim.owed_total
+        );
+    }
 }

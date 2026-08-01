@@ -57,8 +57,36 @@ anchor test --validator legacy
 
 `anchor test` starts an ephemeral local validator automatically (since
 `Anchor.toml`'s `[provider] cluster` is `localnet`, not `devnet`) — this is
-deliberate, so CI and local iteration stay fast and deterministic. Actual
-devnet deployment is a separate, explicit step:
+deliberate, so CI and local iteration stay fast and deterministic.
+
+### The isolated suite
+
+`tests-isolated/` holds specs that cannot share a ledger with `tests/`,
+because they need the protocol singletons (`FeeConfig`, `StakingConfig`,
+the arbitration pool) initialized with *different parameters* than
+`tests/shared-fixtures.ts` writes — and each can be initialized only once
+per ledger. Today that is the stake-recovery relay, which needs staking and
+the arbitration pool denominated in the same mint, as OFS-4100 §4 and §6
+require and as the shared fixture does not do.
+
+They are deliberately outside `tests/**/*.ts` so `anchor test` does not
+sweep them into the shared process. Run them against a validator of their
+own:
+
+```bash
+solana-test-validator --reset --ledger /tmp/isolated-ledger \
+  --bpf-program HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP target/deploy/escrow.so \
+  --bpf-program HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx target/deploy/staking.so &
+
+ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 \
+ANCHOR_WALLET=~/.config/solana/id.json \
+  npm run test:isolated
+```
+
+The program ids above come from each program's own `declare_id!`; read them
+there rather than assuming an ordering.
+
+Actual devnet deployment is a separate, explicit step:
 
 ```bash
 # Requires devnet SOL in the deploying wallet — request via

@@ -140,6 +140,104 @@ pub struct StakeAccount {
     pub first_staked_at: i64,
 }
 
+/// How much of one merchant's stake has been taken to satisfy
+/// `openfiat-escrow`'s arbitration-deposit claim against them (OFS-4100
+/// §9.3).
+///
+/// # Why this is its own account and not a field on `StakeAccount`
+///
+/// Seven `StakeAccount`s are live on devnet. Widening a deployed
+/// `#[account]` shifts every field after the insertion point and leaves
+/// each of them undeserializable by both this program and every external
+/// decoder, which is a migration — `migrate_stake_account` exists because
+/// of exactly that, for exactly one field. A separate account costs a PDA
+/// and no migration at all, and it is also the more honest shape: a
+/// recovery is a fact about a *debt*, which most stake accounts will never
+/// have, rather than a property of staking.
+///
+/// It is keyed by wallet rather than by `(wallet, role)` because the debt
+/// is the merchant's, not a role's. Recovery draws only on the Merchant
+/// role's stake — that is the stake OFS-4100 §9.3 calls the backstop, and
+/// a node operator's bond is not collateral for someone else's dispute —
+/// but the ledger of what has been taken belongs to the wallet.
+///
+/// # Monotone, and paired
+///
+/// [`Self::recovered_total`] only grows. `escrow`'s claim records what is
+/// owed and also only grows. What is still outstanding is the difference,
+/// and each program computes it from the other's account without either
+/// ever writing the other's state — which is what lets OFS-4200 §1's ban
+/// on an `escrow -> staking` CPI hold without leaving the two sides unable
+/// to agree.
+#[account]
+#[derive(InitSpace)]
+pub struct StakeRecoveryReceipt {
+    pub merchant: Pubkey,
+    /// Monotone total moved out of this wallet's Merchant stake and into
+    /// their OPEN liquidity vault against `escrow`'s claim.
+    pub recovered_total: u64,
+    /// How many separate recoveries produced that total. A claim that took
+    /// several passes is one whose stake did not cover it in one go, and
+    /// that is worth being able to see without replaying every event.
+    pub recovery_count: u32,
+    pub bump: u8,
+}
+
+impl StakeRecoveryReceipt {
+    /// Reads [`Self::recovered_total`] out of an account that may not
+    /// exist yet, returning zero when it does not.
+    ///
+    /// Hand-decoded because the caller — `withdraw_unstaked` — has to
+    /// accept a possibly-absent account, and Anchor's way of expressing
+    /// that is an optional account the caller may omit. Omitting this one
+    /// would read as "fully recovered" and open the gate it exists to
+    /// close, so the account stays required and the absence is handled
+    /// here instead.
+    ///
+    /// Every deviation other than absence is an error. An account at this
+    /// address that exists but is owned by something else, is too short,
+    /// or carries another type's discriminator is not a receipt this
+    /// program wrote, and guessing a balance out of it would be the one
+    /// mistake that matters: the number gates whether stake may leave.
+    pub fn recovered_total_of(info: &AccountInfo, merchant: &Pubkey) -> Result<u64> {
+        if info.data_is_empty() {
+            return Ok(0);
+        }
+        require_keys_eq!(
+            *info.owner,
+            crate::ID,
+            crate::error::ErrorCode::NotARecoveryReceipt
+        );
+
+        let data = info.try_borrow_data()?;
+        // discriminator + merchant + recovered_total
+        const PREFIX_LEN: usize = 8 + 32 + 8;
+        require!(
+            data.len() >= PREFIX_LEN,
+            crate::error::ErrorCode::NotARecoveryReceipt
+        );
+        require!(
+            data[..8] == *StakeRecoveryReceipt::DISCRIMINATOR,
+            crate::error::ErrorCode::NotARecoveryReceipt
+        );
+        let found = Pubkey::new_from_array(
+            data[8..40]
+                .try_into()
+                .map_err(|_| error!(crate::error::ErrorCode::NotARecoveryReceipt))?,
+        );
+        require_keys_eq!(
+            found,
+            *merchant,
+            crate::error::ErrorCode::NotARecoveryReceipt
+        );
+        Ok(u64::from_le_bytes(
+            data[40..PREFIX_LEN]
+                .try_into()
+                .map_err(|_| error!(crate::error::ErrorCode::NotARecoveryReceipt))?,
+        ))
+    }
+}
+
 impl StakeAccount {
     /// How long this account has continuously held its current staked
     /// position, or `None` when it holds no stake (or predates the

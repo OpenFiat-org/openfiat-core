@@ -91,4 +91,12 @@ pub enum ErrorCode {
     EmptySettlementMintList,
     #[msg("The arbitration pool is not initialized; run initialize_arbitration_pool first")]
     ArbitrationPoolNotInitialized,
+    #[msg("openfiat-staking has recovered nothing this claim has not already credited")]
+    NothingToAbsorb,
+    #[msg("The recovered tokens are not present in this vault's token account")]
+    RecoveredTokensMissing,
+    #[msg("This dispute case's deposit is already whole")]
+    NoDepositShortfall,
+    #[msg("This vault has no available balance to put toward the deposit shortfall")]
+    NoLiquidityForShortfall,
 }

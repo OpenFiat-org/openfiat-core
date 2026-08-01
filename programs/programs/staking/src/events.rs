@@ -73,6 +73,53 @@ pub struct SlashApplied {
     pub timestamp: i64,
 }
 
+/// Stake taken to satisfy an arbitration-deposit debt (OFS-4100 §9.3).
+/// Emitted by `recover_stake_shortfall`.
+///
+/// Deliberately not a [`SlashApplied`]. A slash is a penalty for
+/// misconduct and lands in `slashed_total`; this is the collection of a
+/// fee the merchant already owed, and the tokens go to their own liquidity
+/// vault rather than to a forfeiture destination. Conflating them would
+/// make a merchant's slash history read as misconduct they were never
+/// found guilty of.
+///
+/// # `outstanding` is the field that matters
+///
+/// A recovery takes what the stake can cover and no more. When the stake
+/// does not cover the debt this is non-zero, and that is the whole of the
+/// notice anyone gets that the arbitrators on some case are owed a reward
+/// the protocol could not collect. A partial recovery reported as a plain
+/// success would be exactly the silent half-payment this design exists to
+/// avoid — so the remainder is stated on every event, including the ones
+/// that clear the debt entirely.
+#[event]
+pub struct StakeShortfallRecovered {
+    pub stake_account: Pubkey,
+    pub merchant: Pubkey,
+    /// `openfiat-escrow`'s claim account this was recovered against.
+    pub claim: Pubkey,
+    pub amount: u64,
+    /// Taken from the unbonding cohort, which is drained first — see
+    /// `recover_stake_shortfall`.
+    pub from_unbonding: u64,
+    /// Taken from the active balance, after unbonding was exhausted.
+    pub from_active: u64,
+    pub owed_total: u64,
+    pub recovered_total: u64,
+    /// Still owed after this recovery. Non-zero means the stake ran out.
+    pub outstanding: u64,
+    pub remaining_stake: u64,
+    pub remaining_unbonding: u64,
+    /// False when the remaining active balance sits below the Merchant
+    /// role's minimum — the account keeps its tokens and confers no stake
+    /// weight until topped back up, the same consequence a slash has. See
+    /// [`crate::state::StakeAccount::effective_stake`].
+    pub eligible_after: bool,
+    /// The merchant's OPEN liquidity token vault the tokens went to.
+    pub destination: Pubkey,
+    pub timestamp: i64,
+}
+
 /// OPEN added to the reward pool. Emitted by `fund_rewards_vault`.
 #[event]
 pub struct RewardsVaultFunded {
