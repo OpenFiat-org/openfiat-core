@@ -2133,6 +2133,18 @@ where
             }
             let table: MethodTable<S> = crate::methods::build_table();
             let mut chain_poll = tokio::time::interval(CHAIN_POLL_INTERVAL);
+            // Snapshot-provider stake, on its own cadence rather than
+            // `chain_poll`'s. A stake does not move every ten seconds, and
+            // `STAKE_REVALIDATION_INTERVAL` is chosen against the
+            // observation TTL it refreshes rather than against this loop —
+            // the two are only meaningful as a pair, so the constant lives
+            // beside that TTL in `openfiat_snapshot::stake` and not beside
+            // the timer here. The first tick fires immediately, which is
+            // wanted: a node that has just restarted holds no readings at
+            // all and would otherwise refuse every import for the first two
+            // minutes.
+            let mut provider_stake_poll =
+                tokio::time::interval(openfiat_snapshot::stake::STAKE_REVALIDATION_INTERVAL);
             // Unconditional, unlike `chain_poll`: a GossipOnly node replicates
             // the registry just the same and must expire stale entries too.
             let mut registry_sweep = tokio::time::interval(REGISTRY_SWEEP_INTERVAL);
@@ -2291,6 +2303,21 @@ where
                                 poll_proposal_resolutions(&state, client).await;
                             }
                             None => discard_unverifiable_votes(&state),
+                        }
+                    }
+                    _ = provider_stake_poll.tick() => {
+                        // Guarded, unlike `chain_poll` above, and for the
+                        // opposite reason: a GossipOnly node has nothing to
+                        // drain here. Vote verification accumulates a queue
+                        // that must be discarded and reported; this does
+                        // not, because the registry it walks is already
+                        // bounded and already swept. Such a node reports
+                        // `StakeStanding::Unenforceable` and
+                        // `SnapshotIndex::import` refuses on it with
+                        // `ProviderStakeUnverified`, which says so at the
+                        // point it actually matters.
+                        if let Some(client) = chain_client.as_deref() {
+                            crate::provider_stake::poll_provider_stake(&state, client).await;
                         }
                     }
                     _ = registry_sweep.tick() => {
