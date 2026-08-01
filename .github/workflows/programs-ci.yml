@@ -98,10 +98,20 @@ jobs:
         run: |
           set -o pipefail
           anchor build 2>&1 | tee /tmp/anchor-build.log
-          if grep -q "overwrites values in the frame" /tmp/anchor-build.log; then
+          # Two different wordings, because the toolchain emits either one
+          # depending on how it noticed. This guard originally matched only
+          # "overwrites values in the frame" and a real overflow slipped
+          # past it: `RecoverStakeShortfall::try_accounts` exceeded the
+          # frame by 8 bytes and reported "Stack offset of 4104 exceeded
+          # max offset of 4096", which that pattern does not match. The
+          # build exited 0 and produced a working-looking `staking.so`.
+          # Match on the union, and keep matching on the union — a guard
+          # that only catches the phrasing you happened to see once is the
+          # same as no guard the first time the wording changes.
+          if grep -qE "overwrites values in the frame|exceeded max offset" /tmp/anchor-build.log; then
             echo "::error::SBF stack-frame overflow — a function's locals exceed the 4 KB frame."
             echo "Box the accounts in the offending Accounts struct, or split the instruction."
-            grep -o "in method [^ ]*" /tmp/anchor-build.log | sort -u
+            grep -oE "in method [^ ]*|Function [^ ]*" /tmp/anchor-build.log | sort -u
             exit 1
           fi
       # --validator legacy: this Anchor CLI version defaults to the
