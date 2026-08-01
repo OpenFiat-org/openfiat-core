@@ -21,6 +21,17 @@
 //! So an unknown mint is not an error. It is an address with no nickname,
 //! and the honest thing to show is the address.
 //!
+//! # Two questions, not one
+//!
+//! [`known`] and [`symbol_for_mint`] answer "what may a trade settle in,
+//! and what do we call it" — a display-and-eligibility question, and the
+//! reason OPEN is absent from [`KNOWN_MINTS`]. [`priced`] answers the
+//! narrower "what symbol is this priced against and how does it scale",
+//! which a service-provider fee needs and which carries no claim about
+//! escrow at all. The table used to answer both with one row; the OPEN
+//! case is what separated them. See [`priced`] for the full argument
+//! before collapsing them back together.
+//!
 //! # Why a symbol may never travel in a record
 //!
 //! A ticker is spoofable and cluster-dependent: "USDC" names one mint on
@@ -93,6 +104,58 @@ pub const DEVNET: &[KnownMint] = &[
 /// The table this build uses. Selected at compile time alongside
 /// [`crate::programs::IDS`], never by configuration.
 pub const KNOWN_MINTS: &[KnownMint] = DEVNET;
+
+/// The protocol's own token — pointedly *not* a row in [`KNOWN_MINTS`],
+/// and reachable only through [`priced`].
+///
+/// Its address is taken from [`crate::programs::IDS`] rather than
+/// transcribed, so there is exactly one place a build says which mint OPEN
+/// is. `decimals` is read off the cluster and recorded in
+/// `programs/devnet-addresses.json` as `devnet.mintDecimals`; the test
+/// below pins this against that record, because a quantity of OPEN cannot
+/// be converted or rendered without an exponent and a guessed one is wrong
+/// by a factor of a thousand in silence.
+const OPEN: KnownMint = KnownMint {
+    mint: crate::programs::IDS.mint,
+    symbol: "OPEN",
+    decimals: 9,
+};
+
+/// What this build knows about `mint` for the purpose of putting a
+/// *price* on a quantity of it: the symbol an oracle publishes a rate
+/// against, and the base-unit exponent to scale by.
+///
+/// # This deliberately says nothing about settlement eligibility
+///
+/// [`known`] and this function answer two questions the table above had
+/// been conflating, and the difference is the entire reason this exists.
+/// `known` answers "may a trade settle in this, and what do we call it in
+/// the directory" — which is why OPEN is absent from [`KNOWN_MINTS`]: it
+/// is not on the escrow program's settlement allowlist, OFS-4100 holds it
+/// back until the public sale, and naming it there would advertise an
+/// asset no buyer can receive from escrow. That reasoning is sound and the
+/// test guarding it still holds.
+///
+/// It is also reasoning about *escrow*. A service-provider fee is not an
+/// escrow settlement: it never passes the on-chain settlement allowlist,
+/// it is a payment to a provider for work done, and OFS-4100 §9.5 puts no
+/// such hold on what a provider may be paid in. So a USDC-denominated fee
+/// can perfectly well be settled in OPEN while a *trade* still cannot, and
+/// the only thing pricing that fee needs is a symbol and a scale.
+///
+/// A caller asking "may a trade settle in this" must therefore still ask
+/// [`known`], and must not read a `Some` here as permission. This is the
+/// narrower question, and it is the one to ask when you have base units
+/// and need a number.
+///
+/// `None` still means "no nickname and no scale", never "invalid"; the
+/// caller shows the address and refuses to convert, exactly as before.
+pub fn priced(mint: &MintAddress) -> Option<&'static KnownMint> {
+    if mint.as_str() == OPEN.mint {
+        return Some(&OPEN);
+    }
+    known(mint)
+}
 
 /// What people call `mint`, if this build knows.
 ///
@@ -202,6 +265,84 @@ mod tests {
             let mint = MintAddress::parse(entry.mint).expect("a listed mint parses");
             assert_eq!(known(&mint).map(|k| k.decimals), Some(entry.decimals));
         }
+    }
+
+    /// The deployment record, read at compile time so this needs no
+    /// cluster — the same technique `crate::programs` uses to stop a
+    /// transcribed address drifting from what was actually deployed.
+    const DEVNET_ADDRESSES: &str = include_str!("../../../programs/devnet-addresses.json");
+
+    /// `OPEN.decimals` is a transcription of something read off the
+    /// cluster, so it can drift exactly the way a transcribed address can.
+    /// The recorded value came from
+    /// `getTokenSupply(29w8Tro…)` on devnet: decimals 9, amount
+    /// 1000000000000000000.
+    #[test]
+    fn the_protocols_own_token_is_scaled_by_the_recorded_deployment_not_a_guess() {
+        let json: serde_json::Value =
+            serde_json::from_str(DEVNET_ADDRESSES).expect("devnet-addresses.json must be valid");
+        assert_eq!(
+            json["devnet"]["mint"].as_str(),
+            Some(OPEN.mint),
+            "the token this build prices must be the one that was deployed"
+        );
+        assert_eq!(
+            json["devnet"]["mintDecimals"].as_u64(),
+            Some(u64::from(OPEN.decimals)),
+            "an exponent that drifts from the mint's own is wrong by a factor of \
+             a thousand, and nothing else would notice"
+        );
+    }
+
+    /// The distinction the two lookups exist to draw. OPEN can be priced —
+    /// a provider fee may be settled in it — and is still not a mint a
+    /// trade may settle in, so it must stay out of every display and
+    /// allowlist path.
+    #[test]
+    fn the_protocols_own_token_is_priceable_without_becoming_a_settlement_asset() {
+        let open = MintAddress::parse(crate::programs::IDS.mint).expect("the pinned mint parses");
+
+        let priced = priced(&open).expect("a fee denominated in OPEN has to be scalable");
+        assert_eq!(priced.decimals, 9);
+        assert_eq!(priced.symbol, "OPEN");
+
+        // Everything the escrow-facing reasoning protects is unchanged.
+        assert_eq!(
+            known(&open),
+            None,
+            "the scale lookup must not have smuggled OPEN onto the settlement table"
+        );
+        assert_eq!(
+            symbol_for_mint(&open),
+            None,
+            "the directory must still not name an asset no buyer can receive from escrow"
+        );
+        assert!(
+            !KNOWN_MINTS
+                .iter()
+                .any(|k| k.mint == crate::programs::IDS.mint),
+            "OPEN must not appear in the table until it is allowlisted on chain"
+        );
+    }
+
+    #[test]
+    fn every_settleable_mint_is_priced_identically_by_both_lookups() {
+        // `priced` widens `known`, and must never disagree with it about a
+        // mint they both answer for — a fee quoted at one scale and a
+        // volume totalled at another would both look internally consistent.
+        for entry in KNOWN_MINTS {
+            let mint = MintAddress::parse(entry.mint).expect("a listed mint parses");
+            assert_eq!(priced(&mint), known(&mint), "{} disagrees", entry.mint);
+        }
+    }
+
+    #[test]
+    fn a_mint_from_neither_table_is_still_unpriceable() {
+        // The widening is exactly one mint wide. Anything else this build
+        // has never heard of must still refuse to be scaled rather than
+        // pick up a default.
+        let elsewhere = MintAddress::parse("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU").unwrap();
+        assert_eq!(priced(&elsewhere), None);
     }
 
     #[test]

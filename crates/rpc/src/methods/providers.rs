@@ -201,17 +201,18 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                     }));
                 }
 
-                // The settlement token's scale comes from the same
-                // compiled-in row that names it and is never assumed — a
-                // guessed exponent misprices by a factor of a thousand,
-                // silently. A mint this build cannot scale is therefore
-                // unsettleable rather than approximated, which today
-                // includes OPEN itself: `openfiat_chain::mints`
-                // deliberately withholds it until it is allowlisted on
-                // chain for the public sale.
+                // Both mints are resolved through `priced`, which answers
+                // only "what symbol is this priced against and how does it
+                // scale" — never "may a trade settle in it". That is the
+                // distinction a provider fee turns on: a fee is not an
+                // escrow settlement, so OPEN is priceable here while still
+                // being absent from the settlement table and from every
+                // directory that names an asset. Nothing is assumed for a
+                // mint neither answers for; a guessed exponent misprices
+                // by a factor of a thousand, silently.
                 let Some(settlement) = MintAddress::parse(&params.settlement_mint)
                     .ok()
-                    .and_then(|mint| openfiat_chain::mints::known(&mint))
+                    .and_then(|mint| openfiat_chain::mints::priced(&mint))
                 else {
                     return Ok(Some(FeeQuote::Unsettleable {
                         reason: UnsettleableReason::UnknownSettlementToken,
@@ -227,12 +228,11 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 let now = Timestamp::now();
                 let rate = match MintAddress::parse(&pricing.token_mint)
                     .ok()
-                    .as_ref()
-                    .and_then(openfiat_chain::symbol_for_mint)
+                    .and_then(|mint| openfiat_chain::mints::priced(&mint))
                 {
-                    Some(fee_symbol) => state
+                    Some(fee) => state
                         .oracles
-                        .exchange_rate(fee_symbol, settlement.symbol, now)
+                        .exchange_rate(fee.symbol, settlement.symbol, now)
                         .as_settlement_rate(),
                     None => SettlementRate::NoOracleData,
                 };
@@ -781,9 +781,13 @@ mod tests {
 
         const USDC: &str = "2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU";
         const WSOL: &str = "So11111111111111111111111111111111111111112";
-        /// The protocol's own token, deliberately absent from this build's
-        /// mint table until it is allowlisted on chain.
+        /// The protocol's own token. Absent from the settlement table and
+        /// from every display path — and priceable, which is the whole
+        /// point of this method.
         const OPEN: &str = "29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj";
+        /// Circle's canonical devnet USDC, which this deployment
+        /// deliberately does not use and this build has never heard of.
+        const A_STRANGER: &str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 
         /// A service charging 2.50 USDC per request, with somewhere to be
         /// paid — the registry refuses a price without one.
@@ -810,16 +814,22 @@ mod tests {
             ServiceId::new("svc-priced")
         }
 
-        /// Publishes a USDC/wSOL rate from a registered market-data
+        /// Publishes a `USDC/<quote>` rate from a registered market-data
         /// provider — the only publisher §5/§15 accepts.
-        fn publish_rate(state: &NodeState<MemoryStore>, rate: f64, at: Timestamp, ttl_millis: u64) {
+        fn publish_rate(
+            state: &NodeState<MemoryStore>,
+            quote_symbol: &str,
+            rate: f64,
+            at: Timestamp,
+            ttl_millis: u64,
+        ) {
             use openfiat_oracles::events::{OraclePublish, SignedOraclePublish};
             use openfiat_oracles::record::{OracleData, OracleId};
             use openfiat_types::MarketDataService;
 
             let provider = Keypair::generate();
             let peer = peer_id_from_public_key(&provider.public_key()).unwrap();
-            let mut reg = registration_at(&provider, "fx", at);
+            let mut reg = registration_at(&provider, &format!("fx-{quote_symbol}"), at);
             reg.service_type = ServiceType::MarketData(MarketDataService::FxOracle);
             state
                 .services
@@ -829,12 +839,12 @@ mod tests {
                 .oracles
                 .apply_publish(SignedOraclePublish::sign(
                     OraclePublish {
-                        id: OracleId::new("usdc-wsol"),
+                        id: OracleId::new(format!("usdc-{quote_symbol}")),
                         provider: peer,
                         provider_public_key: provider.public_key(),
                         data: OracleData::ExchangeRate {
                             base: "USDC".to_string(),
-                            quote: "wSOL".to_string(),
+                            quote: quote_symbol.to_string(),
                             rate,
                         },
                         version: 1,
@@ -865,7 +875,7 @@ mod tests {
         fn a_declared_fee_is_priced_in_another_token_at_the_median_rate() {
             let (table, state) = table_and_state();
             let id = priced_service(&table, &state, USDC);
-            publish_rate(&state, 0.005, Timestamp::now(), 600_000);
+            publish_rate(&state, "wSOL", 0.005, Timestamp::now(), 600_000);
 
             let answer = quote(&table, &state, id.as_str(), WSOL);
             assert_eq!(answer["status"], "settleable");
@@ -888,6 +898,7 @@ mod tests {
             // rate would have quietly papered over.
             publish_rate(
                 &state,
+                "wSOL",
                 0.005,
                 Timestamp::from_millis(Timestamp::now().as_millis() - 60_000),
                 1,
@@ -915,19 +926,82 @@ mod tests {
             );
         }
 
-        /// The honest consequence of taking scale from the same table that
-        /// names a mint: OPEN is withheld from that table until it is
-        /// allowlisted on chain, so this build refuses to quote in it
-        /// rather than assuming an exponent.
+        /// The case this whole method exists for: a USDC fee, settled in
+        /// OPEN, priced off a published USDC/OPEN rate.
+        ///
+        /// OPEN is deliberately not on the escrow settlement allowlist and
+        /// is deliberately nameless in the provider directory — but a
+        /// provider fee is not an escrow settlement, so neither of those
+        /// bears on what a payer may settle a fee in. See
+        /// `openfiat_chain::mints::priced` for the distinction.
+        #[test]
+        fn a_usdc_fee_is_priced_in_the_protocols_own_token() {
+            let (table, state) = table_and_state();
+            let id = priced_service(&table, &state, USDC);
+            publish_rate(&state, "OPEN", 4.0, Timestamp::now(), 600_000);
+
+            let answer = quote(&table, &state, id.as_str(), OPEN);
+            assert_eq!(
+                answer["status"], "settleable",
+                "a fee denominated in USDC must be settleable in OPEN"
+            );
+            // 2.50 USDC at 4 OPEN per USDC is 10 OPEN, and OPEN is a
+            // nine-decimal mint — an exponent read off the cluster, never
+            // assumed.
+            assert_eq!(answer["settlementAmount"]["base_units"], 10_000_000_000u64);
+            assert_eq!(answer["settlementAmount"]["decimals"], 9);
+            assert_eq!(answer["settlementMint"], OPEN);
+        }
+
+        /// Pricing OPEN must not have quietly made it a settlement asset:
+        /// the directory still refuses to name it, which is what stops a
+        /// buyer being offered an escrow settlement they cannot receive.
+        #[test]
+        fn pricing_a_fee_in_open_does_not_name_it_as_a_settlement_asset() {
+            let open = MintAddress::parse(OPEN).expect("the pinned mint parses");
+            assert!(
+                openfiat_chain::mints::priced(&open).is_some(),
+                "a fee has to be scalable in it"
+            );
+            assert_eq!(
+                openfiat_chain::symbol_for_mint(&open),
+                None,
+                "and the directory must still not name it"
+            );
+        }
+
+        /// The refusal is still there, just no longer catching OPEN: a
+        /// mint from neither table is unsettleable rather than scaled by a
+        /// guessed exponent.
         #[test]
         fn a_settlement_token_this_build_cannot_scale_is_refused_not_approximated() {
             let (table, state) = table_and_state();
             let id = priced_service(&table, &state, USDC);
-            publish_rate(&state, 0.005, Timestamp::now(), 600_000);
+            publish_rate(&state, "wSOL", 0.005, Timestamp::now(), 600_000);
+
+            let answer = quote(&table, &state, id.as_str(), A_STRANGER);
+            assert_eq!(answer["status"], "unsettleable");
+            assert_eq!(answer["reason"], "UnknownSettlementToken");
+        }
+
+        /// Staleness is not special-cased for OPEN either: the token being
+        /// the protocol's own buys its feed no leniency at all.
+        #[test]
+        fn a_lapsed_usdc_open_feed_leaves_the_fee_unsettleable_in_open() {
+            let (table, state) = table_and_state();
+            let id = priced_service(&table, &state, USDC);
+            publish_rate(
+                &state,
+                "OPEN",
+                4.0,
+                Timestamp::from_millis(Timestamp::now().as_millis() - 60_000),
+                1,
+            );
 
             let answer = quote(&table, &state, id.as_str(), OPEN);
             assert_eq!(answer["status"], "unsettleable");
-            assert_eq!(answer["reason"], "UnknownSettlementToken");
+            assert_eq!(answer["reason"], "StaleOracleData");
+            assert!(answer.get("settlementAmount").is_none());
         }
 
         #[test]
