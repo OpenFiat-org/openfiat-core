@@ -94,6 +94,25 @@ jobs:
       #
       # Anchor's own exit code cannot be relied on here, so the log is
       # inspected directly.
+      #
+      # Two traps for anyone reproducing this locally, both found the hard
+      # way after a real overflow reached a devnet deploy:
+      #
+      #   1. A CACHED BUILD RE-EMITS NOTHING. If the crate does not
+      #      recompile, the backend never re-runs the check and the log
+      #      says only "Finished". Grepping that is grepping silence.
+      #      Confirm you see `Compiling` for the crate you changed —
+      #      `touch` the source to force it — before believing a clean
+      #      grep. CI is safe from this because it builds from scratch;
+      #      your laptop is not.
+      #
+      #   2. `cargo build-sbf` ALONE REPORTS NOTHING. On the
+      #      platform-tools version this workspace resolves to, only
+      #      `anchor build` surfaces the diagnostic. A developer checking
+      #      their work with the lower-level command gets a false
+      #      all-clear on a binary that will die at runtime. That is why
+      #      this step shells out to `anchor build` and not to
+      #      `cargo build-sbf`.
       - name: anchor build, failing on an SBF stack-frame overflow
         run: |
           set -o pipefail
