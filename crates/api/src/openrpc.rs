@@ -124,6 +124,20 @@ fn params_schema_for(method: &str) -> Value {
             "required": ["id", "nonce", "signature"],
         });
     }
+    // A service id plus the token the caller wants the fee priced in.
+    // Described here rather than left to the `getX(id)` fallback, which
+    // would tell an integrator the second parameter does not exist and
+    // leave them wondering why every quote came back in the wrong token.
+    if method == "getProviderFeeQuote" {
+        return json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "the service id whose declared fee is being priced" },
+                "settlement_mint": { "type": "string", "description": "base58 SPL mint of the token to settle in — the mint, never a symbol. A mint this build cannot scale comes back as status `unsettleable`/`UnknownSettlementToken` rather than being approximated" },
+            },
+            "required": ["id", "settlement_mint"],
+        });
+    }
     // The two content reads. They take a `cid`, not an `id`, and the
     // fallback below published it as `id` for as long as `getHeldContent`
     // has existed — a documented parameter name that no caller could have
@@ -323,6 +337,30 @@ fn description_for(method: &str) -> Option<&'static str> {
              each PBLink's field 1 being a binary CID), fetch each linked block by that CID, \
              and check every one the same way. Do not trust a link list from anywhere but a \
              root block you have already hashed — that is what keeps the walk trustless.",
+        ),
+        "getProviderFeeQuote" => Some(
+            "What a service's declared fee costs in some other token right now — a USDC price \
+             quoted in OPEN. Answers with a tagged `status`, and every branch matters: `free` \
+             (the service declared no price at all), `native` (it already bills in the token you \
+             asked for, so no rate is involved), `settleable` (the converted amount, plus the \
+             `rate` it came from and the `expiresAt` it is good until), and `unsettleable` with a \
+             `reason`. \
+             `unsettleable` is a real answer, not an error, and must never be rendered as zero or \
+             as the last number you saw. `StaleOracleData` means providers do publish this pair \
+             and every record has expired — the feed will likely come back, so waiting is \
+             sensible. `NoOracleData` means nobody prices this pair and waiting is pointless. \
+             `UnknownSettlementToken` means this build cannot say how many base units one of that \
+             token is and refuses to guess. In every case the fee itself is untouched: it is not \
+             settleable in that token right now, and remains payable in the token the provider \
+             declared. There is no fallback rate anywhere on this path. \
+             This is a display read and two nodes may legitimately answer differently, because \
+             each resolves against the oracle records it happens to hold. Do not treat it as a \
+             commitment: the number a payer is bound to is the one they sign, and `expiresAt` is \
+             how long they have to sign it. Past that instant the quote is gone and the payer \
+             bears whatever the rate did — ask again. \
+             `settlementAmount` is rounded UP, deliberately, so a fee settled in a substitute \
+             token is never worth less than the fee that was declared; the payer pays under one \
+             base unit more.",
         ),
         "getProviders" => Some(
             "Every service in this node's replica of the Service Registry (OFS-1500). \

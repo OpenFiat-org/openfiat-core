@@ -4,8 +4,9 @@
 use crate::dispatch::{IdParams, MethodTable, SendEventParams, decode_bytes, method_fn};
 use crate::error::RpcError;
 use crate::state::NodeState;
-use openfiat_crypto::verify;
+use openfiat_crypto::{MintAddress, verify};
 use openfiat_registry::earnings::{EarningsChallenge, ProviderEarnings};
+use openfiat_registry::settlement::{FeeQuote, SettlementRate, UnsettleableReason};
 use openfiat_registry::{
     ServiceRecord, SignedHealthUpdate, SignedRegistration, SignedWithdrawal, protocol,
 };
@@ -21,6 +22,16 @@ pub struct EarningsParams {
     pub nonce: String,
     /// Base64, matching every other signed payload on this surface.
     pub signature: String,
+}
+
+/// Which service's fee, and which token the payer wants to settle it in.
+#[derive(serde::Deserialize)]
+pub struct FeeQuoteParams {
+    pub id: String,
+    /// Base58 SPL mint — the token's identity. Never a symbol: `USDC`
+    /// names a different address on every cluster and travels on no
+    /// record this protocol carries.
+    pub settlement_mint: String,
 }
 
 pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
@@ -158,6 +169,79 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                     .provider_earnings
                     .borrow()
                     .statement(&service_id, record.payout_wallet))
+            },
+        ),
+    );
+    // OFS-4100 §9.5 + OFS-7000 §9: what a provider's USDC-denominated fee
+    // costs in some other token right now — the read a payer performs
+    // before committing to settle in OPEN.
+    //
+    // This is the DISPLAY half, and only that. Two nodes answering at the
+    // same moment may return different numbers, because each resolves
+    // against the oracle records it holds; neither is wrong. The number a
+    // payer is held to is the one they sign into an
+    // `openfiat_registry::SignedFeeSettlement`, which every node can then
+    // check without agreeing about the oracle at all.
+    table.register(
+        "getProviderFeeQuote",
+        method_fn(
+            |state: &NodeState<S>, params: FeeQuoteParams| -> Result<Option<FeeQuote>, RpcError> {
+                let Some(record) = state.services.get(&ServiceId::new(params.id)) else {
+                    return Ok(None);
+                };
+                let Some(pricing) = record.pricing else {
+                    return Ok(Some(FeeQuote::Free));
+                };
+                // Settled in the token it is already billed in: no rate is
+                // involved, so no feed can make it unpayable and no scale
+                // needs looking up.
+                if pricing.token_mint == params.settlement_mint {
+                    return Ok(Some(FeeQuote::Native {
+                        fee: pricing.amount,
+                    }));
+                }
+
+                // The settlement token's scale comes from the same
+                // compiled-in row that names it and is never assumed — a
+                // guessed exponent misprices by a factor of a thousand,
+                // silently. A mint this build cannot scale is therefore
+                // unsettleable rather than approximated, which today
+                // includes OPEN itself: `openfiat_chain::mints`
+                // deliberately withholds it until it is allowlisted on
+                // chain for the public sale.
+                let Some(settlement) = MintAddress::parse(&params.settlement_mint)
+                    .ok()
+                    .and_then(|mint| openfiat_chain::mints::known(&mint))
+                else {
+                    return Ok(Some(FeeQuote::Unsettleable {
+                        reason: UnsettleableReason::UnknownSettlementToken,
+                    }));
+                };
+
+                // An oracle publishes a rate against a *symbol* — a rate
+                // is about an asset, not about one cluster's mint of it —
+                // while pricing names a mint. This is where the two meet,
+                // and a fee mint this build cannot name has no pair to
+                // look up: no oracle publishes a pair it cannot name, so
+                // pretending otherwise would invent a rate.
+                let now = Timestamp::now();
+                let rate = match MintAddress::parse(&pricing.token_mint)
+                    .ok()
+                    .as_ref()
+                    .and_then(openfiat_chain::symbol_for_mint)
+                {
+                    Some(fee_symbol) => state
+                        .oracles
+                        .exchange_rate(fee_symbol, settlement.symbol, now)
+                        .as_settlement_rate(),
+                    None => SettlementRate::NoOracleData,
+                };
+                Ok(Some(pricing.settle_in(
+                    settlement.mint,
+                    settlement.decimals,
+                    rate,
+                    now,
+                )))
             },
         ),
     );
@@ -687,6 +771,197 @@ mod tests {
                 .is_err(),
             "billing with nowhere to be paid must not reach the registry"
         );
+    }
+
+    /// Pricing a USDC fee in another token, end to end through the RPC
+    /// surface a payer actually calls.
+    mod fee_quotes {
+        use super::*;
+        use openfiat_registry::pricing::{BillingUnit, ServicePricing};
+
+        const USDC: &str = "2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU";
+        const WSOL: &str = "So11111111111111111111111111111111111111112";
+        /// The protocol's own token, deliberately absent from this build's
+        /// mint table until it is allowlisted on chain.
+        const OPEN: &str = "29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj";
+
+        /// A service charging 2.50 USDC per request, with somewhere to be
+        /// paid — the registry refuses a price without one.
+        fn priced_service(
+            table: &MethodTable<MemoryStore>,
+            state: &NodeState<MemoryStore>,
+            mint: &str,
+        ) -> ServiceId {
+            let owner = Keypair::generate();
+            let mut reg = registration_at(&owner, "svc-priced", Timestamp::from_millis(1_000));
+            reg.pricing = Some(ServicePricing {
+                token_mint: mint.to_string(),
+                amount: openfiat_types::Amount::new(2_500_000, 6),
+                unit: BillingUnit::Request,
+            });
+            reg.payout_wallet = Some("EA8TyQ58C3eavg3ThRFTMu1KLyV9e1v2oTQubSBQ9s5z".to_string());
+            table
+                .dispatch(
+                    state,
+                    "sendProviderRegister",
+                    params(&SignedRegistration::sign(reg, &owner)),
+                )
+                .expect("a priced registration must be accepted");
+            ServiceId::new("svc-priced")
+        }
+
+        /// Publishes a USDC/wSOL rate from a registered market-data
+        /// provider — the only publisher §5/§15 accepts.
+        fn publish_rate(state: &NodeState<MemoryStore>, rate: f64, at: Timestamp, ttl_millis: u64) {
+            use openfiat_oracles::events::{OraclePublish, SignedOraclePublish};
+            use openfiat_oracles::record::{OracleData, OracleId};
+            use openfiat_types::MarketDataService;
+
+            let provider = Keypair::generate();
+            let peer = peer_id_from_public_key(&provider.public_key()).unwrap();
+            let mut reg = registration_at(&provider, "fx", at);
+            reg.service_type = ServiceType::MarketData(MarketDataService::FxOracle);
+            state
+                .services
+                .apply_registration(SignedRegistration::sign(reg, &provider))
+                .expect("a market-data registration must be accepted");
+            state
+                .oracles
+                .apply_publish(SignedOraclePublish::sign(
+                    OraclePublish {
+                        id: OracleId::new("usdc-wsol"),
+                        provider: peer,
+                        provider_public_key: provider.public_key(),
+                        data: OracleData::ExchangeRate {
+                            base: "USDC".to_string(),
+                            quote: "wSOL".to_string(),
+                            rate,
+                        },
+                        version: 1,
+                        timestamp: at,
+                        expires_at: Timestamp::from_millis(at.as_millis() + ttl_millis),
+                    },
+                    &provider,
+                ))
+                .expect("a registered provider's publish must be accepted");
+        }
+
+        fn quote(
+            table: &MethodTable<MemoryStore>,
+            state: &NodeState<MemoryStore>,
+            id: &str,
+            settlement_mint: &str,
+        ) -> serde_json::Value {
+            table
+                .dispatch(
+                    state,
+                    "getProviderFeeQuote",
+                    serde_json::json!({ "id": id, "settlement_mint": settlement_mint }),
+                )
+                .expect("a quote is an answer, not an error")
+        }
+
+        #[test]
+        fn a_declared_fee_is_priced_in_another_token_at_the_median_rate() {
+            let (table, state) = table_and_state();
+            let id = priced_service(&table, &state, USDC);
+            publish_rate(&state, 0.005, Timestamp::now(), 600_000);
+
+            let answer = quote(&table, &state, id.as_str(), WSOL);
+            assert_eq!(answer["status"], "settleable");
+            // 2.50 USDC at 0.005 wSOL per USDC is 0.0125 wSOL, which at
+            // nine decimals is 12_500_000 base units.
+            assert_eq!(answer["settlementAmount"]["base_units"], 12_500_000);
+            assert_eq!(answer["settlementAmount"]["decimals"], 9);
+            assert!(
+                answer["expiresAt"].is_number(),
+                "a payer has to be told how long the number is good for"
+            );
+        }
+
+        #[test]
+        fn a_lapsed_feed_leaves_the_fee_unsettleable_rather_than_priced_at_the_last_rate() {
+            let (table, state) = table_and_state();
+            let id = priced_service(&table, &state, USDC);
+            // Published a minute ago, good for a millisecond: the record
+            // is on file and dead, which is exactly the case a fallback
+            // rate would have quietly papered over.
+            publish_rate(
+                &state,
+                0.005,
+                Timestamp::from_millis(Timestamp::now().as_millis() - 60_000),
+                1,
+            );
+
+            let answer = quote(&table, &state, id.as_str(), WSOL);
+            assert_eq!(answer["status"], "unsettleable");
+            assert_eq!(answer["reason"], "StaleOracleData");
+            assert!(
+                answer.get("settlementAmount").is_none(),
+                "a lapsed feed must not yield a number a client could show"
+            );
+        }
+
+        #[test]
+        fn a_node_with_no_oracle_records_says_so_rather_than_inventing_a_rate() {
+            let (table, state) = table_and_state();
+            let id = priced_service(&table, &state, USDC);
+
+            let answer = quote(&table, &state, id.as_str(), WSOL);
+            assert_eq!(answer["status"], "unsettleable");
+            assert_eq!(
+                answer["reason"], "NoOracleData",
+                "nobody publishing the pair is a different answer from a dead feed"
+            );
+        }
+
+        /// The honest consequence of taking scale from the same table that
+        /// names a mint: OPEN is withheld from that table until it is
+        /// allowlisted on chain, so this build refuses to quote in it
+        /// rather than assuming an exponent.
+        #[test]
+        fn a_settlement_token_this_build_cannot_scale_is_refused_not_approximated() {
+            let (table, state) = table_and_state();
+            let id = priced_service(&table, &state, USDC);
+            publish_rate(&state, 0.005, Timestamp::now(), 600_000);
+
+            let answer = quote(&table, &state, id.as_str(), OPEN);
+            assert_eq!(answer["status"], "unsettleable");
+            assert_eq!(answer["reason"], "UnknownSettlementToken");
+        }
+
+        #[test]
+        fn a_fee_already_in_the_settlement_token_needs_no_oracle_at_all() {
+            let (table, state) = table_and_state();
+            let id = priced_service(&table, &state, USDC);
+
+            let answer = quote(&table, &state, id.as_str(), USDC);
+            assert_eq!(answer["status"], "native");
+            assert_eq!(answer["fee"]["base_units"], 2_500_000);
+        }
+
+        #[test]
+        fn a_service_that_declared_no_price_is_free_rather_than_unpriceable() {
+            let (table, state) = table_and_state();
+            let owner = Keypair::generate();
+            let id = register_service(
+                &table,
+                &state,
+                &owner,
+                "svc-free",
+                Timestamp::from_millis(1_000),
+            );
+            assert_eq!(quote(&table, &state, id.as_str(), WSOL)["status"], "free");
+        }
+
+        #[test]
+        fn a_service_nobody_registered_is_absent_rather_than_free() {
+            let (table, state) = table_and_state();
+            assert!(
+                quote(&table, &state, "nope", WSOL).is_null(),
+                "'no such service' and 'that service is free' are not the same answer"
+            );
+        }
     }
 
     /// The interlock this whole change exists to unlock: before

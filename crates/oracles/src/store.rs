@@ -6,7 +6,7 @@ use crate::error::OracleError;
 use crate::events::SignedOraclePublish;
 use crate::protocol;
 use crate::record::{OracleCategory, OracleData, OracleId, OracleRecord};
-use openfiat_registry::Registry;
+use openfiat_registry::{Registry, SettlementRate};
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventEnvelope, ServiceType, Timestamp};
@@ -45,6 +45,29 @@ pub enum ExchangeRateLookup {
     Stale,
     /// No provider publishes this pair at all.
     NoData,
+}
+
+impl ExchangeRateLookup {
+    /// This read in the shape `openfiat_registry`'s fee settlement takes.
+    ///
+    /// The translation lives here and not there because the dependency
+    /// only runs one way: `openfiat_registry` holds the service
+    /// registrations §5/§15 requires a publisher to have, so it cannot
+    /// know about this crate. Its [`openfiat_registry::SettlementRate`] is
+    /// therefore a value a caller hands in, and this is the only place
+    /// that value is produced from a real oracle read.
+    ///
+    /// All three states are carried across rather than flattened to an
+    /// `Option`. A fee that cannot be settled because the feed lapsed and
+    /// one that cannot be settled because nobody prices the pair are
+    /// different answers to the payer holding the fee.
+    pub const fn as_settlement_rate(self) -> SettlementRate {
+        match self {
+            Self::Current { rate, expires_at } => SettlementRate::Available { rate, expires_at },
+            Self::Stale => SettlementRate::StaleOracleData,
+            Self::NoData => SettlementRate::NoOracleData,
+        }
+    }
 }
 
 pub struct OracleIndex<S> {

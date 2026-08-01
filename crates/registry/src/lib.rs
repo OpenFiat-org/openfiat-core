@@ -15,6 +15,7 @@ pub mod protocol;
 pub mod record;
 pub mod registration;
 pub mod service;
+pub mod settlement;
 pub mod store;
 pub mod withdrawal;
 
@@ -26,6 +27,10 @@ pub use pricing::{BillingUnit, ServicePricing};
 pub use record::ServiceRecord;
 pub use registration::{Registration, SignedRegistration};
 pub use service::{RegistryService, ServiceListing};
+pub use settlement::{
+    FeeQuote, FeeSettlement, FeeSettlementError, SettlementRate, SignedFeeSettlement,
+    UnsettleableReason,
+};
 pub use store::Registry;
 pub use withdrawal::{SignedWithdrawal, Withdrawal};
 
