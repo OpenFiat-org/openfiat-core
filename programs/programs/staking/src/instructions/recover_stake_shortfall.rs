@@ -81,6 +81,37 @@ use crate::{
 /// a payment belongs to and adjust that case's accounting to match. This
 /// program moves value to a place `escrow` controls and stops; see
 /// `escrow::absorb_stake_recovery` for the other half.
+/// # Every deserialized account here is boxed, and must stay that way
+///
+/// This struct's generated `try_accounts` overflowed SBF's 4 KB stack
+/// frame — by **eight bytes**, at 4104 of 4096, with ten accounts of which
+/// `StakingConfig` alone carries two seven-element arrays and two of the
+/// rest are token accounts.
+///
+/// The failure mode is what makes this worth a comment rather than a
+/// commit message. `cargo build-sbf` reports the overflow as a non-fatal
+/// `Error:` line, **still emits a binary, and still exits 0**; the binary
+/// then dies at runtime with "Access violation ... at address 0x0",
+/// attributed to whichever code path happened to be running rather than to
+/// the account that pushed the frame over. A local `solana-test-validator`
+/// run proves nothing here — it runs the same binary, so a passing suite
+/// means the overflow did not happen to corrupt anything on those paths,
+/// not that the frame fits.
+///
+/// It is also toolchain-sensitive: a direct `cargo build-sbf` on the
+/// platform-tools version this workspace resolves to emits no diagnostic at
+/// all, while `anchor build` does. The check that counts is therefore
+/// `anchor build`'s own log, grepped for both wordings the backend uses —
+/// "exceeded max offset" and "overwrites values in the frame". That is what
+/// `.github/workflows/programs-ci.yml` now does.
+///
+/// Boxing moves each deserialized account to the heap and leaves a pointer
+/// in the frame. All six are boxed rather than the one or two needed to
+/// claw back eight bytes, because landing at 4094 would mean the next
+/// account added here — or a field added to `StakingConfig`, which is a
+/// governance parameter array and will grow — silently reintroduces this.
+/// `escrow::ExecuteDisputeOutcome` carries the same instruction and for the
+/// same reason.
 #[derive(Accounts)]
 pub struct RecoverStakeShortfall<'info> {
     /// Rent for the receipt on its first recovery. Pays and signs nothing
@@ -90,14 +121,14 @@ pub struct RecoverStakeShortfall<'info> {
     pub payer: Signer<'info>,
 
     #[account(mint::token_program = token_program)]
-    pub mint: InterfaceAccount<'info, Mint>,
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
 
     #[account(
         seeds = [STAKING_CONFIG_SEED],
         bump = staking_config.bump,
         constraint = staking_config.mint == mint.key() @ ErrorCode::WrongMint,
     )]
-    pub staking_config: Account<'info, StakingConfig>,
+    pub staking_config: Box<Account<'info, StakingConfig>>,
 
     /// The merchant's **Merchant-role** stake, and only that. The seeds
     /// pin owner and role together, so an arbitrator's or a node
@@ -109,10 +140,10 @@ pub struct RecoverStakeShortfall<'info> {
         bump = stake_account.bump,
         constraint = stake_account.role == Role::Merchant @ ErrorCode::NotAStakeAccount,
     )]
-    pub stake_account: Account<'info, StakeAccount>,
+    pub stake_account: Box<Account<'info, StakeAccount>>,
 
     #[account(mut, seeds = [STAKE_VAULT_SEED], bump = staking_config.stake_vault_bump)]
-    pub stake_vault: InterfaceAccount<'info, TokenAccount>,
+    pub stake_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     /// CHECK: pinned to `openfiat-escrow`'s claim PDA for *this* stake
     /// account's owner by the seeds below, then decoded and re-checked by
@@ -137,7 +168,7 @@ pub struct RecoverStakeShortfall<'info> {
         seeds = [STAKE_RECOVERY_RECEIPT_SEED, stake_account.owner.as_ref()],
         bump,
     )]
-    pub recovery_receipt: Account<'info, StakeRecoveryReceipt>,
+    pub recovery_receipt: Box<Account<'info, StakeRecoveryReceipt>>,
 
     /// The merchant's own OPEN liquidity token vault in `openfiat-escrow`,
     /// and the only place recovered stake can go.
@@ -158,7 +189,7 @@ pub struct RecoverStakeShortfall<'info> {
         bump,
         seeds::program = escrow_claim::ESCROW_PROGRAM_ID,
     )]
-    pub merchant_open_token_vault: InterfaceAccount<'info, TokenAccount>,
+    pub merchant_open_token_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
