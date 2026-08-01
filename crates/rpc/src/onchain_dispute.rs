@@ -75,8 +75,16 @@ pub fn decode_outcome(owner: &str, data: &[u8]) -> Result<Option<Resolution>, Rp
     cursor.skip_option_vec()?; // revealed_outcomes: Vec<Option<DisputeOutcome>>
     cursor.skip_vec(8)?; // weights: Vec<u64>
     cursor.skip_vec(1)?; // reward_claimed: Vec<bool>
+    // Seats retired for committing in an earlier round and never
+    // revealing (#123). Missing here, the outcome tag was read
+    // `4 + 32 * barred.len()` bytes early — harmless only while the
+    // vector was empty, and reading arbitrator-chosen pubkey bytes as a
+    // verdict the moment a round re-opened.
+    cursor.skip_vec(32)?; // barred: Vec<Pubkey>
 
-    cursor.take(32 + 32 + 8)?; // deposit_vault, deposit_mint, deposit
+    // deposit_vault, deposit_mint, deposit, deposit_shortfall.
+    // `deposit_shortfall` was also missing, for another 8 bytes.
+    cursor.take(32 + 32 + 8 + 8)?;
 
     match cursor.take(1)?[0] {
         0 => Ok(None),
@@ -189,7 +197,19 @@ mod tests {
             bytes.extend((seats as u32).to_le_bytes());
             bytes.extend(std::iter::repeat_n(3u8, seats * item));
         }
-        bytes.extend(std::iter::repeat_n(9u8, 32 + 32 + 8));
+        // barred: Vec<Pubkey>. Deliberately non-empty, and deliberately
+        // filled with 0x01 rather than zeroes. An empty `barred` is
+        // exactly what hid the missing skip for as long as it was
+        // missing: the misread landed on a high byte of `deposit`, which
+        // is zero for any realistic deposit, so it decoded as "no outcome
+        // yet" and failed safe by luck. A fixture that cannot reproduce
+        // the failure is not a fixture for it, and 0x01 is the byte that
+        // decodes as "an outcome is present" — the value an arbitrator
+        // would need in their own pubkey to forge one.
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend(std::iter::repeat_n(0x01u8, 32));
+        // deposit_vault, deposit_mint, deposit, deposit_shortfall
+        bytes.extend(std::iter::repeat_n(9u8, 32 + 32 + 8 + 8));
         match outcome {
             Some(discriminant) => bytes.extend([1u8, discriminant]),
             None => bytes.push(0),
