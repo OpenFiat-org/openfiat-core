@@ -14,6 +14,7 @@ openfiat-gossip = { path = "../gossip", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
 openfiat-advertisements = { path = "../advertisements", version = "0.1.0" }
+openfiat-taxonomy = { path = "../taxonomy", version = "0.1.0" }
 openfiat-reservations = { path = "../reservations", version = "0.1.0" }
 openfiat-settlement = { path = "../settlement", version = "0.1.0" }
 openfiat-trade = { path = "../trade", version = "0.1.0" }

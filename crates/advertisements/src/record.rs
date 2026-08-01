@@ -1,6 +1,7 @@
 //! The advertisement shape (OFS-2100 §4-6) and its materialized state.
 
 use openfiat_crypto::MintAddress;
+use openfiat_taxonomy::PaymentMethodRef;
 use openfiat_types::{Amount, FiatCurrency, PeerId, PublicKey, Timestamp};
 
 /// A globally unique, permanent identifier for an advertisement (§5).
@@ -134,7 +135,28 @@ pub struct Advertisement {
     /// signature per trade.
     pub available_liquidity: Amount,
     pub pricing: PricingModel,
-    pub payment_methods: Vec<String>,
+    /// What the buyer pays with, by method id — never by name.
+    ///
+    /// This was free text the merchant typed, which made it the same kind
+    /// of field `asset_mint` used to be: a label connected to nothing,
+    /// and one whose meaning its author could change afterwards. A
+    /// merchant who defines "Acme Pay", waits for advertisements to
+    /// reference it and then renames it "PayPal" has rewritten what every
+    /// one of those advertisements appears to offer, without touching any
+    /// of them.
+    ///
+    /// A [`PaymentMethodRef`] cannot be rewritten — see its own
+    /// documentation for why both halves of the namespace are immutable —
+    /// and the name a buyer reads is resolved from it at the edge, out of
+    /// `openfiat_taxonomy`. An id this build cannot resolve is displayed
+    /// as the id, which is ugly and true.
+    ///
+    /// Checked for *form* and for one thing more: a merchant may name
+    /// this build's own rails and their own definitions, and not another
+    /// merchant's. Never checked for membership of the catalog — see
+    /// `openfiat_taxonomy::catalog` for why a node one release behind
+    /// must not reject an advertisement naming a rail added since.
+    pub payment_methods: Vec<PaymentMethodRef>,
     pub status: AdvertisementStatus,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,

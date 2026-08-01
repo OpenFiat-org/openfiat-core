@@ -16,6 +16,7 @@ use openfiat_gossip::GossipService;
 use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
+use openfiat_taxonomy::PaymentMethodRef;
 use openfiat_types::{Amount, EventType, FiatCurrency, Priority, Timestamp};
 use std::rc::Rc;
 
@@ -80,7 +81,7 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
         max_trade: Amount,
         initial_liquidity: Amount,
         pricing: PricingModel,
-        payment_methods: Vec<String>,
+        payment_methods: Vec<PaymentMethodRef>,
     ) -> Result<AdvertisementId, AdvertisementError> {
         let create = AdvertisementCreate {
             id: AdvertisementId::new(id),
@@ -134,7 +135,7 @@ impl<S: KvStore + 'static> AdvertisementService<S> {
         id: AdvertisementId,
         min_trade: Amount,
         max_trade: Amount,
-        payment_methods: Vec<String>,
+        payment_methods: Vec<PaymentMethodRef>,
     ) -> Result<(), AdvertisementError> {
         let update = AdvertisementTermsUpdate {
             id,

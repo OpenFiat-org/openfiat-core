@@ -31,6 +31,7 @@ use crate::error::AdvertisementError;
 use crate::record::{AdvertisementId, AdvertisementStatus, Direction, PricingModel};
 use openfiat_crypto::{Keypair, MintAddress, verify};
 use openfiat_network::identity::peer_id_from_public_key;
+use openfiat_taxonomy::PaymentMethodRef;
 use openfiat_types::{Amount, FiatCurrency, PeerId, PublicKey, Signature, Timestamp};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -57,7 +58,9 @@ pub struct AdvertisementCreate {
     pub max_trade: Amount,
     pub initial_liquidity: Amount,
     pub pricing: PricingModel,
-    pub payment_methods: Vec<String>,
+    /// By method id, never by name — see
+    /// [`crate::record::Advertisement::payment_methods`].
+    pub payment_methods: Vec<PaymentMethodRef>,
     pub timestamp: Timestamp,
 }
 
@@ -141,7 +144,9 @@ pub struct AdvertisementTermsUpdate {
     /// Denominated in the asset, like the record's own fields.
     pub min_trade: Amount,
     pub max_trade: Amount,
-    pub payment_methods: Vec<String>,
+    /// By method id, never by name — see
+    /// [`crate::record::Advertisement::payment_methods`].
+    pub payment_methods: Vec<PaymentMethodRef>,
     pub timestamp: Timestamp,
 }
 

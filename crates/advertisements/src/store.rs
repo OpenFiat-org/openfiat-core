@@ -13,7 +13,8 @@ use openfiat_crypto::verify;
 use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
-use openfiat_types::{Amount, EventEnvelope, Timestamp};
+use openfiat_taxonomy::PaymentMethodRef;
+use openfiat_types::{Amount, EventEnvelope, PeerId, Timestamp};
 
 const COLUMN_FAMILY: &str = "advertisements";
 
@@ -77,6 +78,7 @@ impl<S: KvStore> AdvertisementRegistry<S> {
             &signed.create.min_trade,
             &signed.create.max_trade,
             &signed.create.payment_methods,
+            &signed.create.merchant,
         )?;
         let create = signed.create;
         self.put(&Advertisement {
@@ -161,6 +163,7 @@ impl<S: KvStore> AdvertisementRegistry<S> {
             &signed.update.min_trade,
             &signed.update.max_trade,
             &signed.update.payment_methods,
+            &signed.update.merchant,
         )?;
 
         ad.min_trade = signed.update.min_trade;
@@ -278,12 +281,39 @@ impl<S: KvStore> AdvertisementRegistry<S> {
     /// Decimals must agree, for the reason [`Amount::checked_add`] gives:
     /// comparing a floor in lamports against a ceiling in cents produces a
     /// number, and it is not an answer to the question anyone asked.
+    ///
+    /// # And a method has to be one this merchant may offer
+    ///
+    /// A `PaymentMethodRef` has already been checked for form by the time
+    /// it arrives — that happens where it is deserialized, so a malformed
+    /// one never becomes a value. What is checked here is the one thing
+    /// that needs the record around it: a merchant may name this build's
+    /// own rails, and their own definitions, and not another merchant's.
+    ///
+    /// Putting a stranger's definition on your advertisement would be
+    /// trading on their record — their name, their category, and their
+    /// ability to be the only account that can be paid on it — and there
+    /// is no reason to do it that publishing your own definition does not
+    /// serve. `openfiat_taxonomy::PaymentMethodRef::is_selectable_by`
+    /// carries the whole argument for scoping definitions this way.
+    ///
+    /// It needs no lookup and no state: the owner is inside the reference.
+    /// So this cannot depend on whether the definition has reached this
+    /// node yet, and the same advertisement is valid on every node
+    /// regardless of gossip arrival order.
     fn check_terms(
         min_trade: &Amount,
         max_trade: &Amount,
-        payment_methods: &[String],
+        payment_methods: &[PaymentMethodRef],
+        merchant: &PeerId,
     ) -> Result<(), AdvertisementError> {
         if payment_methods.is_empty() {
+            return Err(AdvertisementError::UnusableTerms);
+        }
+        if !payment_methods
+            .iter()
+            .all(|method| method.is_selectable_by(merchant))
+        {
             return Err(AdvertisementError::UnusableTerms);
         }
         if min_trade.decimals() != max_trade.decimals()
@@ -333,7 +363,15 @@ mod tests {
     use openfiat_crypto::MintAddress;
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_storage::mem::MemoryStore;
+    use openfiat_taxonomy::PaymentMethodRef;
     use openfiat_types::FiatCurrency;
+
+    /// A built-in method reference, since that is what nearly every
+    /// fixture here wants: this crate checks the *form* of a reference and
+    /// who may select it, never whether the catalog has heard of it.
+    fn method(slug: &str) -> PaymentMethodRef {
+        PaymentMethodRef::builtin(slug).expect("a fixture slug is well formed")
+    }
 
     fn create(keypair: &Keypair, id: &str, liquidity: u64) -> AdvertisementCreate {
         AdvertisementCreate {
@@ -349,7 +387,7 @@ mod tests {
             pricing: PricingModel::Fixed {
                 price: Amount::new(129_000_000, 6),
             },
-            payment_methods: vec!["Mobile Money".to_string()],
+            payment_methods: vec![method("mpesa-kenya")],
             timestamp: Timestamp::now(),
         }
     }
@@ -546,7 +584,7 @@ mod tests {
             Err(AdvertisementError::AdvertisementDeleted)
         );
         assert_eq!(
-            registry.apply_terms_update(terms(&owner, &id, 1, 2, &["Bank Transfer"])),
+            registry.apply_terms_update(terms(&owner, &id, 1, 2, &["bank-transfer"])),
             Err(AdvertisementError::AdvertisementDeleted)
         );
     }
@@ -584,7 +622,7 @@ mod tests {
                 merchant: peer_id_from_public_key(&keypair.public_key()).unwrap(),
                 min_trade: Amount::new(min, 6),
                 max_trade: Amount::new(max, 6),
-                payment_methods: methods.iter().map(|m| (*m).to_string()).collect(),
+                payment_methods: methods.iter().map(|m| method(m)).collect(),
                 timestamp: Timestamp::now(),
             },
             keypair,
@@ -605,14 +643,17 @@ mod tests {
                 &id,
                 5_000_000,
                 50_000_000_000,
-                &["Bank Transfer", "Mobile Money"],
+                &["bank-transfer", "mpesa-kenya"],
             ))
             .unwrap();
 
         let ad = registry.get(&id).unwrap();
         assert_eq!(ad.min_trade, Amount::new(5_000_000, 6));
         assert_eq!(ad.max_trade, Amount::new(50_000_000_000, 6));
-        assert_eq!(ad.payment_methods, vec!["Bank Transfer", "Mobile Money"]);
+        assert_eq!(
+            ad.payment_methods,
+            vec![method("bank-transfer"), method("mpesa-kenya")]
+        );
         assert_eq!(ad.id, id);
     }
 
@@ -629,7 +670,7 @@ mod tests {
                 merchant: peer_id_from_public_key(&owner.public_key()).unwrap(),
                 min_trade: Amount::new(1, 6),
                 max_trade: Amount::new(2, 6),
-                payment_methods: vec!["Anything".to_string()],
+                payment_methods: vec![method("bank-transfer")],
                 timestamp: Timestamp::now(),
             },
             &attacker,
@@ -655,7 +696,7 @@ mod tests {
 
         // A floor above the ceiling.
         assert_eq!(
-            registry.apply_terms_update(terms(&owner, &id, 100, 10, &["Mobile Money"])),
+            registry.apply_terms_update(terms(&owner, &id, 100, 10, &["mpesa-kenya"])),
             Err(AdvertisementError::UnusableTerms)
         );
         // No way for a buyer to pay.
@@ -671,6 +712,58 @@ mod tests {
         assert_eq!(
             registry.apply_create(SignedAdvertisementCreate::sign(unusable, &owner)),
             Err(AdvertisementError::UnusableTerms)
+        );
+    }
+
+    /// The scoping rule, enforced where it has to be. A merchant may put
+    /// their own definition on their own advertisement and may not put a
+    /// stranger's — trading on somebody else's record, whose name and
+    /// payment account they do not control.
+    #[test]
+    fn a_merchant_may_offer_their_own_definitions_and_not_another_merchants() {
+        let registry = AdvertisementRegistry::new(MemoryStore::new());
+        let owner = Keypair::generate();
+        let stranger = Keypair::generate();
+        let define = |keypair: &Keypair| {
+            openfiat_taxonomy::MerchantPaymentMethod {
+                merchant: peer_id_from_public_key(&keypair.public_key()).unwrap(),
+                merchant_public_key: keypair.public_key(),
+                name: "Acme Pay".to_string(),
+                category: openfiat_taxonomy::PaymentMethodCategory::BankTransfer,
+            }
+            .id()
+        };
+
+        let mut mine = create(&owner, "ad-1", 1_000_000);
+        mine.payment_methods = vec![define(&owner)];
+        assert!(
+            registry
+                .apply_create(SignedAdvertisementCreate::sign(mine, &owner))
+                .is_ok()
+        );
+
+        let mut theirs = create(&owner, "ad-2", 1_000_000);
+        theirs.payment_methods = vec![define(&stranger)];
+        assert_eq!(
+            registry.apply_create(SignedAdvertisementCreate::sign(theirs, &owner)),
+            Err(AdvertisementError::UnusableTerms),
+            "a definition belongs to the wallet that signed it"
+        );
+    }
+
+    /// Nothing here consults the catalog. A node one release behind must
+    /// carry an advertisement naming a rail added since, or two honest
+    /// nodes disagree about which advertisements exist.
+    #[test]
+    fn a_builtin_this_build_has_never_heard_of_is_still_carried() {
+        let registry = AdvertisementRegistry::new(MemoryStore::new());
+        let owner = Keypair::generate();
+        let mut future = create(&owner, "ad-1", 1_000_000);
+        future.payment_methods = vec![method("some-rail-added-next-year")];
+        assert!(
+            registry
+                .apply_create(SignedAdvertisementCreate::sign(future, &owner))
+                .is_ok()
         );
     }
 }

@@ -71,6 +71,26 @@ const NO_PARAM_METHODS: &[&str] = &[
     "getReferenceData",
 ];
 
+/// One payment method, as both the reference read and the picker read
+/// return it.
+///
+/// Written once because the two must not drift: a client that parsed
+/// `getReferenceData`'s rows and `getPaymentMethods`' rows with different
+/// expectations would work until the day a field moved.
+fn payment_method_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "id": { "type": "string", "description": "what an advertisement stores, and the only field to key off. Either `builtin:<slug>` for a rail compiled into the node, or `<merchant peer id>:<digest>` for one that merchant defined. Never send a name where an id is asked for" },
+            "name": { "type": "string", "description": "for reading. Never compared, never stored on an advertisement, and for a merchant-defined method it is text that merchant wrote — render it as theirs" },
+            "category": { "type": "string", "enum": ["MobileMoney", "BankTransfer", "Fintech", "Cash"] },
+            "aliases": { "type": "array", "items": { "type": "string" }, "description": "lowercase spellings for type-ahead; never shown. Always empty for a merchant-defined method" },
+            "countries": { "type": ["array", "null"], "items": { "type": "string" }, "description": "country codes this rail is suggested in. `null` means this build makes no per-country claim — offer it everywhere, after the suggested ones — and is used for cash, generic bank transfer, and the global fintechs whose coverage a fixed list would get wrong" },
+        },
+        "required": ["id", "name", "category", "aliases"],
+    })
+}
+
 fn params_schema_for(method: &str) -> Value {
     // The one read on this surface that answers only for the caller's own
     // wallet, so its params are the ownership proof rather than a lookup
@@ -149,6 +169,20 @@ fn params_schema_for(method: &str) -> Value {
             "required": ["cid"],
         });
     }
+    // A picker read: both parameters are optional and neither is a
+    // lookup key, so the `getX(id)` fallback would describe it as a read
+    // of one record by id — which is not a mistake a caller recovers from
+    // by experiment, because omitting both is a legitimate call that
+    // returns the whole catalog.
+    if method == "getPaymentMethods" {
+        return json!({
+            "type": "object",
+            "properties": {
+                "country": { "type": ["string", "null"], "description": "a country code from getReferenceData. Decides only what is *suggested*: nothing is withheld from a country, and an unrecognised code returns the whole catalog with nothing suggested" },
+                "wallet": { "type": ["string", "null"], "description": "base64-encoded PeerId whose own definitions to include under `merchant`. Open, not gated — a definition is a public replicated record, and a counterparty has to be able to resolve what an advertisement means" },
+            },
+        });
+    }
     if method == "getRewardObservations" {
         return json!({
             "type": "object",
@@ -190,10 +224,29 @@ fn result_schema_for(method: &str) -> Value {
                 "revision": { "type": "string", "description": "digest of the four lists below — changes only when they do, so a client can cache on it and two nodes can be compared for agreement by one string" },
                 "currencies": { "type": "array", "items": { "type": "object", "properties": { "code": { "type": "string" }, "name": { "type": "string" }, "symbol": { "type": "string" } } } },
                 "countries": { "type": "array", "items": { "type": "object", "properties": { "code": { "type": "string", "description": "ISO 3166-1 alpha-2, or a stable pseudo-code (XNC, XTR) for a territory that has none — do not assume two characters" }, "name": { "type": "string" }, "currency": { "type": "string" }, "alt_currencies": { "type": "array", "items": { "type": "string" }, "description": "other currencies in genuine circulation, most-used first" } } } },
-                "payment_methods": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "category": { "type": "string", "enum": ["MobileMoney", "BankTransfer", "Fintech", "Cash"] }, "aliases": { "type": "array", "items": { "type": "string" }, "description": "lowercase spellings for type-ahead; never shown" } } } },
+                "payment_methods": { "type": "array", "items": payment_method_schema() },
                 "mints": { "type": "array", "items": { "type": "object", "properties": { "mint": { "type": "string", "description": "base58 mint address — the only field that identifies anything; look up by this, never by symbol" }, "symbol": { "type": "string", "description": "a nickname, cluster-dependent and spoofable — `USDC` names a different address on each cluster, and this network's wrapped SOL is named `wSOL`, not `SOL`" }, "decimals": { "type": "integer", "description": "base-unit exponent, carried beside the symbol so a client cannot name a mint while guessing how to scale it" } } }, "description": "mints this build can put a name to. NOT the settlement allowlist — that lives on chain in the escrow program's FeeConfig, is governance-updatable, and the two sets are not guaranteed equal in either direction" },
             },
             "required": ["revision", "currencies", "countries", "payment_methods", "mints"],
+        });
+    }
+    if method == "getPaymentMethods" {
+        return json!({
+            "type": "object",
+            "properties": {
+                "country": { "type": ["string", "null"], "description": "echoed back, so a cached answer says which country it was for" },
+                "suggested": { "type": "array", "items": payment_method_schema(), "description": "compiled-in rails this build suggests in `country`. Empty is an ordinary answer" },
+                "others": { "type": "array", "items": payment_method_schema(), "description": "every other compiled-in rail, still selectable — a suggestion is an ordering, never a restriction" },
+                "merchant": { "type": "array", "items": payment_method_schema(), "description": "definitions the `wallet` merchant published. Selectable only by that merchant; show them as theirs, never mixed in with the catalog" },
+            },
+            "required": ["suggested", "others", "merchant"],
+        });
+    }
+    if method == "getPaymentMethod" {
+        return json!({
+            "type": ["object", "null"],
+            "description": "the method one id names, or null when this node has never received it — an ordinary answer for a merchant-defined rail that has not replicated here yet, not an error. A malformed id *is* an error, so a client that sent a display name finds out.",
+            "properties": payment_method_schema()["properties"].clone(),
         });
     }
     if method == "getHeldContent" {
@@ -291,6 +344,29 @@ fn description_for(method: &str) -> Option<&'static str> {
              settlement and dispute events and cannot be talked up or down. Show both; do not \
              merge them. Publish with `sendReviewPublish`, which only a party to a settled \
              trade may do, once per trade, about the other party.",
+        ),
+        "getPaymentMethods" => Some(
+            "What to put in a merchant's payment-method picker, for the country they are in. \
+             `suggested` is what this build lists for that country — M-Pesa in Kenya, Pix in \
+             Brazil, SEPA in Germany — and `others` is every other rail it ships. Show both: a \
+             suggestion is an ordering and never a restriction, and a merchant who settles over \
+             a corridor nobody anticipated must still be able to say so. A country this build \
+             has nothing listed for gets an empty `suggested` and the whole catalog, which is an \
+             answer rather than an error. \
+             `merchant` is the rails that wallet defined for itself: signed records that \
+             replicate to every node, so the counterparty who has to pay one can resolve it. \
+             They are selectable ONLY by the merchant who defined them — an advertisement naming \
+             another merchant's definition is refused — and a client must render them as that \
+             merchant's own rather than mixed in with the catalog. There is deliberately no \
+             method for browsing other merchants' definitions: they are not yours to choose, and \
+             an index of arbitrary merchant text is exactly the name-squatting surface scoping \
+             them avoids. \
+             Key off `id` and never off `name`. An advertisement stores ids; a name is for \
+             reading and, for a merchant-defined method, is text somebody typed. Publish with \
+             `sendPaymentMethodDefine`, which refuses control characters, bidirectional \
+             overrides, invisible characters, and any name that folds to the same skeleton as a \
+             rail this build already ships. Resolve one id with `getPaymentMethod`. The full \
+             contract is in docs/payment-methods.md.",
         ),
         "getReferenceData" => Some(
             "The countries, fiat currencies, payment methods and token mints to offer a user to choose from: \
@@ -465,6 +541,7 @@ mod tests {
             "getProposalChainLink",
             "getProvider",
             "getOracleRecord",
+            "getPaymentMethod",
             "getRiskRecord",
             "getSnapshot",
             "getSession",
@@ -561,6 +638,51 @@ mod tests {
             .expect("a redacted read must explain its redaction");
         assert!(description.contains("not the author"));
         assert!(description.contains("getReputation"));
+    }
+
+    /// The picker read takes a country and a wallet, both optional, and
+    /// the `getX(id)` fallback would publish it as a read of one record
+    /// by id. An integrator following that would send `{"id": "KE"}` and
+    /// get the whole catalog back with nothing suggested — a wrong answer
+    /// that looks like a right one.
+    #[test]
+    fn the_picker_read_documents_a_country_and_not_an_id() {
+        let document = build_document();
+        let method = document["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "getPaymentMethods")
+            .expect("the method must be dispatchable and documented");
+
+        let properties = &method["params"][0]["schema"]["properties"];
+        assert!(properties["country"].is_object(), "{properties}");
+        assert!(properties["wallet"].is_object(), "{properties}");
+        assert!(properties["id"].is_null(), "{properties}");
+
+        let description = method["description"]
+            .as_str()
+            .expect("a surface that carries merchant-written text must say so");
+        assert!(
+            description.contains("selectable ONLY by the merchant"),
+            "the scoping rule is the one thing a client cannot infer"
+        );
+        assert!(description.contains("never off `name`"));
+
+        // And the row shape is the same one the reference read documents,
+        // so a client cannot parse the two differently.
+        let items = &method["result"]["schema"]["properties"]["suggested"]["items"];
+        assert_eq!(items, &payment_method_schema());
+        let reference = document["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "getReferenceData")
+            .unwrap();
+        assert_eq!(
+            &reference["result"]["schema"]["properties"]["payment_methods"]["items"],
+            items
+        );
     }
 
     #[test]

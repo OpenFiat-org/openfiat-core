@@ -28,6 +28,7 @@
 
 use crate::record::{Advertisement, AdvertisementId, AdvertisementStatus, Direction};
 use openfiat_crypto::MintAddress;
+use openfiat_taxonomy::PaymentMethodRef;
 use openfiat_types::{Amount, FiatCurrency, PeerId};
 
 /// The most advertisements one response will carry.
@@ -56,10 +57,15 @@ pub struct AdvertisementFilter {
     pub fiat_currency: Option<FiatCurrency>,
     #[serde(default)]
     pub direction: Option<Direction>,
-    /// A payment method the merchant accepts. Matches if the
+    /// A payment method the merchant accepts, by id. Matches if the
     /// advertisement lists it among possibly several.
+    ///
+    /// Compared exactly, and it used to fold case. Case folding was
+    /// covering for a record that held whatever the merchant typed; an id
+    /// has one spelling, so `==` now means what it looks like it means —
+    /// the same correction `fiat_currency` above already got.
     #[serde(default)]
-    pub payment_method: Option<String>,
+    pub payment_method: Option<PaymentMethodRef>,
     /// Only advertisements that could take a trade of this size — that
     /// is, `min_trade <= amount <= max_trade` and enough liquidity left.
     ///
@@ -165,10 +171,7 @@ impl AdvertisementFilter {
             return false;
         }
         if let Some(method) = &self.payment_method
-            && !ad
-                .payment_methods
-                .iter()
-                .any(|m| m.eq_ignore_ascii_case(method))
+            && !ad.payment_methods.contains(method)
         {
             return false;
         }
@@ -259,7 +262,7 @@ mod tests {
             pricing: PricingModel::Fixed {
                 price: Amount::new(129_000_000, 6),
             },
-            payment_methods: vec!["M-Pesa".to_string()],
+            payment_methods: vec![PaymentMethodRef::builtin("mpesa-kenya").unwrap()],
             status: AdvertisementStatus::Active,
             created_at: Timestamp::from_millis(1),
             updated_at: Timestamp::from_millis(1),

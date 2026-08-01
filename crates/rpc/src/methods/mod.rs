@@ -12,6 +12,7 @@ pub mod identity;
 pub mod node;
 pub mod notifications;
 pub mod oracles;
+pub mod payment_methods;
 pub mod providers;
 pub mod redaction;
 pub mod reference;
@@ -53,6 +54,7 @@ pub fn build_table<S: KvStore + 'static>() -> MethodTable<S> {
     chain::register(&mut table);
     volume::register(&mut table);
     reference::register(&mut table);
+    payment_methods::register(&mut table);
     table
 }
 

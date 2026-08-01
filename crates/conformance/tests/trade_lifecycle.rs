@@ -18,6 +18,7 @@ use openfiat_settlement::events::{
     SignedSettlementApproved, SignedSettlementInitiate,
 };
 use openfiat_settlement::{SettlementId, protocol as set_protocol};
+use openfiat_taxonomy::PaymentMethodRef;
 use openfiat_trade::TradeStatus;
 use openfiat_types::{Amount, FiatCurrency, NodeRole, Priority, Timestamp};
 
@@ -50,7 +51,7 @@ async fn a_trade_completes_end_to_end_and_converges_across_the_cluster() {
         pricing: PricingModel::Fixed {
             price: Amount::new(56_50, 2),
         },
-        payment_methods: vec!["GCash".to_string()],
+        payment_methods: vec![PaymentMethodRef::builtin("gcash").unwrap()],
         timestamp: Timestamp::now(),
     };
     let signed_ad = SignedAdvertisementCreate::sign(create, &merchant);

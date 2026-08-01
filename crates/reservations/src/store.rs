@@ -282,6 +282,7 @@ mod tests {
     use openfiat_crypto::{Keypair, MintAddress};
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_storage::mem::MemoryStore;
+    use openfiat_taxonomy::PaymentMethodRef;
     use openfiat_types::Amount;
     use openfiat_types::FiatCurrency;
 
@@ -307,7 +308,7 @@ mod tests {
             pricing: PricingModel::Fixed {
                 price: Amount::new(129_000_000, 6),
             },
-            payment_methods: vec!["Mobile Money".to_string()],
+            payment_methods: vec![PaymentMethodRef::builtin("mpesa-kenya").unwrap()],
             timestamp: Timestamp::now(),
         };
         advertisements
@@ -432,7 +433,7 @@ mod tests {
             pricing: PricingModel::Fixed {
                 price: Amount::new(129_000_000, 6),
             },
-            payment_methods: vec!["Mobile Money".to_string()],
+            payment_methods: vec![PaymentMethodRef::builtin("mpesa-kenya").unwrap()],
             timestamp: Timestamp::now(),
         };
         advertisements
@@ -626,7 +627,7 @@ mod tests {
             pricing: PricingModel::Fixed {
                 price: Amount::new(129_000_000, 6),
             },
-            payment_methods: vec!["Mobile Money".to_string()],
+            payment_methods: vec![PaymentMethodRef::builtin("mpesa-kenya").unwrap()],
             timestamp: Timestamp::now(),
         };
         advertisements

@@ -20,6 +20,7 @@ use openfiat_network::identity::{peer_id, to_libp2p_keypair};
 use openfiat_network::{Multiaddr, Node};
 use openfiat_reservations::{ReservationService, ReservationState};
 use openfiat_storage::mem::MemoryStore;
+use openfiat_taxonomy::PaymentMethodRef;
 use openfiat_types::{Amount, FiatCurrency, PeerId, PublicKey, Timestamp};
 use std::future::Future;
 use std::pin::Pin;
@@ -44,7 +45,7 @@ fn seeded_ad_registry(
         pricing: PricingModel::Fixed {
             price: Amount::new(129_000_000, 6),
         },
-        payment_methods: vec!["Mobile Money".to_string()],
+        payment_methods: vec![PaymentMethodRef::builtin("mpesa-kenya").unwrap()],
         timestamp: Timestamp::now(),
     };
     registry

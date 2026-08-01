@@ -13,6 +13,7 @@ use openfiat_gossip::channel::Subscription;
 use openfiat_network::identity::{peer_id, to_libp2p_keypair};
 use openfiat_network::{Multiaddr, Node};
 use openfiat_storage::mem::MemoryStore;
+use openfiat_taxonomy::PaymentMethodRef;
 use openfiat_types::{Amount, FiatCurrency, NodeRole, PeerId, PublicKey};
 use std::future::Future;
 use std::pin::Pin;
@@ -114,7 +115,7 @@ async fn a_created_and_then_disabled_advertisement_replicates_to_the_whole_clust
             PricingModel::Fixed {
                 price: Amount::new(129_000_000, 6),
             },
-            vec!["Mobile Money".to_string()],
+            vec![PaymentMethodRef::builtin("mpesa-kenya").unwrap()],
         )
         .unwrap();
 

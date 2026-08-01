@@ -64,26 +64,30 @@
 //! recognised and not is an invitation to filter on it, and this network
 //! has no business deciding whose money is tradeable.
 //!
-//! # Room for OFS-2100 per-country methods and merchant-created ones
+//! # The payment methods are not this module's table either
 //!
-//! Payment methods come back as objects rather than bare strings
-//! specifically so that per-country availability and a
-//! merchant-registered origin can be added as fields without breaking a
-//! client that already reads `name`, `category` and `aliases`. That work
-//! is not started here and this module makes no attempt to guess at it —
-//! inventing a `countries` list for eighty-four rails from their names
-//! would be fabricating data, and a wrong availability list is worse than
-//! none.
+//! They come from `openfiat_taxonomy::catalog`, which owns both halves of
+//! the payment-method question: the rails compiled into this build and the
+//! countries each is suggested in, and the ones merchants define for
+//! themselves as signed, gossip-replicated records. They are relayed here
+//! — one method, so a client fills every control from one answer — and
+//! `methods::payment_methods` is where the country filter and the
+//! merchant's own definitions are served.
+//!
+//! Each method now carries an `id` and a `countries` list. The id is what
+//! an advertisement stores; the name is for reading. `countries` is `null`
+//! for a rail this build makes no per-country claim about, which is an
+//! answer rather than a gap — see that crate for why a wrong availability
+//! list would be worse than none.
 
 use crate::dispatch::{MethodTable, method_fn};
 use crate::error::RpcError;
 use crate::state::NodeState;
 use openfiat_crypto::sha256;
 use openfiat_storage::KvStore;
+use openfiat_taxonomy::PaymentMethod;
 use openfiat_types::FiatCurrency;
 use std::sync::OnceLock;
-
-use PaymentMethodCategory::{BankTransfer, Cash, Fintech, MobileMoney};
 
 /// A fiat currency an interface can offer, with the name and symbol to
 /// print beside its code.
@@ -115,32 +119,6 @@ pub struct Country {
     /// two, and a client that only ever offered `currency` would hide it.
     /// Empty for the great majority of countries.
     pub alt_currencies: Vec<FiatCurrency>,
-}
-
-/// Which kind of rail a payment method is, so an interface can group a
-/// long list into something a person can read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PaymentMethodCategory {
-    MobileMoney,
-    BankTransfer,
-    Fintech,
-    /// OFS-2100 §13 names Cash Deposit alongside the electronic rails.
-    /// Cash is the only method that exists in every country, which is the
-    /// point of listing it: a market with no local electronic system is
-    /// still tradeable.
-    Cash,
-}
-
-/// A payment method a merchant can advertise accepting.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PaymentMethod {
-    /// The name as it should be shown and as it is stored on an
-    /// advertisement. Comparisons elsewhere are on this exact string.
-    pub name: String,
-    pub category: PaymentMethodCategory,
-    /// Spellings a person might type when they mean this method, for
-    /// type-ahead. Lowercase. Never shown.
-    pub aliases: Vec<String>,
 }
 
 /// A token mint this build knows a name for.
@@ -272,14 +250,10 @@ fn build() -> ReferenceData {
         })
         .collect();
 
-    let payment_methods: Vec<PaymentMethod> = PAYMENT_METHODS
-        .iter()
-        .map(|(name, category, aliases)| PaymentMethod {
-            name: (*name).to_string(),
-            category: *category,
-            aliases: aliases.iter().map(|a| (*a).to_string()).collect(),
-        })
-        .collect();
+    // Relayed, not restated. A second transcription here could drift
+    // from the crate that decides what a merchant may name, and then a
+    // picker and the node validating its choice would disagree.
+    let payment_methods: Vec<PaymentMethod> = openfiat_taxonomy::catalog().to_vec();
 
     // Not a table of this module's own: the mints come from the one
     // place in this workspace that already answers "what is this address
@@ -737,150 +711,6 @@ const COUNTRIES: &[(&str, &str, &str, &[&str])] = &[
     ("HM", "Heard & McDonald Islands", "AUD", &[]),
 ];
 
-/// The payment methods this build knows how to suggest. See the module
-/// comment: absence is not a prohibition.
-const PAYMENT_METHODS: &[(&str, PaymentMethodCategory, &[&str])] = &[
-    (
-        "Cash Deposit",
-        Cash,
-        &[
-            "cash deposit",
-            "bank deposit",
-            "cash at bank",
-            "deposit cash",
-        ],
-    ),
-    (
-        "Cash in Person",
-        Cash,
-        &[
-            "cash",
-            "cash in person",
-            "face to face",
-            "f2f",
-            "meet in person",
-        ],
-    ),
-    (
-        "M-Pesa Kenya (Safaricom)",
-        MobileMoney,
-        &["mpesa", "m-pesa", "safaricom"],
-    ),
-    (
-        "Mpesa Pochi la Biashara",
-        MobileMoney,
-        &["pochi", "pochi la biashara"],
-    ),
-    (
-        "MTN Mobile Money",
-        MobileMoney,
-        &["mtn", "momo", "mtn momo"],
-    ),
-    ("Airtel Money", MobileMoney, &["airtel"]),
-    ("Tigo Pesa", MobileMoney, &["tigo"]),
-    ("Vodafone Cash", MobileMoney, &["vodafone"]),
-    ("Telebirr", MobileMoney, &["telebirr ethiopia"]),
-    ("GCash", MobileMoney, &["gcash philippines"]),
-    ("Maya", MobileMoney, &["paymaya"]),
-    ("bKash", MobileMoney, &["bkash"]),
-    ("Nagad", MobileMoney, &[]),
-    ("EasyPaisa", MobileMoney, &[]),
-    ("JazzCash", MobileMoney, &["jazz"]),
-    ("I&M Bank", BankTransfer, &["i&m", "im bank", "imb"]),
-    ("Equity Bank", BankTransfer, &["equity"]),
-    ("KCB", BankTransfer, &["kcb bank", "kenya commercial bank"]),
-    ("Bank Transfer", BankTransfer, &["wire", "bank"]),
-    ("SEPA", BankTransfer, &["sepa transfer", "iban"]),
-    (
-        "Faster Payments (UK)",
-        BankTransfer,
-        &["faster payments uk"],
-    ),
-    (
-        "FPS (Faster Payment System)",
-        BankTransfer,
-        &["fps", "fps hong kong", "轉數快"],
-    ),
-    ("ACH", BankTransfer, &["ach transfer"]),
-    ("Wire Transfer", BankTransfer, &["swift", "wire"]),
-    ("PromptPay", BankTransfer, &["promptpay thailand"]),
-    (
-        "Interac e-Transfer",
-        BankTransfer,
-        &["interac", "e-transfer"],
-    ),
-    ("PayID", BankTransfer, &["payid australia", "osko"]),
-    ("SPEI", BankTransfer, &["spei mexico"]),
-    ("Taiwan Pay", BankTransfer, &["taiwan pay", "twqr"]),
-    ("Toss", Fintech, &["toss korea"]),
-    ("KakaoPay", Fintech, &["kakao pay", "kakao"]),
-    ("BLIK", BankTransfer, &["blik poland"]),
-    ("Swish", BankTransfer, &["swish sweden"]),
-    ("Vipps", BankTransfer, &["vipps norway"]),
-    ("MobilePay", BankTransfer, &["mobilepay denmark"]),
-    ("TWINT", BankTransfer, &["twint switzerland"]),
-    ("Kaspi.kz", Fintech, &["kaspi", "kaspi gold"]),
-    ("Idram", Fintech, &["idram armenia"]),
-    ("Payme", Fintech, &["payme uzbekistan"]),
-    ("Click", Fintech, &["click uzbekistan"]),
-    ("eSewa", MobileMoney, &["esewa nepal"]),
-    ("Khalti", MobileMoney, &["khalti nepal"]),
-    ("Wing", MobileMoney, &["wing cambodia"]),
-    ("ABA Pay", BankTransfer, &["aba", "aba bank"]),
-    ("QPay", Fintech, &["qpay mongolia"]),
-    ("CliQ", BankTransfer, &["cliq jordan"]),
-    ("Zain Cash", MobileMoney, &["zaincash"]),
-    ("Fawran", BankTransfer, &["fawran qatar"]),
-    ("KNET", BankTransfer, &["knet kuwait"]),
-    ("BenefitPay", Fintech, &["benefit pay bahrain"]),
-    ("Thawani", Fintech, &["thawani oman"]),
-    ("D17", Fintech, &["d17 tunisia"]),
-    ("BaridiMob", Fintech, &["baridimob algeria", "baridi"]),
-    ("EcoCash", MobileMoney, &["ecocash zimbabwe"]),
-    ("M-Pesa Mozambique", MobileMoney, &["mpesa mozambique"]),
-    ("Orange Money", MobileMoney, &["orange"]),
-    (
-        "Juice by MCB",
-        BankTransfer,
-        &["juice mauritius", "mcb juice"],
-    ),
-    ("SINPE Movil", BankTransfer, &["sinpe", "sinpe movil"]),
-    ("Yappy", Fintech, &["yappy panama"]),
-    ("Tigo Money", MobileMoney, &["tigo"]),
-    ("Lynk", Fintech, &["lynk jamaica"]),
-    ("WiPay", Fintech, &["wipay"]),
-    ("tPago", Fintech, &["tpago dominican"]),
-    ("LankaPay", BankTransfer, &["lankapay", "ceft"]),
-    ("BCEL One", BankTransfer, &["bcel", "bcel one laos"]),
-    ("Revolut", Fintech, &["rev"]),
-    ("Wise", Fintech, &["transferwise"]),
-    ("Skrill", Fintech, &[]),
-    ("PayPal", Fintech, &["pp"]),
-    ("Zelle", Fintech, &[]),
-    ("UPI", Fintech, &["upi india", "bhim", "gpay", "phonepe"]),
-    ("PIX", Fintech, &["pix brazil"]),
-    ("Alipay", Fintech, &["alipay china"]),
-    ("WeChat Pay", Fintech, &["wechat"]),
-    ("JKOPay", Fintech, &["jko", "jkopay", "街口支付"]),
-    ("LINE Pay", Fintech, &["linepay", "line"]),
-    ("PayMe", Fintech, &["payme", "payme hsbc"]),
-    (
-        "AlipayHK",
-        Fintech,
-        &["alipay hk", "alipayhk", "支付寶香港"],
-    ),
-    ("WeChat Pay HK", Fintech, &["wechat hk", "weixin hk"]),
-    (
-        "Octopus (O! ePay)",
-        Fintech,
-        &["octopus", "oepay", "o! epay", "八達通"],
-    ),
-    ("MPay", Fintech, &["mpay", "macau pass", "澳門通"]),
-    ("BOC Pay", Fintech, &["boc pay", "bank of china pay"]),
-    ("Mercado Pago", Fintech, &["mercadopago"]),
-    ("Papara", Fintech, &[]),
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -970,30 +800,16 @@ mod tests {
                 currency.code
             );
         }
-        let mut names = HashSet::new();
+        // By id, because that is what an advertisement stores and what a
+        // client keys off — two rails may legitimately read alike in a
+        // picker, and `openfiat_taxonomy` is where that is judged.
+        let mut method_ids = HashSet::new();
         for method in &data.payment_methods {
             assert!(
-                names.insert(method.name.clone()),
+                method_ids.insert(method.id.clone()),
                 "{} is listed twice",
-                method.name
+                method.id
             );
-        }
-    }
-
-    /// An alias is matched against lowercased user input, so an alias
-    /// carrying an uppercase letter can never be typed into existence —
-    /// it would sit in the table looking like it worked.
-    #[test]
-    fn payment_method_aliases_are_lowercase_because_that_is_what_they_are_matched_against() {
-        for method in &fetch().payment_methods {
-            for alias in &method.aliases {
-                assert_eq!(
-                    *alias,
-                    alias.to_lowercase(),
-                    "{alias:?} on {} could never match typed input",
-                    method.name
-                );
-            }
         }
     }
 
@@ -1027,74 +843,40 @@ mod tests {
         assert_ne!(recomputed, first.revision);
     }
 
-    /// Cash is the floor of what this network can do. Every other rail is
-    /// a local system that may or may not exist where a user is; cash
-    /// exists everywhere, and dropping it from the table would quietly
-    /// make a country with no electronic rails untradeable.
+    /// The payment methods are relayed, not restated — the same rule the
+    /// mints follow below and for the same reason. A second transcription
+    /// in this module could drift from the crate that decides what a
+    /// merchant may name, and then a picker and the node validating a
+    /// merchant's choice would disagree about what the rails are.
     #[test]
-    fn cash_is_always_offered_because_it_is_the_only_universal_rail() {
+    fn the_payment_methods_are_exactly_the_taxonomy_this_node_validates_against() {
+        assert_eq!(fetch().payment_methods, openfiat_taxonomy::catalog());
+    }
+
+    /// The per-country mapping, as it reaches a client through this
+    /// method: a merchant in Kenya has to be able to find M-Pesa in the
+    /// answer, without a second call and without a table of their own.
+    #[test]
+    fn a_client_can_build_a_kenyan_picker_from_this_answer_alone() {
         let data = fetch();
-        let cash: Vec<&PaymentMethod> = data
+        let kenyan: Vec<&str> = data
             .payment_methods
             .iter()
-            .filter(|m| m.category == PaymentMethodCategory::Cash)
+            .filter(|method| {
+                method
+                    .countries
+                    .as_ref()
+                    .is_some_and(|codes| codes.iter().any(|code| code == "KE"))
+            })
+            .map(|method| method.name.as_str())
             .collect();
+        assert!(kenyan.contains(&"M-Pesa Kenya (Safaricom)"), "{kenyan:?}");
         assert!(
-            cash.iter().any(|m| m.name == "Cash Deposit"),
-            "OFS-2100 §13 names Cash Deposit specifically"
-        );
-        assert!(
-            cash.iter().any(|m| m.name == "Cash in Person"),
-            "a deposit leaves a trail an arbitrator can read and a hand-off does not; \
-             they are different risks and cannot be one entry"
-        );
-    }
-
-    /// A method whose name a client cannot store is not a method. Names
-    /// go onto advertisements verbatim and are compared verbatim, so
-    /// stray whitespace would produce two methods that look identical.
-    #[test]
-    fn payment_method_names_are_stored_exactly_as_they_are_compared() {
-        for method in &fetch().payment_methods {
-            assert_eq!(method.name.trim(), method.name, "{:?}", method.name);
-            assert!(!method.name.is_empty());
-        }
-    }
-
-    /// Two different national payment systems share the abbreviation
-    /// "FPS": Hong Kong's Faster Payment System and the UK's Faster
-    /// Payments. A merchant in either place who typed "fps" and was
-    /// handed the other country's rail would be advertising a system
-    /// they cannot receive on, so the UK entry deliberately does not
-    /// claim the bare alias.
-    #[test]
-    fn the_two_faster_payment_systems_do_not_answer_to_each_others_names() {
-        let data = fetch();
-        let aliases_of = |name: &str| {
             data.payment_methods
                 .iter()
-                .find(|m| m.name == name)
-                .unwrap_or_else(|| panic!("{name} must be listed"))
-                .aliases
-                .clone()
-        };
-        assert!(aliases_of("FPS (Faster Payment System)").contains(&"fps".to_string()));
-        assert!(
-            !aliases_of("Faster Payments (UK)").contains(&"fps".to_string()),
-            "the UK entry must not answer to Hong Kong's abbreviation"
+                .any(|method| method.countries.is_none()),
+            "a rail this build makes no country claim about must still be offered"
         );
-
-        // The same rule, for the wallets that share a brand across a
-        // border they cannot pay across: an AlipayHK account cannot
-        // receive from a mainland Alipay one.
-        for separately_listed in ["AlipayHK", "Alipay", "WeChat Pay HK", "WeChat Pay"] {
-            assert!(
-                data.payment_methods
-                    .iter()
-                    .any(|m| m.name == separately_listed),
-                "{separately_listed} must be selectable on its own"
-            );
-        }
     }
 
     /// The mints are relayed, not restated. A second transcription in

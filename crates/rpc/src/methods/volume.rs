@@ -169,6 +169,7 @@ mod tests {
         SignedSettlementApproved, SignedSettlementInitiate,
     };
     use openfiat_storage::mem::MemoryStore;
+    use openfiat_taxonomy::PaymentMethodRef;
     use openfiat_types::{Amount, FiatCurrency, PeerId, Timestamp};
 
     const USDC: &str = "2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU";
@@ -207,7 +208,7 @@ mod tests {
                     max_trade: Amount::new(u64::MAX, decimals),
                     initial_liquidity: Amount::new(u64::MAX, decimals),
                     pricing: PricingModel::Fixed { price },
-                    payment_methods: vec!["Mobile Money".to_string()],
+                    payment_methods: vec![PaymentMethodRef::builtin("mpesa-kenya").unwrap()],
                     timestamp: Timestamp::from_millis(1),
                 },
                 &merchant,

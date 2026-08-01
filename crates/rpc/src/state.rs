@@ -43,6 +43,7 @@ use openfiat_settlement::SettlementRegistry;
 use openfiat_snapshot::SnapshotIndex;
 use openfiat_snapshot::stake::ProviderStakes;
 use openfiat_storage::KvStore;
+use openfiat_taxonomy::PaymentMethodRegistry;
 use openfiat_trade::{CounterpartyView, TradeView};
 use openfiat_tradechannel::TradeChannelRegistry;
 use openfiat_types::NodeRole;
@@ -127,6 +128,7 @@ pub const SNAPSHOT_COLUMN_FAMILIES: &[&str] = &[
     "sessions",
     openfiat_content::CONTENT_COLUMN_FAMILY,
     openfiat_reviews::REVIEWS_COLUMN_FAMILY,
+    openfiat_taxonomy::PAYMENT_METHODS_COLUMN_FAMILY,
     // Named through the owning crate's own constants rather than spelled
     // again here. A column family missing from this list is not a compile
     // error and not a test failure — `openfiat-node` opens its database
@@ -335,6 +337,15 @@ pub struct NodeState<S> {
     /// `openfiat_reviews::view` on why a public review names its subject
     /// and neither its author nor its trade.
     pub reviews_view: ReviewsView<Rc<S>>,
+    /// Payment methods merchants have defined for themselves (OFS-2100).
+    ///
+    /// The compiled-in half of the taxonomy is not here: it is a table in
+    /// `openfiat_taxonomy::catalog` with no per-node state to hold. This
+    /// is the replicated half — a signed record per definition, gossiped
+    /// like every other record, which is what makes a merchant's own rail
+    /// visible to the counterparty who has to pay it rather than to one
+    /// browser.
+    pub payment_methods: Rc<PaymentMethodRegistry<Rc<S>>>,
     pub governance: Rc<GovernanceRegistry<Rc<S>>>,
     pub services: Rc<ServiceRegistry<Rc<S>>>,
     /// What each registered service has earned, and the outstanding
@@ -459,6 +470,7 @@ impl<S: KvStore + 'static> NodeState<S> {
         );
         let reviews = Rc::new(ReviewRegistry::new(Rc::clone(&store)));
         let reviews_view = ReviewsView::new(Rc::clone(&reviews), Rc::clone(&settlements));
+        let payment_methods = Rc::new(PaymentMethodRegistry::new(Rc::clone(&store)));
         let identity = Rc::new(IdentityRegistry::new(Rc::clone(&store)));
         let attachments = Rc::new(AttachmentRegistry::new(Rc::clone(&store)));
         let held_content = Rc::new(HeldContent::new(Rc::clone(&store)));
@@ -575,6 +587,7 @@ impl<S: KvStore + 'static> NodeState<S> {
         attach!(identity);
         attach!(attachments);
         attach!(reviews);
+        attach!(payment_methods);
 
         // Governance's `VoteCast` is the one event type this node never
         // applies straight off the wire (self-reported or gossiped
@@ -647,6 +660,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             reputation,
             reviews,
             reviews_view,
+            payment_methods,
             governance,
             services,
             provider_earnings,
@@ -891,6 +905,43 @@ mod tests {
             "the write went nowhere — {:?} is missing from SNAPSHOT_COLUMN_FAMILIES, so a \
              real node never opens it and every review is silently discarded",
             openfiat_reviews::REVIEWS_COLUMN_FAMILY,
+        );
+    }
+
+    /// And for a merchant's own payment method, where the silent failure
+    /// would be subtler still: the merchant's picker would show the rail
+    /// they added — a client can render what it just submitted — while
+    /// every counterparty on every node saw an advertisement naming an id
+    /// nothing resolved. Which is the `localStorage` bug this feature
+    /// exists to replace, reproduced on the server.
+    #[test]
+    fn a_payment_method_survives_a_store_that_only_accepts_declared_column_families() {
+        use openfiat_crypto::Keypair;
+        use openfiat_network::identity::peer_id_from_public_key;
+        use openfiat_taxonomy::{
+            MerchantPaymentMethod, PaymentMethodCategory, SignedPaymentMethodDefine,
+        };
+
+        let state = NodeState::new_for_test(DeclaredOnly::new());
+        let merchant = Keypair::generate();
+        let id = state
+            .payment_methods
+            .apply_define(SignedPaymentMethodDefine::sign(
+                MerchantPaymentMethod {
+                    merchant: peer_id_from_public_key(&merchant.public_key()).unwrap(),
+                    merchant_public_key: merchant.public_key(),
+                    name: "Sacco Standing Order".to_string(),
+                    category: PaymentMethodCategory::BankTransfer,
+                },
+                &merchant,
+            ))
+            .expect("a well-signed definition is accepted");
+
+        assert!(
+            state.payment_methods.get(&id).is_some(),
+            "the write went nowhere — {:?} is missing from SNAPSHOT_COLUMN_FAMILIES, so a \
+             real node never opens it and every merchant-defined rail is silently discarded",
+            openfiat_taxonomy::PAYMENT_METHODS_COLUMN_FAMILY,
         );
     }
 

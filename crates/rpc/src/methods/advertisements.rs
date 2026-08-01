@@ -301,6 +301,7 @@ mod tests {
     use openfiat_crypto::{Keypair, MintAddress};
     use openfiat_network::identity::peer_id_from_public_key;
     use openfiat_storage::mem::MemoryStore;
+    use openfiat_taxonomy::PaymentMethodRef;
     use openfiat_types::FiatCurrency;
     use openfiat_types::{Amount, Timestamp};
 
@@ -414,7 +415,7 @@ mod tests {
             pricing: PricingModel::Fixed {
                 price: Amount::new(100, 2),
             },
-            payment_methods: vec!["bank_transfer".to_string()],
+            payment_methods: vec![PaymentMethodRef::builtin("bank-transfer").unwrap()],
             timestamp: at,
         }
     }
@@ -525,7 +526,10 @@ mod tests {
                 merchant: peer_id_from_public_key(&owner.public_key()).unwrap(),
                 min_trade: Amount::new(2_000_000, 6),
                 max_trade: Amount::new(80_000_000_000, 6),
-                payment_methods: vec!["Bank Transfer".to_string(), "M-Pesa".to_string()],
+                payment_methods: vec![
+                    PaymentMethodRef::builtin("bank-transfer").unwrap(),
+                    PaymentMethodRef::builtin("mpesa-kenya").unwrap(),
+                ],
                 timestamp: Timestamp::from_millis(2_000),
             },
             &owner,
@@ -537,7 +541,13 @@ mod tests {
         let ad = state.advertisements.get(&id).unwrap();
         assert_eq!(ad.id, id);
         assert_eq!(ad.max_trade, Amount::new(80_000_000_000, 6));
-        assert_eq!(ad.payment_methods, vec!["Bank Transfer", "M-Pesa"]);
+        assert_eq!(
+            ad.payment_methods,
+            vec![
+                PaymentMethodRef::builtin("bank-transfer").unwrap(),
+                PaymentMethodRef::builtin("mpesa-kenya").unwrap(),
+            ]
+        );
     }
 
     #[test]

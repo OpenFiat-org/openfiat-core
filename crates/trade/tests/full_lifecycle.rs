@@ -17,6 +17,7 @@ use openfiat_settlement::events::{
     SignedSettlementApproved, SignedSettlementInitiate,
 };
 use openfiat_storage::mem::MemoryStore;
+use openfiat_taxonomy::PaymentMethodRef;
 use openfiat_trade::{TradeStatus, TradeView};
 use openfiat_types::{Amount, FiatCurrency, Timestamp};
 use std::rc::Rc;
@@ -47,7 +48,7 @@ fn a_trade_progresses_through_the_expected_aggregate_statuses() {
         pricing: PricingModel::Fixed {
             price: Amount::new(129_000_000, 6),
         },
-        payment_methods: vec!["Mobile Money".to_string()],
+        payment_methods: vec![PaymentMethodRef::builtin("mpesa-kenya").unwrap()],
         timestamp: Timestamp::now(),
     };
     advertisements

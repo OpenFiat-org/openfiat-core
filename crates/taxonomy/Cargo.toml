@@ -1,23 +1,22 @@
 [package]
-name = "openfiat-advertisements"
+name = "openfiat-taxonomy"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "Advertisement publication and matching."
+description = "The payment-method taxonomy: the rails this build suggests per country, and the ones merchants define for themselves."
 repository = "https://github.com/OpenFiat-org/openfiat-core"
 
 [dependencies]
 openfiat-types = { path = "../types", version = "0.1.0" }
 openfiat-crypto = { path = "../crypto", version = "0.1.0" }
 openfiat-network = { path = "../network", version = "0.1.0" }
-openfiat-gossip = { path = "../gossip", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
-openfiat-taxonomy = { path = "../taxonomy", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]
-openfiat-taxonomy = { path = "../taxonomy", version = "0.1.0" }
+openfiat-gossip = { path = "../gossip", version = "0.1.0" }
+serde_json = "1.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
 libp2p = { version = "0.56.0", features = ["request-response"] }

@@ -17,6 +17,7 @@ openfiat-storage = { path = "../storage", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]
+openfiat-taxonomy = { path = "../taxonomy", version = "0.1.0" }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
 libp2p = { version = "0.56.0", features = ["request-response"] }
