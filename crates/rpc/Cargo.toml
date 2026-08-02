@@ -60,7 +60,7 @@ futures-util = { version = "0.3", default-features = false }
 # poll_chain's confirmation-tracking test — ChainState's own validation
 # rejects arbitrary bytes, matching OFS-4300 §7.
 solana-transaction = "3"
-solana-message = "3"
+solana-message = "4"
 solana-keypair = "3"
 solana-hash = "3"
 solana-signer = "3"
