@@ -62,6 +62,6 @@ futures-util = { version = "0.3", default-features = false }
 solana-transaction = "3"
 solana-message = "3"
 solana-keypair = "3"
-solana-hash = "3"
+solana-hash = "4"
 solana-signer = "3"
 bincode = "1.3"

@@ -25,7 +25,7 @@ openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 solana-client = "3"
 solana-transaction = "3"
-solana-hash = "3"
+solana-hash = "4"
 solana-signature = "3"
 solana-commitment-config = "3"
 solana-pubkey = "4"
