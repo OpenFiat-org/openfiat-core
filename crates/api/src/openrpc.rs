@@ -303,6 +303,74 @@ fn description_for(method: &str) -> Option<&'static str> {
              `offchain_id_hash` is also exactly what to pass to `link_offchain_proposal` when \
              creating the chain-side half.",
         ),
+        "sendReservationCancel" => Some(
+            "The taker's way out of a reservation, before the validation window runs out. \
+             Send a base64 `SignedReservationCancel`: `{cancel: {id, requester, timestamp}, \
+             signature}`, where the signature is over the canonical JSON of `cancel` alone \
+             (not the envelope) under the requester's own key. \
+             Only the requester may cancel, and both halves are checked against the stored \
+             reservation rather than against anything in the payload: `requester` must equal \
+             the reservation's own requester, and the signature must verify under the public \
+             key that reservation already carries. A key supplied in the payload is never \
+             consulted, so naming someone else's reservation gets you nothing. \
+             Legal only from `EscrowLocked`, the only non-terminal reservation state — \
+             cancelling one already `Cancelled` or `Expired` returns an application error \
+             rather than succeeding quietly. On success the merchant's advertised liquidity \
+             is credited back immediately and the reservation moves to `Cancelled`; the \
+             alternative, and the only option before this method existed, was waiting out the \
+             full thirty-minute window so the node's expiry sweep did it for you. \
+             There is no merchant-side cancel. A merchant who wants their liquidity back \
+             waits for the window; that is the cost of publishing an advertisement, and \
+             letting them cancel would make every reservation revocable by the counterparty \
+             it is supposed to bind. \
+             Note for anyone building a settlement flow on top: this cancels the reservation \
+             only. It does not consult, or move, any settlement raised against that \
+             reservation — see `sendSettlementCancelled` for that, and send both if you mean \
+             to abandon a trade that has already reached settlement.",
+        ),
+        "sendSettlementRejected" => Some(
+            "The merchant's \"I cannot find this payment\" — the counterpart to \
+             `sendSettlementApproved`, and the alternative to opening a dispute over it. \
+             Send a base64 `SignedSettlementRejected`: `{action: {settlement_id, seller, \
+             reason, discrepancy, timestamp}, signature}`, signed over the canonical JSON of \
+             `action` under the seller's key. `reason` is free text for a human reading the \
+             trade; `discrepancy` is the machine-readable one and is what reputation counts \
+             — one of `IncorrectAmount`, `WrongReference`, `DuplicatePayment`, \
+             `IncorrectAccount`, `Other`. Both are required, and picking `Other` when a \
+             specific kind applies costs the counterparty a legible record rather than \
+             costing you anything. \
+             Legal only from `PaymentSubmitted`, and only under the seller on file. There is \
+             nothing to reject before the buyer has declared payment, and the buyer cannot \
+             reject their own settlement. \
+             Rejection is not arbitration and does not pretend to be: it is the merchant's \
+             claim, recorded and gossiped, and it moves the settlement to `Rejected`. A buyer \
+             who really did pay is not out of options — `sendDisputeOpen` accepts a \
+             settlement in any state, so the dispute path stays open afterwards. What changes \
+             is who pays to escalate. Before this method existed a merchant's only way to \
+             refuse was to open the dispute themselves, which meant a filing fee, arbitrators \
+             and a frozen escrow to say no to a payment that never arrived.",
+        ),
+        "sendSettlementCancelled" => Some(
+            "Either party walks away from a settlement, before any payment is declared. \
+             Send a base64 `SignedSettlementCancelled`: `{action: {settlement_id, canceller, \
+             timestamp}, signature}`, signed over the canonical JSON of `action` under the \
+             canceller's key. \
+             `canceller` must be the settlement's own buyer or seller; the node picks which \
+             public key to verify against by matching that field against the stored record, \
+             so a third party naming themselves canceller is refused before any signature is \
+             examined, and a party signing under the other's name fails the check that \
+             follows. \
+             Legal only from `AwaitingPayment`. Once the buyer has sent \
+             `sendPaymentSubmitted` this method returns an invalid-state error, and the \
+             merchant's remaining moves are approval, `sendSettlementRejected`, or a dispute \
+             — none of which can be taken unilaterally and silently. That restriction is the \
+             whole security property here, so do not design a client around cancelling late. \
+             The one gap it cannot close is the interval between a buyer actually wiring \
+             fiat and that buyer declaring it: a merchant may cancel inside it. Submit \
+             `sendPaymentSubmitted` before the money leaves rather than after it lands — the \
+             declaration costs a buyer nothing, and the window it closes costs them the whole \
+             transfer.",
+        ),
         "getMyTradeChannel" => Some(
             "One trade's confidential channel: the payment details one party handed the other, \
              and the conversation they had. Everything it returns is ciphertext. This node \

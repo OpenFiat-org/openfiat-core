@@ -13,7 +13,8 @@ use crate::methods::wallet_auth::{WalletProof, verify_wallet};
 use crate::state::NodeState;
 use openfiat_serialization::{json, wire};
 use openfiat_settlement::events::{
-    SignedPaymentSubmitted, SignedSettlementApproved, SignedSettlementInitiate,
+    SignedPaymentSubmitted, SignedSettlementApproved, SignedSettlementCancelled,
+    SignedSettlementInitiate, SignedSettlementRejected,
 };
 use openfiat_settlement::{Settlement, SettlementId, protocol};
 use openfiat_storage::KvStore;
@@ -159,6 +160,93 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 crate::dispatch::originate(
                     state,
                     protocol::EVENT_APPROVED,
+                    protocol::OFS_SPEC,
+                    Priority::SessionReservationSettlement,
+                    gossip_bytes,
+                );
+                Ok(())
+            },
+        ),
+    );
+    table.register(
+        // The merchant's "no" — the other half of `sendSettlementApproved`,
+        // and until now the half with no way to say it.
+        //
+        // A merchant who could not find the buyer's payment had exactly
+        // one lever on this surface: open a dispute. That drags in
+        // arbitrators, a filing fee and a frozen escrow to express
+        // something the protocol already models as a plain rejection, and
+        // it charged the merchant for the privilege of refusing a payment
+        // that never arrived.
+        //
+        // Legal only from `PaymentSubmitted`, and only under the seller's
+        // key on file — a merchant cannot pre-emptively reject a
+        // settlement the buyer has not yet declared payment on, because
+        // there is nothing to reject yet, and the buyer cannot reject
+        // their own.
+        //
+        // `Rejected` is not the end of the road for a buyer who really
+        // did pay: `DisputeRegistry::apply_open` accepts a settlement in
+        // any state, so the dispute path stays open afterwards. Rejection
+        // moves the *cost* of escalating onto whichever party is actually
+        // wrong, instead of charging the merchant to say no.
+        "sendSettlementRejected",
+        method_fn(
+            |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
+                let bytes = decode_bytes(&params.data)?;
+                let signed: SignedSettlementRejected =
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedSettlementRejected always serializes");
+                state
+                    .settlements
+                    .apply_rejected(signed)
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_REJECTED,
+                    protocol::OFS_SPEC,
+                    Priority::SessionReservationSettlement,
+                    gossip_bytes,
+                );
+                Ok(())
+            },
+        ),
+    );
+    table.register(
+        // §19: either party walks away, but only before payment is
+        // declared. `apply_cancelled` picks the signing key by matching
+        // the `canceller` field against the settlement's own buyer and
+        // seller, so a stranger naming themselves canceller is
+        // `Unauthorized` before any signature is checked, and a party
+        // signing under someone else's name fails the check that follows.
+        //
+        // The `AwaitingPayment` restriction is what stops this being a
+        // theft primitive: once the buyer has declared payment the
+        // merchant's only exits are approval, rejection, or a dispute —
+        // none of which can be taken unilaterally and silently.
+        //
+        // What it does not stop, because nothing in the protocol can, is
+        // a merchant cancelling in the gap between a buyer wiring fiat
+        // and that buyer pressing "I paid". A client should submit
+        // `sendPaymentSubmitted` before the money leaves, not after it
+        // lands — the declaration is cheap and reversible
+        // (`PaymentReversed`), and the window it closes is not.
+        "sendSettlementCancelled",
+        method_fn(
+            |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
+                let bytes = decode_bytes(&params.data)?;
+                let signed: SignedSettlementCancelled =
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedSettlementCancelled always serializes");
+                state
+                    .settlements
+                    .apply_cancelled(signed)
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_CANCELLED,
                     protocol::OFS_SPEC,
                     Priority::SessionReservationSettlement,
                     gossip_bytes,

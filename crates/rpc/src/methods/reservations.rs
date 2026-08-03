@@ -5,7 +5,7 @@ use crate::error::RpcError;
 use crate::methods::redaction::PublicReservation;
 use crate::methods::wallet_auth::{WalletProof, verify_wallet};
 use crate::state::NodeState;
-use openfiat_reservations::events::SignedReservationRequest;
+use openfiat_reservations::events::{SignedReservationCancel, SignedReservationRequest};
 use openfiat_reservations::protocol;
 use openfiat_reservations::{Reservation, ReservationId};
 use openfiat_serialization::{json, wire};
@@ -83,6 +83,48 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                     gossip_bytes,
                 );
                 Ok(id.as_str().to_string())
+            },
+        ),
+    );
+    table.register(
+        // The way out of a reservation that does not cost half an hour.
+        //
+        // Without this method the only exit from `EscrowLocked` was
+        // `expire_stale`, so a taker who changed their mind held the
+        // merchant's liquidity for the full `VALIDATION_WINDOW` — thirty
+        // minutes of a merchant's inventory frozen because the protocol
+        // had no way to say "never mind". `apply_cancel` and the
+        // `ReservationCancelled` gossip event have both existed the whole
+        // time; nothing on this surface reached them.
+        //
+        // Only the requester may cancel, and that is checked twice over
+        // inside `apply_cancel`: the `requester` field must be the one on
+        // the stored record, and the signature must verify against the
+        // public key that record already holds — not against a key the
+        // payload supplies, which would let anyone who can name a
+        // reservation cancel it. The merchant has no cancel of their own;
+        // their remedy is the window running out, which is the trade they
+        // accepted when they published the advertisement.
+        "sendReservationCancel",
+        method_fn(
+            |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
+                let bytes = decode_bytes(&params.data)?;
+                let signed: SignedReservationCancel =
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedReservationCancel always serializes");
+                state
+                    .reservations
+                    .apply_cancel(signed)
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_CANCELLED,
+                    protocol::OFS_SPEC,
+                    Priority::SessionReservationSettlement,
+                    gossip_bytes,
+                );
+                Ok(())
             },
         ),
     );
