@@ -10,7 +10,7 @@ import {
 } from "@solana/spl-token";
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import { expect } from "chai";
-import { getSharedMint, getSharedStakingConfig, unit, MINT_DECIMALS } from "./shared-fixtures";
+import { getSharedOpenMint, getSharedStakingConfig, unit, MINT_DECIMALS } from "./shared-fixtures";
 
 describe("staking", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
@@ -44,6 +44,10 @@ describe("staking", () => {
   const ROLE_NODE_OPERATOR = { nodeOperator: {} };
   const ROLE_ARBITRATOR = { arbitrator: {} };
 
+  /// OPEN — the staked asset, and the only mint this program knows about
+  /// (OFS-4100 §1, §4). Named `mint` rather than `openMint` because
+  /// `StakingConfig` is scoped to exactly one and there is nothing here
+  /// for it to be confused with.
   let mint: PublicKey;
   let stakingConfig: PublicKey;
   let stakeVault: PublicKey;
@@ -123,7 +127,7 @@ describe("staking", () => {
   }
 
   before(async () => {
-    mint = await getSharedMint();
+    mint = await getSharedOpenMint();
     ({ stakingConfig, stakeVault, rewardsVault, slashingAuthority, rewardsAuthority, slashDestination } =
       await getSharedStakingConfig(program));
 

@@ -30,6 +30,7 @@ import { expect } from "chai";
 import {
   getSharedFeeConfig,
   getSharedMint,
+  getSharedOpenMint,
   getSharedStakingConfig,
   getSharedGovernanceConfig,
   unit,
@@ -70,7 +71,15 @@ describe("ban list (OFS-7100 §12)", () => {
   const REASON_SCAM = { scam: {} };
   const CATEGORY_PARAMETER = { parameter: {} };
 
+  /// The settlement stablecoin — what a merchant's escrow liquidity vault
+  /// holds, and the only thing this file uses it for.
   let mint: PublicKey;
+  /// OPEN. Stake and proposal deposits are denominated in it, so the
+  /// staking and governance gates below have to be attacked with it: a
+  /// banned wallet holding the wrong token would be refused by the SPL
+  /// token program before `WalletBanned` was ever reached, and this file
+  /// would prove nothing about the ban list.
+  let openMint: PublicKey;
   let stakingConfig: PublicKey;
   let stakeVault: PublicKey;
   let rewardsVault: PublicKey;
@@ -85,11 +94,14 @@ describe("ban list (OFS-7100 §12)", () => {
     await connection.confirmTransaction({ signature: sig, ...latest });
   }
 
-  async function ata(owner: PublicKey) {
+  /// Takes its mint explicitly. This file spans all three programs and
+  /// they do not share one: an implicit default would silently hand a
+  /// staker settlement tokens.
+  async function ata(mintPk: PublicKey, owner: PublicKey) {
     const acc = await getOrCreateAssociatedTokenAccount(
       connection,
       admin,
-      mint,
+      mintPk,
       owner,
       false,
       "confirmed",
@@ -99,11 +111,11 @@ describe("ban list (OFS-7100 §12)", () => {
     return acc.address;
   }
 
-  async function mintTokens(dest: PublicKey, amount: BN) {
+  async function mintTokens(mintPk: PublicKey, dest: PublicKey, amount: BN) {
     await mintTo(
       connection,
       admin,
-      mint,
+      mintPk,
       dest,
       admin,
       BigInt(amount.toString()),
@@ -197,8 +209,8 @@ describe("ban list (OFS-7100 §12)", () => {
         .signers([merchant])
         .rpc({ commitment: "confirmed" })
     );
-    const from = await ata(merchant.publicKey);
-    await mintTokens(from, unit(5000));
+    const from = await ata(mint, merchant.publicKey);
+    await mintTokens(mint, from, unit(5000));
     return { merchant, from };
   }
 
@@ -230,8 +242,8 @@ describe("ban list (OFS-7100 §12)", () => {
         .signers([owner])
         .rpc({ commitment: "confirmed" })
     );
-    const from = await ata(owner.publicKey);
-    await mintTokens(from, unit(10000));
+    const from = await ata(openMint, owner.publicKey);
+    await mintTokens(openMint, from, unit(10000));
     return { owner, from };
   }
 
@@ -244,7 +256,7 @@ describe("ban list (OFS-7100 §12)", () => {
         stakeAccount: stakeAccountPda(owner.publicKey, 2),
         stakeVault,
         from,
-        mint,
+        mint: openMint,
         tokenProgram: TOKEN_2022_PROGRAM_ID,
       })
       .signers([owner]);
@@ -279,6 +291,7 @@ describe("ban list (OFS-7100 §12)", () => {
 
   before(async () => {
     mint = await getSharedMint();
+    openMint = await getSharedOpenMint();
     // `setUpMerchant` below creates a liquidity vault, which now reads the
     // shared FeeConfig for the settlement allowlist and the arbitration
     // pool for the OPEN carve-out. Both are created by this fixture, and
@@ -375,8 +388,8 @@ describe("ban list (OFS-7100 §12)", () => {
     // `fund_rewards_vault`'s own doc comment for the reasoning.
     const funder = Keypair.generate();
     await airdrop(funder.publicKey);
-    const from = await ata(funder.publicKey);
-    await mintTokens(from, unit(1000));
+    const from = await ata(openMint, funder.publicKey);
+    await mintTokens(openMint, from, unit(1000));
     await listWallet(funder.publicKey);
 
     await expectAnchorError(
@@ -385,7 +398,7 @@ describe("ban list (OFS-7100 §12)", () => {
           .fundRewardsVault(unit(100))
           .accountsPartial({
             funder: funder.publicKey,
-            mint,
+            mint: openMint,
             stakingConfig,
             rewardsVault,
             from,
@@ -400,8 +413,8 @@ describe("ban list (OFS-7100 §12)", () => {
   it("refuses a banned wallet's proposal deposit", async () => {
     const proposer = Keypair.generate();
     await airdrop(proposer.publicKey);
-    const from = await ata(proposer.publicKey);
-    await mintTokens(from, depositAmount);
+    const from = await ata(openMint, proposer.publicKey);
+    await mintTokens(openMint, from, depositAmount);
     await listWallet(proposer.publicKey);
 
     const id = 9001;
@@ -420,7 +433,7 @@ describe("ban list (OFS-7100 §12)", () => {
           )
           .accountsPartial({
             proposer: proposer.publicKey,
-            mint,
+            mint: openMint,
             governanceConfig,
             depositVault,
             from,
@@ -639,7 +652,7 @@ describe("ban list (OFS-7100 §12)", () => {
             .accountsPartial({
               admin: admin.publicKey,
               governanceConfig,
-              mint,
+              mint: openMint,
               forfeitDestination: before.forfeitDestination,
             })
             .rpc({ commitment: "confirmed" })

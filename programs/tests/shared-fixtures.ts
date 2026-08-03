@@ -1,12 +1,32 @@
-// `FeeConfig` and `StakingConfig` are true global singletons (one per
-// deployed program, no nonce) — exactly like a real devnet deployment.
-// `anchor test` runs every spec file against the same validator/programs
-// in one process, so two files each trying to `initialize_fee_config`/
-// `initialize_staking_config` independently collide ("already in use").
-// These memoized helpers make sure the whole test run initializes each
-// singleton exactly once and every file reuses the same instance (and
-// the same underlying OPEN mint, since `StakingConfig` is itself
-// scoped to one mint).
+// `FeeConfig`, `StakingConfig` and `GovernanceConfig` are true global
+// singletons (one per deployed program, no nonce) — exactly like a real
+// devnet deployment. `anchor test` runs every spec file against the same
+// validator/programs in one process, so two files each trying to
+// `initialize_fee_config`/`initialize_staking_config` independently
+// collide ("already in use"). These memoized helpers make sure the whole
+// test run initializes each singleton exactly once and every file reuses
+// the same instance.
+//
+// # The two mints, and which is which
+//
+// A real cluster has two, and they are not interchangeable:
+//
+//     settlement mint  —  the stablecoin a trade is denominated in.
+//                         Allowlisted on `FeeConfig`. `getSharedMint`.
+//     OPEN             —  the protocol token. Staked (OFS-4100 §1, §4),
+//                         held by the arbitration pool, and what a
+//                         dispute filing fee is paid in (§6). Weighs
+//                         governance votes and backs proposal deposits.
+//                         `getSharedOpenMint`.
+//
+// Everything below denominates each singleton in whichever of the two the
+// protocol actually uses, and that is load-bearing rather than tidy:
+// `StakingConfig` and the arbitration pool must agree, because
+// `recover_stake_shortfall` moves tokens straight out of the stake vault
+// into a merchant's OPEN liquidity vault and on into the pool. Two
+// different mints there is not a policy disagreement — the SPL token
+// program refuses the transfer outright, and no configuration of the two
+// programs can make such a cluster exist.
 import * as anchor from "@anchor-lang/core";
 import { Program, BN } from "@anchor-lang/core";
 import { Escrow } from "../target/types/escrow";
@@ -57,6 +77,11 @@ async function ata(mint: PublicKey, owner: PublicKey): Promise<PublicKey> {
   return acc.address;
 }
 
+/**
+ * The settlement stablecoin every trade in these suites is denominated
+ * in — the mint on `FeeConfig`'s allowlist. Not OPEN; see
+ * `getSharedOpenMint`.
+ */
 let mintPromise: Promise<PublicKey> | null = null;
 export function getSharedMint(): Promise<PublicKey> {
   if (!mintPromise) {
@@ -112,12 +137,15 @@ export const SHARED_FEE_PARAMS = {
   arbitratorSortitionBps: 0,
 };
 
-// A second mint, standing in for OPEN. The settlement stablecoin and OPEN
-// are different mints in production, and the dispute path depends on that:
-// the arbitration deposit is OPEN-denominated while the trade escrow holds
-// the stablecoin, so a merchant's OPEN vault and their settlement vault are
+// OPEN. The settlement stablecoin and OPEN are different mints in
+// production, and the dispute path depends on that: the arbitration
+// deposit is OPEN-denominated while the trade escrow holds the
+// stablecoin, so a merchant's OPEN vault and their settlement vault are
 // different accounts. Sharing one mint here would collapse them into one,
 // which `execute_dispute_outcome` explicitly rejects.
+//
+// This is also the staked asset and governance's unit of account — see
+// `getSharedStakingConfig` and `getSharedGovernanceConfig`.
 let openMintPromise: Promise<PublicKey> | null = null;
 export function getSharedOpenMint(): Promise<PublicKey> {
   if (!openMintPromise) {
@@ -250,11 +278,21 @@ export interface SharedStakingConfig {
   slashDestination: PublicKey;
 }
 
+/**
+ * The staked asset is OPEN (OFS-4100 §1, §4) — the same mint the
+ * arbitration pool holds, and deliberately not the settlement mint.
+ *
+ * Not a detail of this fixture: `recover_stake_shortfall` transfers out
+ * of `stakeVault` and into a merchant's OPEN liquidity vault, so a
+ * settlement-denominated `StakingConfig` would describe a cluster the SPL
+ * token program cannot run. Every suite that stakes therefore funds its
+ * stakers in OPEN, not in the mint they settle trades in.
+ */
 let stakingConfigPromise: Promise<SharedStakingConfig> | null = null;
 export function getSharedStakingConfig(staking: Program<Staking>): Promise<SharedStakingConfig> {
   if (!stakingConfigPromise) {
     stakingConfigPromise = (async () => {
-      const mint = await getSharedMint();
+      const mint = await getSharedOpenMint();
       const stakingConfig = PublicKey.findProgramAddressSync(
         [Buffer.from("staking_config")],
         staking.programId,
@@ -331,13 +369,19 @@ export interface SharedGovernanceConfig {
 /// file's `before` ran second would otherwise fail with "already in
 /// use". The parameter values are the ones `governance.ts` has always
 /// used — moved, not changed.
+///
+/// Denominated in OPEN, and it could not be anything else: vote weight is
+/// read straight off a `StakeAccount`, and `totalOpenSupply` — the
+/// denominator quorum is measured against — is OFS-4100 §1's OPEN supply.
+/// A proposal deposit in a different token from the stake that votes on
+/// it would make the quorum arithmetic compare two unrelated units.
 let governanceConfigPromise: Promise<SharedGovernanceConfig> | null = null;
 export function getSharedGovernanceConfig(
   governance: Program<Governance>,
 ): Promise<SharedGovernanceConfig> {
   if (!governanceConfigPromise) {
     governanceConfigPromise = (async () => {
-      const mint = await getSharedMint();
+      const mint = await getSharedOpenMint();
       const governanceConfig = PublicKey.findProgramAddressSync(
         [Buffer.from("governance_config")],
         governance.programId,

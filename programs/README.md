@@ -59,32 +59,36 @@ anchor test --validator legacy
 `Anchor.toml`'s `[provider] cluster` is `localnet`, not `devnet`) — this is
 deliberate, so CI and local iteration stay fast and deterministic.
 
-### The isolated suite
+### The shared fixtures, and the two mints
 
-`tests-isolated/` holds specs that cannot share a ledger with `tests/`,
-because they need the protocol singletons (`FeeConfig`, `StakingConfig`,
-the arbitration pool) initialized with *different parameters* than
-`tests/shared-fixtures.ts` writes — and each can be initialized only once
-per ledger. Today that is the stake-recovery relay, which needs staking and
-the arbitration pool denominated in the same mint, as OFS-4100 §4 and §6
-require and as the shared fixture does not do.
+Every spec under `tests/` runs in one mocha process against one ledger, so
+the three protocol singletons — `FeeConfig`, `StakingConfig`,
+`GovernanceConfig` — are initialized exactly once, by
+`tests/shared-fixtures.ts`. Anything a spec needs from them it must get
+from there.
 
-They are deliberately outside `tests/**/*.ts` so `anchor test` does not
-sweep them into the shared process. Run them against a validator of their
-own:
+The fixture creates **two** mints, and which one each singleton is
+denominated in is a protocol fact rather than a fixture convenience:
 
-```bash
-solana-test-validator --reset --ledger /tmp/isolated-ledger \
-  --bpf-program HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP target/deploy/escrow.so \
-  --bpf-program HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx target/deploy/staking.so &
+| | mint | why |
+|---|---|---|
+| trade escrows, liquidity vaults, settlement fees | settlement | the stablecoin a trade is priced in; on `FeeConfig`'s allowlist |
+| stake, arbitration pool, dispute filing fee, vote weight, proposal deposits | OPEN | OFS-4100 §1, §4, §6 |
 
-ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 \
-ANCHOR_WALLET=~/.config/solana/id.json \
-  npm run test:isolated
-```
+They must not be collapsed into one — `execute_dispute_outcome` rejects a
+merchant whose OPEN vault and settlement vault are the same account — and
+the OPEN ones must not be split apart: `recover_stake_shortfall` transfers
+straight from the stake vault into a merchant's OPEN liquidity vault, so a
+`StakingConfig` denominated in anything but the arbitration pool's mint
+describes a cluster the SPL token program will not run. Both directions
+have been got wrong here before, which is why the fixture spells it out.
 
-The program ids above come from each program's own `declare_id!`; read them
-there rather than assuming an ordering.
+A spec that needs a *different* value for a mutable field — a non-zero
+`dispute_filing_fee`, a longer vote lock, a narrower settlement allowlist —
+writes it in `before` and hands it back in `after`. `stake-recovery.ts`,
+`settlement-mints.ts` and `governance.ts` all do this. A spec that would
+need a different value for an **init-once** field cannot, and would have to
+run on a ledger of its own; there is no such spec today.
 
 Actual devnet deployment is a separate, explicit step:
 

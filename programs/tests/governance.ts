@@ -18,7 +18,7 @@ import {
 } from "@solana/web3.js";
 import { expect } from "chai";
 import {
-  getSharedMint,
+  getSharedOpenMint,
   getSharedStakingConfig,
   getSharedGovernanceConfig,
   unit,
@@ -42,6 +42,11 @@ describe("governance", () => {
   const CATEGORY_STANDARDS = { standards: {} };
   const ACTION_NONE = { none: {} };
 
+  /// OPEN. Stake weighs the votes and backs the proposal deposits, and
+  /// `TOTAL_OPEN_SUPPLY` below is the denominator quorum is measured
+  /// against — so the deposit token and the staked token have to be the
+  /// same one, or the quorum arithmetic compares unrelated units. This
+  /// suite never touches a settlement mint.
   let mint: PublicKey;
   let governanceConfig: PublicKey;
   let depositVault: PublicKey;
@@ -269,7 +274,7 @@ describe("governance", () => {
   }
 
   before(async () => {
-    mint = await getSharedMint();
+    mint = await getSharedOpenMint();
     ({ stakingConfig, stakeVault } = await getSharedStakingConfig(staking));
     ({ governanceConfig, depositVault, forfeitDestination } =
       await getSharedGovernanceConfig(program));

@@ -133,31 +133,23 @@ jobs:
             grep -oE "in method [^ ]*|Function [^ ]*" /tmp/anchor-build.log | sort -u
             exit 1
           fi
+      # One ledger, one glob. `tests-isolated/` existed because the
+      # stake-recovery relay needs staking and the arbitration pool
+      # denominated in ONE mint (OFS-4100 §4, §6) while
+      # `tests/shared-fixtures.ts` staked the settlement mint — an
+      # init-once disagreement no spec file could write around. The fixture
+      # is correct now, the relay runs in this glob with everything else,
+      # and a second ledger would only be a second thing to forget to run.
+      #
+      # If a spec ever again needs an init-once singleton parameter that
+      # differs from the fixture's, it needs its own ledger AND its own CI
+      # step here — a suite nothing invokes is this codebase's most
+      # frequent defect. See `programs/README.md`.
+      #
       # --validator legacy: this Anchor CLI version defaults to the
       # `surfpool` validator, which isn't installed in CI; `legacy` uses the
       # standard solana-test-validator that ships with the Solana CLI.
       - run: anchor test --validator legacy
-      # `tests-isolated/` needs staking and the arbitration pool denominated
-      # in ONE mint (OFS-4100 §4, §6). Each protocol singleton can only be
-      # initialized once per ledger, so that configuration cannot share a
-      # ledger with `tests/shared-fixtures.ts` — which is why `anchor test`
-      # deliberately does not glob this directory. Without this step the
-      # suite exists and nothing runs it, which is the failure mode this
-      # codebase has now produced seven times: correct, tested code that no
-      # caller reaches. See `programs/README.md`.
-      - name: isolated program suites (own ledger)
-        run: |
-          set -o pipefail
-          solana-test-validator --reset --quiet --ledger /tmp/isolated-ledger \
-            --bpf-program HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP target/deploy/escrow.so \
-            --bpf-program HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx target/deploy/staking.so &
-          for i in $(seq 1 60); do
-            solana cluster-version --url http://127.0.0.1:8899 >/dev/null 2>&1 && break
-            sleep 1
-          done
-          ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 \
-          ANCHOR_WALLET="$HOME/.config/solana/id.json" \
-            npm run test:isolated
 
   no-mainnet-check:
     name: guard against accidental mainnet references

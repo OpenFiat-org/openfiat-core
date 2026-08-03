@@ -30,7 +30,7 @@ import {
   SYSVAR_RENT_PUBKEY,
 } from "@solana/web3.js";
 import {
-  getSharedMint,
+  getSharedOpenMint,
   getSharedStakingConfig,
   getSharedGovernanceConfig,
 } from "./shared-fixtures";
@@ -197,7 +197,9 @@ export function getQuorumVoter(
 ): Promise<Keypair> {
   if (!quorumVoterPromise) {
     quorumVoterPromise = (async () => {
-      const mint = await getSharedMint();
+      // OPEN: quorum is a fraction of the OPEN supply, so the stake that
+      // meets it has to be denominated in the same token.
+      const mint = await getSharedOpenMint();
       const { stakingConfig, stakeVault } = await getSharedStakingConfig(staking);
       const { totalOpenSupply, quorumBps } =
         await getSharedGovernanceConfig(governance);
@@ -252,7 +254,9 @@ export async function createProposal(
   votingPeriodSecs = VOTING_PERIOD_SECS,
   id = nextProposalId(),
 ): Promise<PublicKey> {
-  const mint = await getSharedMint();
+  // OPEN — the proposal deposit is denominated in the governance token,
+  // not in whatever a trade happens to settle in.
+  const mint = await getSharedOpenMint();
   const { governanceConfig, depositVault, depositAmount } =
     await getSharedGovernanceConfig(governance);
 

@@ -1009,8 +1009,11 @@ describe("escrow", () => {
           .rpc({ commitment: "confirmed" }),
       );
 
-      const ownerAta = await ata(mint, owner.publicKey);
-      await mintTokens(ownerAta, stakeAmount);
+      // Stake is OPEN, not the mint this trade settles in (OFS-4100 §4).
+      // An arbitrator's seat is bought with the protocol token wherever
+      // the trade they judge is denominated.
+      const ownerAta = await ata(openMint, owner.publicKey);
+      await mintOpenTokens(ownerAta, stakeAmount);
       await withBlockhashRetry(() =>
         staking.methods
           .stake(stakeAmount)
@@ -1020,7 +1023,7 @@ describe("escrow", () => {
             stakeAccount,
             stakeVault,
             from: ownerAta,
-            mint,
+            mint: openMint,
             tokenProgram: TOKEN_2022_PROGRAM_ID,
           })
           .signers([owner])

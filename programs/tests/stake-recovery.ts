@@ -2,34 +2,31 @@
  * The stake-recovery relay, end to end across both programs
  * (OFS-4100 §9.3, OFS-4200 §1).
  *
- * # Why this suite is not in `tests/`
+ * # Why this suite used to have its own ledger, and no longer does
  *
- * `anchor test` runs `tests/**\/*.ts` as one mocha process against one
- * ledger, and the three protocol singletons — `FeeConfig`,
- * `StakingConfig`, the arbitration pool — can each be initialized exactly
- * once per ledger. `tests/shared-fixtures.ts` therefore fixes their
- * parameters for every suite in that run, and one of those choices makes
- * this relay untestable there: it denominates `StakingConfig` in the
- * *settlement* mint while the arbitration pool holds OPEN.
+ * `tests/shared-fixtures.ts` once denominated `StakingConfig` in the
+ * *settlement* mint while the arbitration pool held OPEN. That
+ * configuration cannot exist in production — OFS-4100 §1 and §4 make OPEN
+ * the staked asset and §6 makes the dispute filing fee OPEN too, so a
+ * merchant's stake and their arbitration deposit are the same token — and
+ * it made this relay untestable: recovery moves tokens out of the stake
+ * vault and into the merchant's OPEN liquidity vault, a transfer the SPL
+ * token program rejects outright when those mints differ. Since the three
+ * protocol singletons can each be initialized only once per ledger, the
+ * fix was not available from inside a spec file, and this suite built its
+ * own singletons on a ledger of its own.
  *
- * That configuration cannot exist in production. OFS-4100 §1 and §4 make
- * OPEN the staked asset, and §6 makes the dispute filing fee OPEN too, so
- * a merchant's stake and their arbitration deposit are denominated in the
- * same token. Recovery moves tokens out of the stake vault and into the
- * merchant's OPEN liquidity vault — a transfer the SPL token program
- * rejects outright if those two mints differ. The fixture models an
- * impossible cluster, and this relay is simply the first thing to need
- * them to agree.
+ * The fixture is now correct, so it does not have to. What this suite
+ * needs beyond the fixture is one *mutable* parameter — a non-zero
+ * `dispute_filing_fee`, where the shared default is zero — and
+ * `update_fee_config` exists precisely to write that. It is perturbed in
+ * `before` and handed back in `after`, the same contract
+ * `settlement-mints.ts` keeps with the settlement allowlist.
  *
- * Correcting the shared fixture would mean moving staking, and with it
- * governance's vote weight and deposit vault, onto the OPEN mint across
- * five suites — a change well outside this task. So this suite builds its
- * own singletons, in the configuration a real deployment has:
- *
- *     settlement mint  ≠  OPEN mint
- *     OPEN mint        =  staking mint  =  arbitration pool mint
- *
- * and runs on its own ledger. See `programs/README.md` for the command.
+ * That the relay now runs against the fixtures every other suite runs
+ * against is the point, not a convenience: it is the assertion that this
+ * chain is the same chain, rather than a second one arranged to make the
+ * relay work.
  *
  * # What it proves
  *
@@ -46,7 +43,6 @@ import { Escrow } from "../target/types/escrow";
 import { Staking } from "../target/types/staking";
 import {
   TOKEN_2022_PROGRAM_ID,
-  createMint,
   mintTo,
   getAccount,
   getOrCreateAssociatedTokenAccount,
@@ -59,9 +55,15 @@ import {
   SYSVAR_SLOT_HASHES_PUBKEY,
 } from "@solana/web3.js";
 import { expect } from "chai";
-
-const MINT_DECIMALS = 6;
-const unit = (n: number) => new BN(n).mul(new BN(10).pow(new BN(MINT_DECIMALS)));
+import {
+  SHARED_FEE_PARAMS,
+  SharedFeeConfig,
+  getSharedFeeConfig,
+  getSharedMint,
+  getSharedOpenMint,
+  getSharedStakingConfig,
+  unit,
+} from "./shared-fixtures";
 
 /** `Role::Merchant` — index 0, and the only role this relay draws on. */
 const ROLE_MERCHANT_BYTE = 0;
@@ -72,8 +74,6 @@ const ROLE_MERCHANT = { merchant: {} };
  * signed-off dispute filing fee.
  */
 const FILING_FEE = unit(10);
-/** OFS-4100 §4's Merchant floor. */
-const MERCHANT_MIN_STAKE = unit(500);
 
 describe("stake recovery relay", () => {
   anchor.setProvider(anchor.AnchorProvider.env());
@@ -86,17 +86,18 @@ describe("stake recovery relay", () => {
 
   let settlementMint: PublicKey;
   let openMint: PublicKey;
+  let shared: SharedFeeConfig;
   let feeConfig: PublicKey;
   let arbitrationPool: PublicKey;
   let stakingConfig: PublicKey;
   let stakeVault: PublicKey;
-  let rewardsVault: PublicKey;
-  let treasuries: {
-    devTreasury: PublicKey;
-    ecosystemTreasury: PublicKey;
-    infraTreasury: PublicKey;
-    emergencyReserve: PublicKey;
-  };
+  /**
+   * OFS-4100 §4's Merchant floor, read off the shared `StakingConfig`
+   * rather than restated here. Every amount below is expressed relative to
+   * it, so this suite keeps proving the same things if the fixture's
+   * figures ever move.
+   */
+  let merchantMinStake: BN;
 
   async function airdrop(pubkey: PublicKey, sol = 10) {
     const sig = await connection.requestAirdrop(pubkey, sol * 1_000_000_000);
@@ -155,6 +156,36 @@ describe("stake recovery relay", () => {
     }
   }
 
+  /**
+   * Rewrites the shared `FeeConfig`'s dispute filing fee, leaving every
+   * other field at the fixture's own value.
+   *
+   * Spreads `SHARED_FEE_PARAMS` rather than restating the numbers:
+   * `update_fee_config` replaces the whole struct, so a hand-copied
+   * literal that drifted would silently change the settlement fee or the
+   * allowlist for every suite that runs after this one.
+   */
+  function setFilingFee(fee: BN) {
+    return withBlockhashRetry(() =>
+      escrow.methods
+        .updateFeeConfig({
+          ...SHARED_FEE_PARAMS,
+          disputeFilingFee: fee,
+          settlementMints: [settlementMint],
+        })
+        .accountsPartial({
+          admin: admin.publicKey,
+          feeConfig,
+          mint: settlementMint,
+          devTreasury: shared.devTreasury,
+          ecosystemTreasury: shared.ecosystemTreasury,
+          infraTreasury: shared.infraTreasury,
+          emergencyReserve: shared.emergencyReserve,
+        })
+        .rpc({ commitment: "confirmed" }),
+    );
+  }
+
   const pda = (seeds: (Buffer | Uint8Array)[], programId: PublicKey) =>
     PublicKey.findProgramAddressSync(seeds, programId)[0];
 
@@ -188,125 +219,34 @@ describe("stake recovery relay", () => {
   before(async function () {
     this.timeout(300000);
 
-    settlementMint = await createMint(
-      connection,
-      admin,
-      admin.publicKey,
-      null,
-      MINT_DECIMALS,
-      undefined,
-      { commitment: "confirmed" },
-      TOKEN_2022_PROGRAM_ID,
-    );
-    openMint = await createMint(
-      connection,
-      admin,
-      admin.publicKey,
-      null,
-      MINT_DECIMALS,
-      undefined,
-      { commitment: "confirmed" },
-      TOKEN_2022_PROGRAM_ID,
+    settlementMint = await getSharedMint();
+    openMint = await getSharedOpenMint();
+    shared = await getSharedFeeConfig(escrow);
+    ({ feeConfig, arbitrationPool } = shared);
+    ({ stakingConfig, stakeVault } = await getSharedStakingConfig(staking));
+
+    // The agreement the whole relay rests on, asserted rather than
+    // assumed. If the fixture ever drifts back to a settlement-denominated
+    // stake vault, this fails here with a readable message instead of
+    // surfacing as an opaque SPL token error six instructions later.
+    const config = await staking.account.stakingConfig.fetch(stakingConfig);
+    expect(config.mint.toBase58(), "staked asset must be OPEN").to.equal(openMint.toBase58());
+    const pool = await getAccount(connection, arbitrationPool, "confirmed", TOKEN_2022_PROGRAM_ID);
+    expect(pool.mint.toBase58(), "arbitration pool must hold OPEN").to.equal(openMint.toBase58());
+    expect(settlementMint.toBase58(), "settlement mint must not be OPEN").to.not.equal(
+      openMint.toBase58(),
     );
 
-    feeConfig = pda([Buffer.from("fee_config")], escrow.programId);
-    arbitrationPool = pda([Buffer.from("arbitration_pool")], escrow.programId);
-    stakingConfig = pda([Buffer.from("staking_config")], staking.programId);
-    stakeVault = pda([Buffer.from("stake_vault")], staking.programId);
-    rewardsVault = pda([Buffer.from("rewards_vault")], staking.programId);
+    merchantMinStake = config.minStakeByRole[ROLE_MERCHANT_BYTE];
+    await setFilingFee(FILING_FEE);
+  });
 
-    treasuries = {
-      devTreasury: await ata(settlementMint, Keypair.generate().publicKey),
-      ecosystemTreasury: await ata(settlementMint, Keypair.generate().publicKey),
-      infraTreasury: await ata(settlementMint, Keypair.generate().publicKey),
-      emergencyReserve: await ata(settlementMint, Keypair.generate().publicKey),
-    };
-
-    await escrow.methods
-      .initializeFeeConfig({
-        adListingFee: new BN(0),
-        disputeFilingFee: FILING_FEE,
-        settlementFeeBps: 85,
-        ...treasuries,
-        devTreasuryBps: 4000,
-        ecosystemTreasuryBps: 3000,
-        infraTreasuryBps: 2000,
-        emergencyReserveBps: 1000,
-        timeoutSecs: new BN(1800),
-      })
-      .accountsPartial({ admin: admin.publicKey, feeConfig, systemProgram: SystemProgram.programId })
-      .rpc({ commitment: "confirmed" });
-
-    // The pool holds OPEN, which is also what stake is denominated in —
-    // the agreement the shared fixture lacks and this whole relay needs.
-    await escrow.methods
-      .initializeArbitrationPool()
-      .accountsPartial({
-        admin: admin.publicKey,
-        feeConfig,
-        mint: openMint,
-        arbitrationPool,
-        tokenProgram: TOKEN_2022_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc({ commitment: "confirmed" });
-
-    await escrow.methods
-      .updateFeeConfig({
-        adListingFee: new BN(0),
-        disputeFilingFee: FILING_FEE,
-        settlementFeeBps: 85,
-        devTreasuryBps: 4000,
-        ecosystemTreasuryBps: 3000,
-        infraTreasuryBps: 2000,
-        emergencyReserveBps: 1000,
-        timeoutSecs: new BN(1800),
-        minArbitratorStakeAgeSecs: new BN(0),
-        arbitratorSortitionBps: 0,
-        settlementMints: [settlementMint],
-      })
-      .accountsPartial({
-        admin: admin.publicKey,
-        feeConfig,
-        mint: settlementMint,
-        ...treasuries,
-      })
-      .rpc({ commitment: "confirmed" });
-
-    await staking.methods
-      .initializeStakingConfig({
-        minStakeByRole: [
-          MERCHANT_MIN_STAKE,
-          MERCHANT_MIN_STAKE,
-          unit(1000),
-          unit(5000),
-          unit(1000),
-          unit(1000),
-          unit(1000),
-        ],
-        // One second per role: these tests have to wait a merchant's
-        // unbonding period out to reach `withdraw_unstaked`, and §4's real
-        // 24 hours is not something a test validator can sit through. The
-        // *ordering* the relay depends on — that unbonding tokens are
-        // still in the vault until withdrawal — holds at any period.
-        unbondingPeriodSecsByRole: [
-          new BN(1), new BN(1), new BN(1), new BN(1), new BN(1), new BN(1), new BN(1),
-        ],
-        slashBps: 500,
-        slashingAuthority: Keypair.generate().publicKey,
-        slashDestination: await ata(openMint, Keypair.generate().publicKey),
-        rewardsAuthority: Keypair.generate().publicKey,
-      })
-      .accountsPartial({
-        admin: admin.publicKey,
-        mint: openMint,
-        stakingConfig,
-        stakeVault,
-        rewardsVault,
-        tokenProgram: TOKEN_2022_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc({ commitment: "confirmed" });
+  // Hand the shared singleton back exactly as the fixture left it. Every
+  // other suite opens dispute cases expecting a zero deposit, so a leaked
+  // filing fee breaks them, not this file.
+  after(async function () {
+    this.timeout(300000);
+    if (feeConfig) await setFilingFee(SHARED_FEE_PARAMS.disputeFilingFee);
   });
 
   /**
@@ -562,7 +502,7 @@ describe("stake recovery relay", () => {
 
     before(async function () {
       this.timeout(300000);
-      merchant = await setUpMerchant(VAULT_FUNDING, MERCHANT_MIN_STAKE);
+      merchant = await setUpMerchant(VAULT_FUNDING, merchantMinStake);
       buyer = await openFundedTradeEscrow(merchant, RESERVATION, unit(100));
       await openDispute(merchant, buyer, RESERVATION);
     });
@@ -585,7 +525,7 @@ describe("stake recovery relay", () => {
     it("refuses to release unbonded stake while the debt stands", async () => {
       await withBlockhashRetry(() =>
         staking.methods
-          .requestUnstake(MERCHANT_MIN_STAKE)
+          .requestUnstake(merchantMinStake)
           .accountsPartial({
             owner: merchant.publicKey,
             stakingConfig,
@@ -616,7 +556,7 @@ describe("stake recovery relay", () => {
       // the cohort shrank by exactly the debt.
       expect(stakeAccount.amount.toString()).to.equal("0");
       expect(stakeAccount.unbondingAmount.toString()).to.equal(
-        MERCHANT_MIN_STAKE.sub(SHORTFALL).toString(),
+        merchantMinStake.sub(SHORTFALL).toString(),
       );
 
       const receipt = await staking.account.stakeRecoveryReceipt.fetch(
@@ -692,7 +632,7 @@ describe("stake recovery relay", () => {
 
       const after = await getAccount(connection, to, "confirmed", TOKEN_2022_PROGRAM_ID);
       expect((after.amount - before.amount).toString()).to.equal(
-        MERCHANT_MIN_STAKE.sub(SHORTFALL).toString(),
+        merchantMinStake.sub(SHORTFALL).toString(),
       );
     });
   });
@@ -703,39 +643,21 @@ describe("stake recovery relay", () => {
     // the merchant's entire stake cannot clear. This is the corner
     // OFS-4100's status banner records as an open design question: what
     // happens when the *stake* is also insufficient.
-    const BIG_FEE = MERCHANT_MIN_STAKE.add(unit(100));
-    const UNRECOVERABLE = BIG_FEE.sub(MERCHANT_MIN_STAKE);
+    let bigFee: BN;
+    let unrecoverable: BN;
     let merchant: Keypair;
 
     before(async function () {
       this.timeout(300000);
-      await escrow.methods
-        .updateFeeConfig({
-          adListingFee: new BN(0),
-          disputeFilingFee: BIG_FEE,
-          settlementFeeBps: 85,
-          devTreasuryBps: 4000,
-          ecosystemTreasuryBps: 3000,
-          infraTreasuryBps: 2000,
-          emergencyReserveBps: 1000,
-          timeoutSecs: new BN(1800),
-          minArbitratorStakeAgeSecs: new BN(0),
-          arbitratorSortitionBps: 0,
-          settlementMints: [settlementMint],
-        })
-        .accountsPartial({
-          admin: admin.publicKey,
-          feeConfig,
-          mint: settlementMint,
-          ...treasuries,
-        })
-        .rpc({ commitment: "confirmed" });
+      bigFee = merchantMinStake.add(unit(100));
+      unrecoverable = bigFee.sub(merchantMinStake);
+      await setFilingFee(bigFee);
 
       // No OPEN in the vault at all: the deposit cannot be collected even
       // in part, so the whole filing fee becomes a debt. An empty vault is
       // exactly the position §9.3 says must not make a merchant
       // undisputable.
-      merchant = await setUpMerchant(new BN(0), MERCHANT_MIN_STAKE);
+      merchant = await setUpMerchant(new BN(0), merchantMinStake);
       const buyer = await openFundedTradeEscrow(merchant, RESERVATION, unit(50));
       await openDispute(merchant, buyer, RESERVATION);
     });
@@ -743,12 +665,12 @@ describe("stake recovery relay", () => {
     it("opens the case against an empty vault and books the whole fee as debt", async () => {
       const disputeCase = await escrow.account.disputeCase.fetch(disputeCasePda(RESERVATION));
       expect(disputeCase.deposit.toString()).to.equal("0");
-      expect(disputeCase.depositShortfall.toString()).to.equal(BIG_FEE.toString());
+      expect(disputeCase.depositShortfall.toString()).to.equal(bigFee.toString());
 
       const claim = await escrow.account.stakeRecoveryClaim.fetch(
         claimPda(merchant.publicKey, openMint),
       );
-      expect(claim.owedTotal.toString()).to.equal(BIG_FEE.toString());
+      expect(claim.owedTotal.toString()).to.equal(bigFee.toString());
     });
 
     it("takes everything the stake holds rather than refusing a partial payment", async () => {
@@ -766,7 +688,7 @@ describe("stake recovery relay", () => {
       const receipt = await staking.account.stakeRecoveryReceipt.fetch(
         receiptPda(merchant.publicKey),
       );
-      expect(receipt.recoveredTotal.toString()).to.equal(MERCHANT_MIN_STAKE.toString());
+      expect(receipt.recoveredTotal.toString()).to.equal(merchantMinStake.toString());
     });
 
     it("leaves the remainder outstanding on the claim rather than writing it off", async () => {
@@ -780,7 +702,7 @@ describe("stake recovery relay", () => {
       // are monotone, so what is still owed is always their difference —
       // and it is still 100 OPEN.
       expect(claim.owedTotal.sub(receipt.recoveredTotal).toString()).to.equal(
-        UNRECOVERABLE.toString(),
+        unrecoverable.toString(),
       );
     });
 
@@ -793,12 +715,12 @@ describe("stake recovery relay", () => {
       await withBlockhashRetry(() => topUp(merchant.publicKey, RESERVATION));
 
       const disputeCase = await escrow.account.disputeCase.fetch(disputeCasePda(RESERVATION));
-      expect(disputeCase.deposit.toString()).to.equal(MERCHANT_MIN_STAKE.toString());
+      expect(disputeCase.deposit.toString()).to.equal(merchantMinStake.toString());
       // The arbitrators on this case will be 100 OPEN short of a full
       // reward, and the account says so. A partial payout that presented
       // itself as complete is the outcome this whole design exists to
       // avoid.
-      expect(disputeCase.depositShortfall.toString()).to.equal(UNRECOVERABLE.toString());
+      expect(disputeCase.depositShortfall.toString()).to.equal(unrecoverable.toString());
     });
 
     it("refuses a further top-up once the vault is empty again", async () => {
@@ -812,7 +734,7 @@ describe("stake recovery relay", () => {
   describe("a merchant who owes nothing", () => {
     it("cannot have stake taken, and can withdraw freely", async function () {
       this.timeout(300000);
-      const merchant = await setUpMerchant(new BN(0), MERCHANT_MIN_STAKE);
+      const merchant = await setUpMerchant(new BN(0), merchantMinStake);
 
       // No case has ever opened against them, so no claim account exists.
       // Absence must read as "owes nothing" rather than as an error, or
@@ -823,7 +745,7 @@ describe("stake recovery relay", () => {
 
       await withBlockhashRetry(() =>
         staking.methods
-          .requestUnstake(MERCHANT_MIN_STAKE)
+          .requestUnstake(merchantMinStake)
           .accountsPartial({
             owner: merchant.publicKey,
             stakingConfig,
@@ -838,7 +760,7 @@ describe("stake recovery relay", () => {
       const before = await getAccount(connection, to, "confirmed", TOKEN_2022_PROGRAM_ID);
       await withBlockhashRetry(() => withdraw(merchant, to));
       const after = await getAccount(connection, to, "confirmed", TOKEN_2022_PROGRAM_ID);
-      expect((after.amount - before.amount).toString()).to.equal(MERCHANT_MIN_STAKE.toString());
+      expect((after.amount - before.amount).toString()).to.equal(merchantMinStake.toString());
     });
   });
 });
