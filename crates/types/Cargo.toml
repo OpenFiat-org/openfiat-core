@@ -11,5 +11,14 @@ bs58 = "0.5"
 serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]
-postcard = { version = "1", features = ["alloc"] }
+# `default-features = false` deliberately, matching `openfiat-network`'s
+# dependency on the same crate. Postcard's default feature set enables
+# `heapless-cas`, which pulls `heapless/cas` and, through it,
+# `atomic-polyfill` — an unmaintained crate (RUSTSEC-2023-0089) that
+# failed `cargo deny` on every push. Cargo unifies features across the
+# graph, so this one dev-dependency taking defaults was enough to put
+# that advisory in the lockfile for the whole workspace, even though the
+# only crate that actually serialises with postcard already opted out.
+# These tests need `alloc` and nothing else.
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde_json = "1"
