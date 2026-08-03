@@ -9,6 +9,12 @@
 //! that disagree here are visible, where two nodes each computing
 //! privately would not be.
 //!
+//! That only works if *every* term is published. The pinning multiplier
+//! was missing from this record for as long as it has existed, which
+//! meant a third party recomputing a schedule from these observations
+//! could reproduce two of the three multipliers and had to guess the
+//! one that is hardest to fake — see [`ObservedPeer::served_content`].
+//!
 //! There is deliberately no `getRewardSchedule`. Turning observations
 //! into amounts needs each candidate's on-chain stake, and this dispatch
 //! is synchronous — the same constraint that pushed governance's
@@ -39,7 +45,22 @@ pub struct ObservedPeer {
     pub peer: String,
     pub availability_bps: u64,
     pub connectivity_bps: u64,
+    pub pinning_bps: u64,
     pub announced_blockhash: bool,
+    /// Whether this node challenged the peer for content and got back
+    /// bytes hashing to the CID's own digest, some time in this epoch.
+    ///
+    /// Published for the same reason `announced_blockhash` is — the raw
+    /// fact beside the multiplier it produced — but it is a stronger
+    /// fact than that one. `announced_blockhash` is re-announceable by a
+    /// node that observed nothing; this is not assertable at all, because
+    /// the only way to hold it is to have returned the content. It is the
+    /// one line on this record an adversary cannot write for itself.
+    ///
+    /// `false` is "not proven", never "proven absent": the ledger records
+    /// successes only, so an unchallenged peer and one that failed a
+    /// challenge are indistinguishable here.
+    pub served_content: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -80,7 +101,9 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                         peer: hex(peer.as_bytes()),
                         availability_bps: live.availability_bps(&state.reward_params),
                         connectivity_bps: live.connectivity_bps(&state.reward_params),
+                        pinning_bps: live.pinning_bps(&state.reward_params),
                         announced_blockhash: live.announced_blockhash,
+                        served_content: live.served_content,
                     })
                     .collect();
                 peers.sort_by(|a, b| a.peer.cmp(&b.peer));

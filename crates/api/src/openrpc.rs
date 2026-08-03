@@ -249,6 +249,43 @@ fn result_schema_for(method: &str) -> Value {
             "properties": payment_method_schema()["properties"].clone(),
         });
     }
+    // The `get…s → array` fallback below is simply wrong for this one:
+    // it answers an object, and the peer list is one field of it. Worth
+    // writing out rather than fixing the shape alone, because the peer
+    // record mixes what a peer says about itself with what this node
+    // measured, and an integrator has no way to tell which is which from
+    // the field names.
+    if method == "getPeers" {
+        return json!({
+            "type": "object",
+            "properties": {
+                "self_peer_id": { "type": "string", "description": "the answering node's own id — the `/p2p/<id>` an entrypoint multiaddr ends in" },
+                "announced_addresses": { "type": "array", "items": { "type": "string" }, "description": "addresses this node asks peers to dial it at, operator-declared first. Empty means it announces none" },
+                "content_proof_window": {
+                    "type": "object",
+                    "description": "the reward epoch each peer's `served_content` is a statement about, and the only freshness bound on it. The flag is set-once within an epoch and resets when it rolls over, so a `true` can be anywhere from seconds to a whole epoch old. This is the in-flight epoch, unlike getRewardObservations",
+                    "properties": {
+                        "epoch": { "type": "integer" },
+                        "epoch_start_millis": { "type": "integer" },
+                        "epoch_end_millis": { "type": "integer" },
+                    },
+                },
+                "peers": { "type": "array", "items": { "type": "object", "properties": {
+                    "peer_id": { "type": "string", "description": "base58 `12D3Koo…` form" },
+                    "addresses": { "type": "array", "items": { "type": "string" } },
+                    "node_version": { "type": "string", "description": "CLAIMED — the peer's own word for what it runs" },
+                    "supported_ofs": { "type": "array", "items": { "type": "integer" }, "description": "CLAIMED — OFS numbers the peer declares" },
+                    "roles": { "type": "array", "items": { "type": "string" }, "description": "CLAIMED — roles the peer declares" },
+                    "last_seen": { "type": "integer", "description": "MEASURED by the answering node" },
+                    "latency_ms": { "type": ["integer", "null"], "description": "MEASURED by the answering node; null when it has never had a round trip to measure, which is not zero" },
+                    "successes": { "type": "integer", "description": "MEASURED — exchanges this node had with the peer that worked. Two honest nodes disagree about this" },
+                    "failures": { "type": "integer", "description": "MEASURED — and that did not" },
+                    "served_content": { "type": "boolean", "description": "PROVEN — this node challenged the peer for a content address and got back bytes hashing to that CID's digest, inside `content_proof_window`. The only field here a peer cannot assert: everything marked CLAIMED is the peer's own word, and even the reward's connectivity signal can be re-announced by a node that observed nothing. `false` means UNPROVEN, never disproven — only successes are recorded, so a peer never challenged and a peer that failed read alike. The reward multiplier this feeds is not published here because it depends on RewardParams this method does not carry; see getRewardObservations" },
+                } } },
+            },
+            "required": ["self_peer_id", "peers", "announced_addresses", "content_proof_window"],
+        });
+    }
     if method == "getHeldContent" {
         return json!({
             "type": "object",
