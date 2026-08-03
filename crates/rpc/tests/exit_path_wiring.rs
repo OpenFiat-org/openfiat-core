@@ -1,12 +1,18 @@
-//! Proves the three ways *out* of a trade are actually reachable.
+//! Proves the four ways *out* of a trade are actually reachable.
 //!
-//! `ReservationRegistry::apply_cancel`, `SettlementRegistry::apply_rejected`
-//! and `SettlementRegistry::apply_cancelled` were each complete, unit
-//! tested, and named by a gossip constant, and not one of them had an RPC
-//! method. That is the ninth time this workspace has shipped correct code
-//! nothing calls, and every previous one had passing unit tests for the
-//! function itself — a test that calls `apply_cancel` cannot tell you
-//! whether anyone else does.
+//! `ReservationRegistry::apply_cancel`, `SettlementRegistry::apply_rejected`,
+//! `::apply_cancelled` and `::apply_payment_reversed` were each complete,
+//! unit tested, and named by a gossip constant, and not one of them had an
+//! RPC method. They were the ninth and tenth times this workspace shipped
+//! correct code nothing calls, and every previous one had passing unit
+//! tests for the function itself — a test that calls `apply_cancel` cannot
+//! tell you whether anyone else does.
+//!
+//! The four are one subject, not four: between them they are every way a
+//! trade ends other than completing, and each is the answer to "what does
+//! a user do when this goes wrong". Missing any one of them pushes a real
+//! situation into the dispute system, which is why they are guarded
+//! together.
 //!
 //! So these tests never call an `apply_*` to make their point. They ask
 //! the dispatch table the server actually builds, by the exact method
@@ -38,9 +44,9 @@ use openfiat_rpc::dispatch::{MethodTable, encode_bytes};
 use openfiat_rpc::methods::build_table;
 use openfiat_rpc::state::NodeState;
 use openfiat_settlement::events::{
-    PaymentSubmitted, SettlementCancelled, SettlementInitiate, SettlementRejected,
-    SignedPaymentSubmitted, SignedSettlementCancelled, SignedSettlementInitiate,
-    SignedSettlementRejected,
+    PaymentReversed, PaymentSubmitted, SettlementApproved, SettlementCancelled, SettlementInitiate,
+    SettlementRejected, SignedPaymentReversed, SignedPaymentSubmitted, SignedSettlementApproved,
+    SignedSettlementCancelled, SignedSettlementInitiate, SignedSettlementRejected,
 };
 use openfiat_settlement::record::PaymentDiscrepancy;
 use openfiat_settlement::{SettlementId, SettlementState};
@@ -49,12 +55,13 @@ use openfiat_taxonomy::PaymentMethodRef;
 use openfiat_types::{Amount, FiatCurrency, PeerId, Timestamp};
 use serde_json::Value;
 
-/// The three method names a client sends. Written out here, once, so the
+/// The four method names a client sends. Written out here, once, so the
 /// failure messages below can name the thing that is missing rather than
 /// describing it.
 const RESERVATION_CANCEL: &str = "sendReservationCancel";
 const SETTLEMENT_REJECTED: &str = "sendSettlementRejected";
 const SETTLEMENT_CANCELLED: &str = "sendSettlementCancelled";
+const PAYMENT_REVERSED: &str = "sendPaymentReversed";
 
 const AD: &str = "ad-exit-1";
 const RESERVATION: &str = "res-exit-1";
@@ -181,12 +188,12 @@ fn declare_payment(
         .expect("the buyer declares payment");
 }
 
-/// The whole point of the file, stated once as a list: these three names
+/// The whole point of the file, stated once as a list: these four names
 /// must exist on the surface a client talks to.
 ///
 /// Deliberately separate from the behavioural tests below. A registration
-/// removed makes all four fail, but only this one says *what* is gone
-/// without the reader having to infer it from a state assertion.
+/// removed makes several of those fail, but only this one says *what* is
+/// gone without the reader having to infer it from a state assertion.
 #[test]
 fn every_exit_from_a_trade_is_registered_on_the_rpc_surface() {
     let table: MethodTable<MemoryStore> = build_table();
@@ -195,19 +202,21 @@ fn every_exit_from_a_trade_is_registered_on_the_rpc_surface() {
         RESERVATION_CANCEL,
         SETTLEMENT_REJECTED,
         SETTLEMENT_CANCELLED,
+        PAYMENT_REVERSED,
     ] {
         assert!(
             names.contains(&method),
             "`{method}` is no longer registered in openfiat-rpc's dispatch table. The registry \
              call behind it still exists and is still unit tested, which is exactly why this \
-             test is here: nine mechanisms in this workspace have shipped complete, tested and \
-             unreachable, and each one passed its own tests the whole time. Without these three \
-             a taker cannot abandon a reservation without holding the merchant's liquidity for \
-             the full 30-minute VALIDATION_WINDOW, and a merchant cannot refuse a payment \
-             without opening a dispute — a filing fee, arbitrators and a frozen escrow to say \
-             no. Restore the `table.register` block in crates/rpc/src/methods/{{reservations, \
-             settlement}}.rs. If you are reading this before that block first landed, the \
-             failure is the report, not a broken test."
+             test is here: ten mechanisms in this workspace have shipped complete, tested and \
+             unreachable, and each one passed its own tests the whole time. These four are every \
+             way a trade ends other than completing. Without them a taker cannot abandon a \
+             reservation without holding the merchant's liquidity for the full 30-minute \
+             VALIDATION_WINDOW, a merchant cannot refuse a payment without opening a dispute — a \
+             filing fee, arbitrators and a frozen escrow to say no — and a buyer who declared \
+             payment by mistake cannot take it back at all. Restore the `table.register` block \
+             in crates/rpc/src/methods/{{reservations, settlement}}.rs. If you are reading this \
+             before that block first landed, the failure is the report, not a broken test."
         );
     }
 }
@@ -523,5 +532,242 @@ fn a_stranger_cannot_cancel_a_settlement_they_are_not_party_to() {
             .expect("the settlement exists")
             .state,
         SettlementState::AwaitingPayment
+    );
+}
+
+/// The buyer's way back from a mis-click.
+///
+/// Both cleared fields are asserted, and neither is bookkeeping.
+/// `payment_reference` is the bank reference the merchant would go looking
+/// for; leaving it behind would have a withdrawn declaration still
+/// pointing at a transfer. `payment_submitted_at` is what
+/// `openfiat_reputation` reads as *both* "this buyer made a payment" and
+/// "this merchant is on the clock to answer one", so a reversal that left
+/// it set would credit the buyer with a payment they took back and keep
+/// faulting the merchant for not answering it.
+#[test]
+fn a_buyer_takes_back_a_payment_declaration_they_made_by_mistake() {
+    let (table, state, buyer, _seller) = a_settlement();
+    declare_payment(&table, &state, &buyer);
+    let declared = state
+        .settlements
+        .get(&SettlementId::new(SETTLEMENT))
+        .expect("the settlement exists");
+    assert_eq!(
+        declared.payment_reference.as_deref(),
+        Some("TXN-EXIT"),
+        "the fixture must actually have a declaration to withdraw, or the assertions below \
+         pass against nothing"
+    );
+    assert!(declared.payment_submitted_at.is_some());
+
+    table
+        .dispatch(
+            &state,
+            PAYMENT_REVERSED,
+            send_params(&SignedPaymentReversed::sign(
+                PaymentReversed {
+                    settlement_id: SettlementId::new(SETTLEMENT),
+                    buyer: peer(&buyer),
+                    timestamp: Timestamp::from_millis(1_200),
+                },
+                &buyer,
+            )),
+        )
+        .expect("the buyer may withdraw their own declaration");
+
+    let withdrawn = state
+        .settlements
+        .get(&SettlementId::new(SETTLEMENT))
+        .expect("the settlement exists");
+    assert_eq!(withdrawn.state, SettlementState::AwaitingPayment);
+    assert_eq!(
+        withdrawn.payment_reference, None,
+        "a withdrawn declaration must not leave the merchant a reference to hunt for"
+    );
+    assert_eq!(
+        withdrawn.payment_submitted_at, None,
+        "openfiat_reputation reads this field as both the buyer's payment and the merchant's \
+         outstanding response; a reversal that left it set would count both"
+    );
+}
+
+/// Only the buyer declares payment, so only the buyer may withdraw it. A
+/// merchant able to reverse would be able to erase a declaration they are
+/// on the clock to answer.
+#[test]
+fn only_the_buyer_may_withdraw_their_own_payment_declaration() {
+    let (table, state, buyer, seller) = a_settlement();
+    declare_payment(&table, &state, &buyer);
+
+    for (who, signer) in [
+        ("the seller", &seller),
+        ("a stranger", &Keypair::from_seed([97u8; 32])),
+    ] {
+        let refused = table.dispatch(
+            &state,
+            PAYMENT_REVERSED,
+            send_params(&SignedPaymentReversed::sign(
+                PaymentReversed {
+                    settlement_id: SettlementId::new(SETTLEMENT),
+                    buyer: peer(signer),
+                    timestamp: Timestamp::from_millis(1_200),
+                },
+                signer,
+            )),
+        );
+        assert!(
+            refused.is_err(),
+            "{who} must not be able to withdraw the buyer's declaration"
+        );
+    }
+    assert_eq!(
+        state
+            .settlements
+            .get(&SettlementId::new(SETTLEMENT))
+            .expect("the settlement exists")
+            .state,
+        SettlementState::PaymentSubmitted
+    );
+}
+
+/// Reversal must not be a way out of a decision already taken. Approval
+/// and rejection both leave `PaymentSubmitted`, which is the only state
+/// reversal is legal from — so this is really asserting that the state
+/// check is the thing enforcing it, from both directions.
+#[test]
+fn a_declaration_cannot_be_withdrawn_once_the_merchant_has_answered_it() {
+    for merchant_approves in [true, false] {
+        let (table, state, buyer, seller) = a_settlement();
+        declare_payment(&table, &state, &buyer);
+
+        let expected = if merchant_approves {
+            table
+                .dispatch(
+                    &state,
+                    "sendSettlementApproved",
+                    send_params(&SignedSettlementApproved::sign(
+                        SettlementApproved {
+                            settlement_id: SettlementId::new(SETTLEMENT),
+                            seller: peer(&seller),
+                            timestamp: Timestamp::from_millis(1_200),
+                        },
+                        &seller,
+                    )),
+                )
+                .expect("the seller approves");
+            SettlementState::Approved
+        } else {
+            table
+                .dispatch(
+                    &state,
+                    SETTLEMENT_REJECTED,
+                    send_params(&SignedSettlementRejected::sign(
+                        SettlementRejected {
+                            settlement_id: SettlementId::new(SETTLEMENT),
+                            seller: peer(&seller),
+                            reason: "nothing arrived".to_string(),
+                            discrepancy: PaymentDiscrepancy::Other,
+                            timestamp: Timestamp::from_millis(1_200),
+                        },
+                        &seller,
+                    )),
+                )
+                .expect("the seller rejects");
+            SettlementState::Rejected
+        };
+
+        let refused = table.dispatch(
+            &state,
+            PAYMENT_REVERSED,
+            send_params(&SignedPaymentReversed::sign(
+                PaymentReversed {
+                    settlement_id: SettlementId::new(SETTLEMENT),
+                    buyer: peer(&buyer),
+                    timestamp: Timestamp::from_millis(1_300),
+                },
+                &buyer,
+            )),
+        );
+        assert!(
+            refused.is_err(),
+            "a buyer must not be able to withdraw a declaration the merchant has already \
+             answered with {expected:?}"
+        );
+        assert_eq!(
+            state
+                .settlements
+                .get(&SettlementId::new(SETTLEMENT))
+                .expect("the settlement exists")
+                .state,
+            expected
+        );
+    }
+}
+
+/// The sharp edge of this method, asserted rather than only written down:
+/// reversal returns the settlement to `AwaitingPayment`, and
+/// `sendSettlementCancelled` is legal from `AwaitingPayment`. So a buyer
+/// who withdraws a declaration for fiat that genuinely left their account
+/// has handed the merchant a window to cancel the trade out from under the
+/// money.
+///
+/// This is the documented behaviour, not a bug to fix here — the state
+/// machine has one `AwaitingPayment` and reversal means exactly "put it
+/// back there". It is a test so that anyone who changes the cancellation
+/// rules finds out they have changed this too, and so the warning in the
+/// method's own docs cannot quietly stop being true.
+#[test]
+fn withdrawing_a_declaration_re_arms_the_merchants_cancel() {
+    let (table, state, buyer, seller) = a_settlement();
+    declare_payment(&table, &state, &buyer);
+
+    let cancel = |ts: u64| {
+        send_params(&SignedSettlementCancelled::sign(
+            SettlementCancelled {
+                settlement_id: SettlementId::new(SETTLEMENT),
+                canceller: peer(&seller),
+                timestamp: Timestamp::from_millis(ts),
+            },
+            &seller,
+        ))
+    };
+
+    assert!(
+        table
+            .dispatch(&state, SETTLEMENT_CANCELLED, cancel(1_150))
+            .is_err(),
+        "a declared payment must block the merchant's cancel, or the rest of this test is \
+         asserting nothing"
+    );
+
+    table
+        .dispatch(
+            &state,
+            PAYMENT_REVERSED,
+            send_params(&SignedPaymentReversed::sign(
+                PaymentReversed {
+                    settlement_id: SettlementId::new(SETTLEMENT),
+                    buyer: peer(&buyer),
+                    timestamp: Timestamp::from_millis(1_200),
+                },
+                &buyer,
+            )),
+        )
+        .expect("the buyer withdraws");
+
+    table
+        .dispatch(&state, SETTLEMENT_CANCELLED, cancel(1_250))
+        .expect(
+            "and the merchant's cancel is legal again — this is why a client must confirm \
+                 before reversing a declaration for money that actually moved",
+        );
+    assert_eq!(
+        state
+            .settlements
+            .get(&SettlementId::new(SETTLEMENT))
+            .expect("the settlement exists")
+            .state,
+        SettlementState::Cancelled
     );
 }

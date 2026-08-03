@@ -13,8 +13,8 @@ use crate::methods::wallet_auth::{WalletProof, verify_wallet};
 use crate::state::NodeState;
 use openfiat_serialization::{json, wire};
 use openfiat_settlement::events::{
-    SignedPaymentSubmitted, SignedSettlementApproved, SignedSettlementCancelled,
-    SignedSettlementInitiate, SignedSettlementRejected,
+    SignedPaymentReversed, SignedPaymentSubmitted, SignedSettlementApproved,
+    SignedSettlementCancelled, SignedSettlementInitiate, SignedSettlementRejected,
 };
 use openfiat_settlement::{Settlement, SettlementId, protocol};
 use openfiat_storage::KvStore;
@@ -136,6 +136,59 @@ pub fn register<S: KvStore + 'static>(table: &mut MethodTable<S>) {
                 crate::dispatch::originate(
                     state,
                     protocol::EVENT_PAYMENT_SUBMITTED,
+                    protocol::OFS_SPEC,
+                    Priority::SessionReservationSettlement,
+                    gossip_bytes,
+                );
+                Ok(())
+            },
+        ),
+    );
+    table.register(
+        // §10: the buyer takes back "I paid".
+        //
+        // The counterpart to `sendPaymentSubmitted`, and the buyer-side
+        // mirror of `sendSettlementRejected`: without it a buyer who
+        // declared payment by mistake — wrong trade, wrong window, a
+        // transfer their bank then bounced — had no way back except
+        // opening a dispute, which is the same asymmetry that made a
+        // merchant pay a filing fee to say no.
+        //
+        // Legal only from `PaymentSubmitted` and only under the buyer on
+        // file. It cannot be used to escape a decision already made: once
+        // the merchant has approved or rejected, the settlement is no
+        // longer in `PaymentSubmitted` and this is refused.
+        //
+        // `apply_payment_reversed` also clears `payment_submitted_at`,
+        // which is deliberate and reaches further than it looks —
+        // `openfiat_reputation` reads that field as both "this buyer made
+        // a payment" and "this merchant is on the clock to answer one".
+        // Withdrawing the declaration retracts both, so a buyer is not
+        // credited with a payment they took back and a merchant is not
+        // faulted for failing to answer one.
+        //
+        // The sharp edge, and the reason a client should confirm before
+        // sending this: reversal returns the settlement to
+        // `AwaitingPayment`, which re-arms `sendSettlementCancelled`. A
+        // buyer whose fiat has genuinely left their account and who
+        // reverses anyway hands the merchant a window to cancel the trade
+        // out from under the money. Reverse a mistaken declaration, never
+        // a real one.
+        "sendPaymentReversed",
+        method_fn(
+            |state: &NodeState<S>, params: SendEventParams| -> Result<(), RpcError> {
+                let bytes = decode_bytes(&params.data)?;
+                let signed: SignedPaymentReversed =
+                    json::from_bytes(&bytes).map_err(|e| RpcError::InvalidParams(e.to_string()))?;
+                let gossip_bytes =
+                    wire::to_bytes(&signed).expect("SignedPaymentReversed always serializes");
+                state
+                    .settlements
+                    .apply_payment_reversed(signed)
+                    .map_err(|e| RpcError::Application(e.code()))?;
+                crate::dispatch::originate(
+                    state,
+                    protocol::EVENT_PAYMENT_REVERSED,
                     protocol::OFS_SPEC,
                     Priority::SessionReservationSettlement,
                     gossip_bytes,

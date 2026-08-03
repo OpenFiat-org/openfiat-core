@@ -328,6 +328,33 @@ fn description_for(method: &str) -> Option<&'static str> {
              reservation — see `sendSettlementCancelled` for that, and send both if you mean \
              to abandon a trade that has already reached settlement.",
         ),
+        "sendPaymentReversed" => Some(
+            "The buyer taking back \"I paid\" — the counterpart to `sendPaymentSubmitted`, and \
+             the buyer-side mirror of `sendSettlementRejected`. \
+             Send a base64 `SignedPaymentReversed`: `{action: {settlement_id, buyer, \
+             timestamp}, signature}`, signed over the canonical JSON of `action` under the \
+             buyer's key. \
+             Legal only from `PaymentSubmitted` and only under the buyer on file, so it \
+             cannot undo a decision already taken: once the merchant has approved or \
+             rejected, the settlement has left `PaymentSubmitted` and this returns an \
+             invalid-state error. It returns the settlement to `AwaitingPayment` and clears \
+             `payment_reference`. \
+             It also clears `payment_submitted_at`, which matters to both parties' \
+             reputation: that field is what `getReputation` reads as \"this buyer made a \
+             payment\" and as \"this merchant is on the clock to answer one\". Withdrawing \
+             the declaration retracts both — a buyer is not credited with a payment they \
+             took back, and a merchant is not faulted for failing to answer it. \
+             Read this before you wire a button to it. Reversal puts the settlement back in \
+             `AwaitingPayment`, which re-arms `sendSettlementCancelled` for either party. A \
+             buyer whose fiat has genuinely left their account and who reverses anyway has \
+             handed the merchant a window to cancel the trade out from under the money. This \
+             is for a declaration made in error — wrong trade, wrong window, a transfer the \
+             bank bounced — not for a real payment the buyer is having second thoughts \
+             about. For that, the answer is `sendDisputeOpen`. \
+             Without this method a buyer who mis-clicked had no way back except a dispute, \
+             which is the same asymmetry that used to make a merchant pay a filing fee to \
+             say no.",
+        ),
         "sendSettlementRejected" => Some(
             "The merchant's \"I cannot find this payment\" — the counterpart to \
              `sendSettlementApproved`, and the alternative to opening a dispute over it. \
