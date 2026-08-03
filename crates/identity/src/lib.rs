@@ -15,7 +15,7 @@ pub mod service;
 pub mod store;
 
 pub use error::IdentityError;
-pub use record::{Claim, ClaimId, ClaimType, VerificationStatus};
+pub use record::{Claim, ClaimId, ClaimType, VerificationStatus, current_encryption_key};
 pub use service::IdentityService;
 pub use store::IdentityRegistry;
 

@@ -53,17 +53,55 @@ pub enum ClaimType {
     /// `supersedes` set, which is exactly the visible history §11 asks
     /// for.
     Avatar,
+    /// The X25519 public key other people seal things *to* this wallet
+    /// with, base58. See `openfiat_crypto::encryption_key`.
+    ///
+    /// # Why identity is the right home for it
+    ///
+    /// A confidential trade channel distributes its content key as one
+    /// `openfiat_crypto::SealedBox` per reader. Sealing is addressed to a
+    /// key, and until now that key was the recipient's Ed25519 wallet key
+    /// — which a browser wallet will never hand out the secret to, so the
+    /// recipient could not open their own grant. The whole feature was
+    /// unusable between two ordinary users.
+    ///
+    /// What was missing was a *published* key the recipient can prove they
+    /// hold. That is a claim: a signed, gossiped, revocable, supersedable
+    /// assertion binding a value to a wallet, which is exactly this
+    /// crate's job. The binding is the part that matters — `verify()`
+    /// refuses a claim whose `wallet` does not derive from its own
+    /// `wallet_public_key`, so an encryption key can only ever be
+    /// published by the wallet it belongs to, and a counterparty sealing
+    /// to it is sealing to a key nobody else could have named.
+    ///
+    /// # This one is not self-asserted, unlike every other type
+    ///
+    /// A `MerchantName` may be anything; a wrong one misleads a reader. A
+    /// wrong `EncryptionKey` is a live cryptographic failure — a grant
+    /// sealed to a small-order point is readable by anybody, and one
+    /// sealed to a malformed value is readable by nobody. So this is the
+    /// second type after [`ClaimType::Avatar`] whose value is validated at
+    /// publication, and the first whose validation is a security check
+    /// rather than a formatting one.
+    ///
+    /// A wallet may hold only one of these in force at a time in practice:
+    /// rotating means publishing a new claim with `supersedes` set to the
+    /// old one, and the old grants stay readable under the old key because
+    /// the ciphertext is already replicated everywhere. Rotation limits
+    /// future exposure and undoes none of the past, which is the same
+    /// thing `KeyGrant` says about itself.
+    EncryptionKey,
     Custom(String),
 }
 
 impl ClaimType {
     /// Whether `value` is acceptable for this claim type.
     ///
-    /// Only [`ClaimType::Avatar`] constrains its value today, because it
-    /// is the only type whose value a viewer resolves into a network
-    /// request. The contact types are self-asserted strings that OFS-5000
-    /// deliberately does not constrain, and inventing a format for them
-    /// here would reject claims the specification allows.
+    /// Two types constrain their value, and both for the same reason: a
+    /// consumer does something with it beyond displaying it. The contact
+    /// types are self-asserted strings that OFS-5000 deliberately does not
+    /// constrain, and inventing a format for them here would reject claims
+    /// the specification allows.
     pub fn accepts(&self, value: &str) -> bool {
         match self {
             // Validated at publication rather than at render time so a
@@ -74,6 +112,15 @@ impl ClaimType {
             // an SDK user, a future client — to rediscover the same
             // requirement or omit it.
             Self::Avatar => openfiat_crypto::Cid::parse(value).is_ok(),
+            // Checked here, at the same point and for a sharper reason.
+            // `parse` rejects a malformed key and, more importantly, a
+            // small-order point: a grant sealed to one derives a shared
+            // secret that is public knowledge, so the "sealed" channel
+            // would be readable by every node holding a replica. A claim
+            // carrying that must never reach the store, and refusing it at
+            // render time would be far too late — the gossip has already
+            // gone out and a counterparty has already sealed to it.
+            Self::EncryptionKey => openfiat_crypto::EncryptionPublicKey::parse(value).is_ok(),
             _ => true,
         }
     }
@@ -113,4 +160,42 @@ impl Claim {
                 .expires_at
                 .is_none_or(|expiry| now.as_millis() < expiry.as_millis())
     }
+}
+
+/// The encryption key to seal to for the wallet `claims` belong to, or
+/// `None` if it has published none that is still in force.
+///
+/// "In force" is resolved through `supersedes` and not by taking the
+/// newest, because those are different questions and only the first is
+/// what the record says. A wallet that rotated its key twice holds three
+/// `EncryptionKey` claims and exactly one of them is unreplaced.
+///
+/// `None` is a real answer a caller must handle rather than paper over: it
+/// means the counterparty has not enrolled yet, and sealing to *anything*
+/// else — their wallet key, say — produces a grant they cannot open. That
+/// is the failure this whole mechanism exists to end, so it is better
+/// surfaced as "they have not opened this trade yet" than retried with a
+/// key that will not work.
+///
+/// Ambiguity is resolved by taking the newest of whatever remains, so two
+/// nodes reading the same claim set always seal to the same key. That case
+/// only arises if a wallet published a second key without superseding the
+/// first, which its own client should not do.
+pub fn current_encryption_key(
+    claims: &[Claim],
+    now: Timestamp,
+) -> Option<openfiat_crypto::EncryptionPublicKey> {
+    let replaced: std::collections::HashSet<&ClaimId> = claims
+        .iter()
+        .filter_map(|c| c.supersedes.as_ref())
+        .collect();
+    claims
+        .iter()
+        .filter(|claim| {
+            claim.claim_type == ClaimType::EncryptionKey
+                && claim.is_valid(now)
+                && !replaced.contains(&claim.id)
+        })
+        .max_by_key(|claim| claim.created_at.as_millis())
+        .and_then(|claim| openfiat_crypto::EncryptionPublicKey::parse(&claim.value).ok())
 }

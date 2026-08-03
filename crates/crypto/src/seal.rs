@@ -32,6 +32,22 @@
 //! address a gateway today with no new registration field, no key
 //! distribution step, and no chance of sealing to a key nobody can prove
 //! ownership of.
+//!
+//! # Two ways to name a recipient, one construction
+//!
+//! [`seal`]/[`open`] address an Ed25519 key and convert it. That works
+//! for a *gateway*, which is a server holding its own signing key and can
+//! therefore complete the ECDH. It does not work for a person: a browser
+//! wallet exposes `signMessage` and `signTransaction` and no key material
+//! at all, so a box sealed to a wallet's Ed25519 key is one that wallet
+//! can never open. See [`crate::encryption_key`] for what is done about
+//! that.
+//!
+//! [`seal_to_x25519`]/[`open_x25519`] therefore address a recipient's
+//! X25519 public key directly — the same construction with the conversion
+//! step removed, not a second scheme. The `SealedBox` on the wire is
+//! identical either way, and a recipient can be named by whichever key
+//! they can actually prove they hold the secret to.
 
 use crate::keypair::Keypair;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -111,8 +127,33 @@ impl std::error::Error for SealError {}
 /// same stance [`Keypair::generate`] takes, since silently sealing under
 /// predictable randomness would be worse than not running.
 pub fn seal(recipient: &PublicKey, plaintext: &[u8]) -> Result<SealedBox, SealError> {
-    let recipient_point = montgomery_of(recipient)?;
+    seal_to_point(montgomery_of(recipient)?, plaintext)
+}
 
+/// Encrypt `plaintext` so that only the holder of the X25519 secret behind
+/// `recipient` can read it.
+///
+/// The same construction as [`seal`] with the Ed25519 → Montgomery
+/// conversion removed, because the recipient already published a
+/// Montgomery point. Use this whenever the recipient is a *wallet* rather
+/// than a server: see [`crate::encryption_key`] for where that key comes
+/// from and what it costs.
+///
+/// Every 32-byte string is a legal X25519 public key, so there is no
+/// "invalid point" to reject here — only a small-order one, which would
+/// produce a shared secret an attacker already knows. That is refused,
+/// exactly as [`seal`] refuses it.
+///
+/// # Panics
+/// Panics if the operating system's entropy source is unavailable.
+pub fn seal_to_x25519(recipient: &[u8; 32], plaintext: &[u8]) -> Result<SealedBox, SealError> {
+    seal_to_point(MontgomeryPoint(*recipient), plaintext)
+}
+
+fn seal_to_point(
+    recipient_point: MontgomeryPoint,
+    plaintext: &[u8],
+) -> Result<SealedBox, SealError> {
     let mut rng = StdRng::try_from_rng(&mut SysRng).expect("OS entropy source unavailable");
     let mut ephemeral_secret = [0u8; 32];
     rng.fill_bytes(&mut ephemeral_secret);
@@ -148,9 +189,27 @@ pub fn seal(recipient: &PublicKey, plaintext: &[u8]) -> Result<SealedBox, SealEr
 /// it was altered in transit.
 pub fn open(recipient: &Keypair, sealed: &SealedBox) -> Result<Vec<u8>, SealError> {
     let recipient_point = montgomery_of(&recipient.public_key()).map_err(|_| SealError::Failed)?;
+    open_with_point(&recipient.x25519_secret_bytes(), recipient_point, sealed)
+}
+
+/// Decrypt a box sealed by [`seal_to_x25519`] to the public key that
+/// `secret` derives to.
+///
+/// `secret` is a raw X25519 scalar, clamped here exactly as it is when the
+/// public key is computed — so the caller stores 32 bytes and never has to
+/// remember whether they are the clamped or unclamped form.
+pub fn open_x25519(secret: &[u8; 32], sealed: &SealedBox) -> Result<Vec<u8>, SealError> {
+    open_with_point(secret, MontgomeryPoint::mul_base_clamped(*secret), sealed)
+}
+
+fn open_with_point(
+    secret: &[u8; 32],
+    recipient_point: MontgomeryPoint,
+    sealed: &SealedBox,
+) -> Result<Vec<u8>, SealError> {
     let ephemeral_public = MontgomeryPoint(sealed.ephemeral_public);
 
-    let shared = ephemeral_public.mul_clamped(recipient.x25519_secret_bytes());
+    let shared = ephemeral_public.mul_clamped(*secret);
     if shared.is_identity() {
         return Err(SealError::Failed);
     }
@@ -290,6 +349,70 @@ mod tests {
         bytes[31] = 0x7f;
         assert_eq!(
             seal(&PublicKey::from_bytes(bytes), b"user@example.com"),
+            Err(SealError::InvalidRecipientKey)
+        );
+    }
+
+    /// The X25519 public key a raw 32-byte secret derives to, spelled out
+    /// here rather than reached for through `encryption_key` so these
+    /// tests exercise `seal_to_x25519` and not that module.
+    fn x25519_public(secret: &[u8; 32]) -> [u8; 32] {
+        MontgomeryPoint::mul_base_clamped(*secret).0
+    }
+
+    #[test]
+    fn round_trips_to_a_published_x25519_key() {
+        let secret = [7u8; 32];
+        let sealed = seal_to_x25519(&x25519_public(&secret), b"acct 0100 2233 4455").unwrap();
+        assert_eq!(
+            open_x25519(&secret, &sealed).unwrap(),
+            b"acct 0100 2233 4455"
+        );
+    }
+
+    #[test]
+    fn a_different_x25519_secret_opens_nothing() {
+        let secret = [7u8; 32];
+        let other = [9u8; 32];
+        let sealed = seal_to_x25519(&x25519_public(&secret), b"acct 0100 2233 4455").unwrap();
+        assert_eq!(open_x25519(&other, &sealed), Err(SealError::Failed));
+    }
+
+    #[test]
+    fn an_ed25519_recipient_cannot_open_an_x25519_seal_and_the_reverse() {
+        // The two entry points produce the same wire type on purpose, so
+        // it is worth asserting they still address different people: a
+        // grant sealed to a wallet's signing key is not a grant sealed to
+        // the encryption key that wallet published.
+        let wallet = Keypair::generate();
+        let secret = [3u8; 32];
+
+        let to_signing_key = seal(&wallet.public_key(), b"secret").unwrap();
+        assert_eq!(
+            open_x25519(&secret, &to_signing_key),
+            Err(SealError::Failed)
+        );
+
+        let to_encryption_key = seal_to_x25519(&x25519_public(&secret), b"secret").unwrap();
+        assert_eq!(open(&wallet, &to_encryption_key), Err(SealError::Failed));
+    }
+
+    #[test]
+    fn a_tampered_x25519_ciphertext_fails_instead_of_returning_garbage() {
+        let secret = [11u8; 32];
+        let mut sealed = seal_to_x25519(&x25519_public(&secret), b"secret").unwrap();
+        sealed.ciphertext[0] ^= 0x01;
+        assert_eq!(open_x25519(&secret, &sealed), Err(SealError::Failed));
+    }
+
+    #[test]
+    fn rejects_a_small_order_x25519_recipient() {
+        // The X25519 identity element. Unlike Ed25519 there is no invalid
+        // encoding to reject — every 32-byte string is a legal public key
+        // — so the small-order check is the whole of the input validation
+        // and has to catch this.
+        assert_eq!(
+            seal_to_x25519(&[0u8; 32], b"secret"),
             Err(SealError::InvalidRecipientKey)
         );
     }

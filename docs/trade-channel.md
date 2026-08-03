@@ -67,6 +67,66 @@ timestamped and replicated across the network before anyone knew there
 would be a dispute. They read the history rather than a party's retelling
 of it.
 
+## Who a grant is addressed to, and why it is not the wallet key
+
+Sealing to the recipient's Ed25519 wallet key was the obvious thing and
+it was wrong, in a way that made the whole feature unusable rather than
+merely awkward. `openfiat_crypto::open` needs the recipient's secret
+scalar to complete the ECDH. A gateway has one. A node has one. **A
+person with a browser wallet does not** — Solana wallets expose
+`signMessage` and `signTransaction` and no key material at all, by design
+and rightly. So every grant addressed to a real user was bytes that user
+could never open, and two people with ordinary wallets could not exchange
+payment details at all. Entries rendered as *sealed*, which was honest,
+and the feature did not work.
+
+A grant is now sealed to an X25519 **encryption key** the recipient
+published as an OFS-5000 `ClaimType::EncryptionKey` claim. The client
+derives that key from the wallet's own signature over one fixed,
+domain-separated message (`openfiat_crypto::DERIVATION_MESSAGE`) and
+publishes only the public half. `openfiat_crypto::seal_to_x25519` is the
+same construction as `seal` with the Ed25519 → Montgomery conversion
+removed; the `SealedBox` on the wire is unchanged, and `seal` stays for
+the recipients that legitimately hold a signing key — notification
+gateways, above all.
+
+Three consequences, and the third is the cost:
+
+- **A counterparty is addressable without a key exchange.** The claim is
+  signed by the wallet it belongs to and a node refuses one whose
+  `wallet` does not derive from its own `wallet_public_key`, so looking
+  a key up by peer id is safe: nobody can publish an encryption key on
+  somebody else's behalf.
+- **A client recovers.** The key is a function of the wallet and nothing
+  else, so the same wallet on a new device re-derives it and opens every
+  grant ever addressed to it — including the self-grant, which is what
+  that grant was always for. The channel key no longer has to survive in
+  browser storage.
+- **The derivation signature is the private key.** A site that persuades
+  a user to sign that exact message can read every channel that wallet is
+  party to, past and future. It cannot move funds — the message
+  authorises nothing and is not a valid transaction — but there is no
+  forward secrecy here (see below), so the exposure is total and
+  permanent for the channels that already exist. Rotating the claim
+  limits what is exposed *next* and undoes nothing.
+
+Determinism is load-bearing: Ed25519 signing is deterministic by
+construction (RFC 8032 §5.1.6 derives the per-signature nonce by hashing
+the private prefix with the message, with no randomness), so the same
+message yields the same signature and the same key. A wallet that
+randomised its signatures anyway would strand its user. That must never
+fail silently, so a client signs twice at enrolment and compares, and
+afterwards compares each derived public key against the published claim
+— see `openfiat-app`'s `lib/channel-identity.ts`.
+
+**What was not done.** A node-issued identity key was the other
+candidate: it needs no wallet signature and no claim, and it is key
+escrow with better manners. Whoever issues the key can read every channel
+sealed to it, so every node operator would become a reader of every
+trade — the exact outcome the "escrow the key with the network" option
+was rejected for above. That it would have been more convenient is not an
+argument.
+
 ## What each observer can actually see
 
 ### A node operator, holding a full replica
@@ -123,9 +183,10 @@ key id.
 
 ## What is deliberately not provided
 
-**Forward secrecy.** One long-lived key per trade, sealed under
-long-lived Ed25519 identity keys. Compromising a wallet key exposes every
-channel that wallet was ever in. This is not a deferral: the requirement
+**Forward secrecy.** One long-lived key per trade, sealed under a
+long-lived encryption key that is itself a function of the wallet.
+Compromising either — the wallet's secret, or a signature over the
+derivation message — exposes every channel that wallet was ever in. This is not a deferral: the requirement
 is that a third party nobody can name yet must be able to read this
 *later*, which is the precise opposite of forward secrecy. The two cannot
 both be had, and the dispute requirement is the one this protocol exists

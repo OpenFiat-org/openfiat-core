@@ -57,6 +57,17 @@ impl<S: KvStore> IdentityRegistry<S> {
             .collect()
     }
 
+    /// The key to seal a `KeyGrant` to for `wallet`, or `None` if it has
+    /// published none in force. See [`crate::current_encryption_key`] for
+    /// why `None` must be surfaced rather than substituted.
+    pub fn encryption_key(
+        &self,
+        wallet: &PeerId,
+        now: openfiat_types::Timestamp,
+    ) -> Option<openfiat_crypto::EncryptionPublicKey> {
+        crate::current_encryption_key(&self.find_by_wallet(wallet), now)
+    }
+
     pub fn apply_publish(&self, signed: SignedClaimPublish) -> Result<ClaimId, IdentityError> {
         signed.verify()?;
         let id = signed.publish.id.clone();
@@ -387,5 +398,153 @@ mod tests {
                 .apply_publish(SignedClaimPublish::sign(claim, &keypair))
                 .is_ok()
         );
+    }
+
+    fn encryption_claim(
+        keypair: &Keypair,
+        id: &str,
+        value: &str,
+        supersedes: Option<&str>,
+    ) -> crate::events::ClaimPublish {
+        let mut claim = publish_claim(keypair, id, false);
+        claim.claim_type = ClaimType::EncryptionKey;
+        claim.value = value.to_string();
+        claim.supersedes = supersedes.map(ClaimId::new);
+        claim
+    }
+
+    /// The whole point: a wallet publishes the key its counterparties seal
+    /// grants to, and any node can look it up by wallet alone.
+    #[test]
+    fn a_wallet_publishes_the_key_its_counterparties_seal_to() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        let derived = openfiat_crypto::EncryptionKeypair::from_wallet_signature(
+            &keypair.sign(openfiat_crypto::DERIVATION_MESSAGE.as_bytes()),
+        )
+        .unwrap();
+        registry
+            .apply_publish(SignedClaimPublish::sign(
+                encryption_claim(&keypair, "enc-1", &derived.public_key().to_string(), None),
+                &keypair,
+            ))
+            .unwrap();
+
+        let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
+        let published = registry.encryption_key(&wallet, Timestamp::now()).unwrap();
+        assert_eq!(published, derived.public_key());
+
+        let sealed = published.seal(b"channel key").unwrap();
+        assert_eq!(derived.open(&sealed).unwrap(), b"channel key");
+    }
+
+    /// A malformed key is refused at publication, not at use. By the time
+    /// a counterparty tries to seal to it the claim has already been
+    /// gossiped to every node, and a grant sealed to nonsense is one the
+    /// recipient silently cannot open.
+    #[test]
+    fn a_malformed_encryption_key_never_reaches_the_store() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        assert_eq!(
+            registry.apply_publish(SignedClaimPublish::sign(
+                encryption_claim(&keypair, "enc-1", "user@example.com", None),
+                &keypair,
+            )),
+            Err(IdentityError::MalformedClaim)
+        );
+    }
+
+    /// The security check, and the reason this type validates at all: a
+    /// grant sealed to a small-order point has a shared secret anybody can
+    /// compute, so the channel would be "sealed" and world-readable.
+    #[test]
+    fn a_small_order_encryption_key_never_reaches_the_store() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        assert_eq!(
+            registry.apply_publish(SignedClaimPublish::sign(
+                // Base58 of 32 zero bytes: the X25519 identity element,
+                // which every ECDH collapses onto.
+                encryption_claim(&keypair, "enc-1", &"1".repeat(32), None),
+                &keypair,
+            )),
+            Err(IdentityError::MalformedClaim)
+        );
+    }
+
+    #[test]
+    fn a_rotated_key_replaces_the_one_it_supersedes() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        let old = openfiat_crypto::EncryptionKeypair::from_secret([9u8; 32]);
+        let new = openfiat_crypto::EncryptionKeypair::from_secret([11u8; 32]);
+        registry
+            .apply_publish(SignedClaimPublish::sign(
+                encryption_claim(&keypair, "enc-1", &old.public_key().to_string(), None),
+                &keypair,
+            ))
+            .unwrap();
+        registry
+            .apply_publish(SignedClaimPublish::sign(
+                encryption_claim(
+                    &keypair,
+                    "enc-2",
+                    &new.public_key().to_string(),
+                    Some("enc-1"),
+                ),
+                &keypair,
+            ))
+            .unwrap();
+
+        let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
+        assert_eq!(
+            registry.encryption_key(&wallet, Timestamp::now()),
+            Some(new.public_key()),
+            "the superseded key must not still be what counterparties seal to"
+        );
+    }
+
+    #[test]
+    fn a_revoked_key_is_no_longer_what_anyone_seals_to() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        let key = openfiat_crypto::EncryptionKeypair::from_secret([9u8; 32]);
+        let id = registry
+            .apply_publish(SignedClaimPublish::sign(
+                encryption_claim(&keypair, "enc-1", &key.public_key().to_string(), None),
+                &keypair,
+            ))
+            .unwrap();
+        let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
+        registry
+            .apply_revoke(SignedClaimRevoke::sign(
+                ClaimRevoke {
+                    claim_id: id,
+                    wallet: wallet.clone(),
+                    timestamp: Timestamp::now(),
+                },
+                &keypair,
+            ))
+            .unwrap();
+        assert_eq!(registry.encryption_key(&wallet, Timestamp::now()), None);
+    }
+
+    /// A wallet that has never enrolled must read as "no key", never as
+    /// some other key: a caller that substituted the wallet's Ed25519 key
+    /// would produce exactly the unopenable grant this claim type exists
+    /// to eliminate.
+    #[test]
+    fn a_wallet_that_never_enrolled_has_no_key() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        registry
+            .apply_publish(SignedClaimPublish::sign(
+                publish_claim(&keypair, "claim-1", false),
+                &keypair,
+            ))
+            .unwrap();
+        let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
+        assert_eq!(registry.encryption_key(&wallet, Timestamp::now()), None);
     }
 }

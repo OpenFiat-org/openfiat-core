@@ -28,7 +28,7 @@ use crate::key::{ChannelKey, EntryBinding, seal_entry};
 use crate::protocol;
 use crate::record::{EntryKind, TradeChannel};
 use crate::store::TradeChannelRegistry;
-use openfiat_crypto::seal;
+use openfiat_crypto::{EncryptionPublicKey, seal};
 use openfiat_disputes::DisputeRegistry;
 use openfiat_gossip::GossipService;
 use openfiat_serialization::{json, wire};
@@ -77,13 +77,54 @@ impl<S: KvStore + 'static> TradeChannelService<S> {
         recipient_public_key: &PublicKey,
         key: &ChannelKey,
     ) -> Result<(), TradeChannelError> {
+        let sealed_key = seal(recipient_public_key, key.expose())
+            .map_err(|_| TradeChannelError::MalformedEntry)?;
+        self.publish_grant(settlement_id, recipient, key, sealed_key)
+    }
+
+    /// Seal `key` to the X25519 encryption key `recipient` published as an
+    /// OFS-5000 claim, and publish the grant.
+    ///
+    /// This is the path a real user's client takes, and [`Self::grant_key`]
+    /// is not. A grant sealed to a wallet's Ed25519 key can only be opened
+    /// by something holding that key's secret scalar, and a browser wallet
+    /// holds none it will surrender — so between two people with ordinary
+    /// wallets, the older path produces a grant the recipient cannot open
+    /// and a channel that reads as permanently sealed. It stays because a
+    /// gateway or an embedded node *does* hold its signing key and can
+    /// still be addressed that way.
+    ///
+    /// The caller must have read `recipient_encryption_key` from the
+    /// recipient's own claim — `IdentityRegistry::encryption_key` — and
+    /// must treat "they have published none" as a refusal to grant, not as
+    /// a cue to fall back to their wallet key. Falling back is precisely
+    /// how a channel ends up sealed to somebody who cannot read it.
+    pub fn grant_key_to_encryption_key(
+        &mut self,
+        settlement_id: SettlementId,
+        recipient: PeerId,
+        recipient_encryption_key: &EncryptionPublicKey,
+        key: &ChannelKey,
+    ) -> Result<(), TradeChannelError> {
+        let sealed_key = recipient_encryption_key
+            .seal(key.expose())
+            .map_err(|_| TradeChannelError::MalformedEntry)?;
+        self.publish_grant(settlement_id, recipient, key, sealed_key)
+    }
+
+    fn publish_grant(
+        &mut self,
+        settlement_id: SettlementId,
+        recipient: PeerId,
+        key: &ChannelKey,
+        sealed_key: openfiat_crypto::SealedBox,
+    ) -> Result<(), TradeChannelError> {
         let grant = TradeChannelKeyGrant {
             settlement_id,
             granter: self.gossip.node.local_peer_id(),
             recipient,
             key_id: key.id(),
-            sealed_key: seal(recipient_public_key, key.expose())
-                .map_err(|_| TradeChannelError::RecipientNotPermitted)?,
+            sealed_key,
             timestamp: Timestamp::now(),
         };
         let bytes = json::to_bytes(&grant).map_err(|_| TradeChannelError::MalformedEntry)?;
