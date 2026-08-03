@@ -23,7 +23,7 @@ openfiat-gossip = { path = "../gossip", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
-solana-client = "3"
+solana-client = "4"
 solana-transaction = "3"
 solana-hash = "3"
 solana-signature = "3"
