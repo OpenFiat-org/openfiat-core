@@ -175,6 +175,95 @@ fully validated against a local `solana-test-validator` instead (all
 faucet access is available, or fund the deploying wallet manually via
 https://faucet.solana.com.
 
+## Arbitration parameters: the order governance switches them on in
+
+Two arbitrator-eligibility parameters live on `escrow::FeeConfig` and both
+ship at **zero — disabled**: the stake age gate
+(`min_arbitrator_stake_age_secs`) and the opening sortition threshold
+(`arbitrator_sortition_bps`). Zero is the only correct starting value for
+each; nobody on a chain younger than a 30-day requirement can satisfy it, and
+a draw needs a pool to draw from.
+
+Governance turns them on through `update_fee_config`. **The order is
+load-bearing and the reverse order is actively harmful.** This is
+[OFS-4100 Annex A](../../openfiat-specs/Whitepaper/Analysis/OFS-4100%20Annex%20A%20-%20Arbitration%20Parameters%20Reviewed%20Together.md)
+option C, and it is recorded here and beside the constants in
+`escrow/src/constants.rs` because it was previously written down nowhere and
+would otherwise be left to whoever drafts the governance proposal.
+
+### 1. Stake age first
+
+`min_arbitrator_stake_age_secs` → `RECOMMENDED_MIN_ARBITRATOR_STAKE_AGE_SECS`
+(30 days, OFS-4100 §4).
+
+It is the only arbitrator parameter that costs an attacker **time** rather
+than capital, and time is what wallet manufacture cannot buy. The attack it
+defends against is fifteen wallets at the 500 OPEN arbitrator minimum — about
+7,500 OPEN, available in an afternoon — taking seats on a case and going
+silent until it exhausts its rounds and lands on the terminal even split,
+which is a guaranteed half of an escrow the attacker was going to lose
+entirely. Capital does not deter that: the squatter never reveals outside
+consensus, so the stake is locked, never slashed, and comes back.
+
+Enable it **30 days after the first real arbitrators stake, not 30 days after
+genesis.** Every live stake account's age clock starts at its own
+`staking::migrate_stake_account`, so the chain's calendar age says nothing
+about the age the pool can actually present. Switching it on too early locks
+out the entire arbitrator pool, honest arbitrators included.
+
+### 2. Sortition second, and only above a pool of ~17
+
+`arbitrator_sortition_bps` → `RECOMMENDED_ARBITRATOR_SORTITION_BPS`
+(100 bps, OFS-4100 §4.1).
+
+The draw removes an attacker's ability to *choose* which seats to take. It
+does nothing about an attacker *having enough wallets*, and on a small
+network the second is what decides cases.
+
+Worse, enabling it early makes things actively worse rather than merely no
+better. Sortition admits a fraction of the eligible pool per round, so turning
+it on **shrinks** the number of wallets that can take a seat in any given
+round — at exactly the moment the barring rule is consuming the pool from the
+other end. A case is only decidable at all on a pool of
+`MIN_ARBITRATORS + MAX_BARRED_ARBITRATORS` = **17** (3 counted reveals in the
+final round, plus the 14 wallets three rounds can retire for staying silent).
+A tighter draw brings that structural-no-quorum point closer, and the even
+split it produces is the thing the griefing party was buying.
+
+So: enable the draw only once the eligible pool is **comfortably** above 17 —
+comfortably, because 17 assumes every eligible wallet takes its seat and
+reveals on time, which is not how a real round goes.
+
+### Publishing the pool size
+
+`publish_arbitrator_pool_size` (admin-gated) writes governance's count of
+eligible arbitrators to the singleton `ArbitrationPolicy` account. It is what
+the precondition above is checked against, and it also lets a case stop
+instead of opening a round the pool cannot staff — recording
+`TerminalSplitReason::PoolExhausted` rather than bouncing through its round
+budget and splitting with no record of why (Annex A option A).
+
+It is an **attestation, not a measurement**: a Solana program cannot
+enumerate stake accounts, so nothing on chain can count the pool for itself.
+Consequences, and they matter:
+
+- **Zero means unpublished**, and disables the floor entirely. That is the
+  shipped state on every cluster, and the correct state for any deployment
+  that cannot keep the figure current. A stale-*low* figure would end live
+  cases on the split sooner than the round budget would have — same payout,
+  but sooner is what the attacker wanted.
+- The floor never lets a published figure fall below the participation a case
+  has actually seen, so a number the case has already outgrown cannot end it.
+- `execute_dispute_outcome` reads the account as an optional trailing
+  (`remainingAccounts`) entry, so a cluster that has never created it resolves
+  disputes exactly as before.
+
+The exact, self-maintaining source would be a counter on
+`staking::StakingConfig` moved as arbitrator stakes cross the minimum. That
+belongs to `openfiat-staking` and to a `StakingConfig` layout migration; the
+escrow-side field is shaped so it can be replaced by one without the floor
+changing.
+
 ## Linting and license compliance
 
 ```bash

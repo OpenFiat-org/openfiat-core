@@ -4,6 +4,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{constants::*, error::ErrorCode, state::*};
 
+/// Records one arbitrator's revealed vote and the stake weight it carries.
+///
+/// Boxed throughout, for the reason `commit_dispute_vote`'s own doc gives:
+/// an unboxed `Account<'info, T>` puts the whole deserialized account in
+/// `try_accounts`' 4 KB SBF stack frame, and this struct holds the same
+/// three large ones that instruction does.
 #[derive(Accounts)]
 pub struct RevealDisputeVote<'info> {
     pub arbitrator: Signer<'info>,
@@ -13,7 +19,7 @@ pub struct RevealDisputeVote<'info> {
         seeds = [DISPUTE_CASE_SEED, &dispute_case.reservation_id.to_le_bytes()],
         bump = dispute_case.bump,
     )]
-    pub dispute_case: Account<'info, DisputeCase>,
+    pub dispute_case: Box<Account<'info, DisputeCase>>,
 
     /// Read for the Arbitrator-role minimum, so a stake that has fallen
     /// below it — a slash between commit and reveal can do that — weighs
@@ -24,7 +30,7 @@ pub struct RevealDisputeVote<'info> {
         seeds::program = staking::ID,
         bump = staking_config.bump,
     )]
-    pub staking_config: Account<'info, staking::StakingConfig>,
+    pub staking_config: Box<Account<'info, staking::StakingConfig>>,
 
     /// This arbitrator's own Arbitrator-role stake — read directly (no
     /// CPI dispatch) per `staking::StakeAccount::effective_stake`'s own
@@ -36,7 +42,7 @@ pub struct RevealDisputeVote<'info> {
         seeds::program = staking::ID,
         bump = arbitrator_stake.bump,
     )]
-    pub arbitrator_stake: Account<'info, staking::StakeAccount>,
+    pub arbitrator_stake: Box<Account<'info, staking::StakeAccount>>,
 }
 
 pub fn handle_reveal_dispute_vote(

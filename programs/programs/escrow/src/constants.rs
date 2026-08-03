@@ -49,6 +49,20 @@ pub const DISPUTE_CASE_SEED: &[u8] = b"dispute_case";
 #[constant]
 pub const ARBITRATION_POOL_SEED: &[u8] = b"arbitration_pool";
 
+/// PDA seed for the singleton
+/// [`ArbitrationPolicy`](crate::state::ArbitrationPolicy) account: `[SEED]`.
+///
+/// Its own account rather than two more fields on `FeeConfig`, and that is
+/// an operational choice rather than a stylistic one. The live devnet
+/// `FeeConfig` is a 726-byte singleton every instruction in this program
+/// reads; appending to it makes those 726 bytes undeserializable until a
+/// third `migrate_fee_config` lands, so the window between the program
+/// upgrade and that migration is a window in which the whole protocol is
+/// offline. A new account has no such window: absent, it simply means the
+/// pool floor is not in force.
+#[constant]
+pub const ARBITRATION_POLICY_SEED: &[u8] = b"arbitration_policy";
+
 /// PDA seed for a [`StakeRecoveryClaim`](crate::state::StakeRecoveryClaim):
 /// `[SEED, merchant, mint]` (OFS-4100 §9.3).
 ///
@@ -128,6 +142,33 @@ pub const MAX_DISPUTE_ROUNDS: u8 = 3;
 ///
 /// So these two constants document the values governance should *reach*,
 /// and the code ships the values that are true on the day it deploys.
+///
+/// # Enable this one FIRST — the order is load-bearing (OFS-4100 Annex A, option C)
+///
+/// Both gates ship at zero and governance turns them on through
+/// `update_fee_config`. The order it does that in is not a matter of taste,
+/// and until Annex A it was written down nowhere.
+///
+/// **Step 1 — the age gate, this constant.** It is the only arbitrator
+/// parameter that costs an attacker *time* rather than capital, and time is
+/// the thing wallet manufacture cannot buy. The attack Annex A describes is
+/// fifteen wallets at the 500 OPEN arbitrator minimum, funded in one
+/// afternoon, taking seats and going silent until the case exhausts its
+/// rounds and lands on the even split. Capital alone does not stop that —
+/// the squatter never reveals outside consensus, so the stake is locked,
+/// never slashed, and comes back. Age does stop it: every wallet has to
+/// exist and hold stake for the full period before it is worth anything.
+///
+/// Enable it **30 days after the first real arbitrators stake, not 30 days
+/// after genesis.** Every live stake account's clock starts at its own
+/// `migrate_stake_account`, so the calendar age of the chain says nothing
+/// about the age the pool can actually present.
+///
+/// **Step 2 — the sortition threshold**, and only once the eligible pool
+/// comfortably exceeds
+/// [`MIN_DECIDABLE_ARBITRATOR_POOL`](crate::arbitration::MIN_DECIDABLE_ARBITRATOR_POOL).
+/// See [`RECOMMENDED_ARBITRATOR_SORTITION_BPS`] for why that condition, and
+/// why the reverse order actively harms the protocol.
 pub const RECOMMENDED_MIN_ARBITRATOR_STAKE_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 
 /// Capacity of `FeeConfig`'s settlement-mint allowlist.
@@ -213,4 +254,29 @@ pub const DEFAULT_SETTLEMENT_MINTS: [Pubkey; 4] = [
 /// (1/100)**. Ships disabled for the reason above, and additionally
 /// because a draw needs a pool to draw from — at 1/100 with ten registered
 /// arbitrators the expected number of qualifiers per case is 0.1.
+///
+/// # Enable this one SECOND, and not before the pool clears 17 (OFS-4100 Annex A, option C)
+///
+/// The draw defends against an attacker *choosing* which seats to take. It
+/// does nothing about an attacker *having enough wallets*, and it is the
+/// second of those that decides a case on a small network — see
+/// [`RECOMMENDED_MIN_ARBITRATOR_STAKE_AGE_SECS`] for step 1 and the reason
+/// it comes first.
+///
+/// Enabling the draw before the pool is large enough is not merely
+/// premature, it is **actively harmful**. Sortition admits a fraction of the
+/// eligible pool per round, so switching it on shrinks the number of wallets
+/// that can take a seat in any given round. On a pool already close to
+/// [`MIN_DECIDABLE_ARBITRATOR_POOL`](crate::arbitration::MIN_DECIDABLE_ARBITRATOR_POOL)
+/// that brings the structural-no-quorum point *closer*: the draw tightens
+/// the supply of arbitrators at exactly the moment the barring rule is
+/// consuming it, and the case reaches the terminal even split faster than it
+/// would have with no draw at all. That split is what the griefing party was
+/// trying to buy.
+///
+/// So the precondition is a pool comfortably above 17 — comfortably, because
+/// 17 is the floor at which a case is decidable when every eligible wallet
+/// takes its seat and reveals on time, which is not how any real round goes.
+/// [`ArbitrationPolicy`](crate::state::ArbitrationPolicy) is where governance
+/// publishes the figure that condition is checked against.
 pub const RECOMMENDED_ARBITRATOR_SORTITION_BPS: u16 = 100;

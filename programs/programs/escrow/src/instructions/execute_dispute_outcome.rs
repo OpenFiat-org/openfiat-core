@@ -7,7 +7,8 @@ use anchor_spl::token_interface::{
 };
 use openfiat_programs_shared::{DisputeOutcome, VaultState};
 
-use crate::events::{DisputeResolved, EscrowReleased};
+use crate::arbitration::{PoolFloor, TerminalSplitReason};
+use crate::events::{DisputeResolved, DisputeTerminalSplit, EscrowReleased};
 use crate::instructions::shared_logic::{
     release_trade_escrow_funds, split_trade_escrow_evenly, unwind_funded_trade_escrow,
 };
@@ -178,6 +179,53 @@ pub struct ExecuteDisputeOutcome<'info> {
     /// the seed being re-drawn at all.
     #[account(address = SlotHashes::id())]
     pub slot_hashes: UncheckedAccount<'info>,
+    //
+    // `remaining_accounts[0]`, optional: the singleton
+    // [`ArbitrationPolicy`]. Supplies the eligible-arbitrator count the pool
+    // floor is checked against — see [`published_pool_size`] for why it is a
+    // remaining account rather than a field here, and OFS-4100 Annex A for
+    // what it is used for.
+}
+
+/// Reads governance's published eligible-arbitrator count, if the caller
+/// supplied it.
+///
+/// # Why this is a remaining account and not a field above
+///
+/// Two reasons, and the first is the one that decided it. This struct's
+/// generated `try_accounts` already sits close enough to SBF's 4 KB
+/// stack-frame limit that adding an account overflowed it once — see the
+/// note on `mint`. `remaining_accounts` are handed over as a slice and never
+/// enter that expansion, so reading one costs the frame nothing.
+///
+/// The second is that it makes the account genuinely optional, and optional
+/// is the correct shape. `execute_dispute_outcome` is permissionless and
+/// must stay callable on a cluster where `publish_arbitrator_pool_size` has
+/// never run — which is every cluster today. A required field would make
+/// every dispute unresolvable until an operator remembered to create the
+/// policy account.
+///
+/// # What that costs, stated plainly
+///
+/// A caller can withhold the account and suppress the floor. That is a real
+/// limitation and it is bounded: the floor never changes a payout, only how
+/// soon the terminal split arrives and whether the reason is recorded. A
+/// party who withholds it buys extra rounds of a frozen escrow, which is
+/// precisely the status quo this change improves on and not a regression
+/// from it. Anyone — the counterparty, an indexer, a keeper — can call with
+/// the account and get the recorded early exit.
+///
+/// Supplying something *else* is not possible: the address must be the
+/// canonical PDA, and Anchor's own checks reject an account this program
+/// does not own or that does not carry `ArbitrationPolicy`'s discriminator.
+fn published_pool_size<'info>(remaining: &'info [AccountInfo<'info>]) -> Result<u32> {
+    let Some(info) = remaining.first() else {
+        return Ok(0);
+    };
+    let (expected, _) = Pubkey::find_program_address(&[ARBITRATION_POLICY_SEED], &crate::ID);
+    require_keys_eq!(info.key(), expected, ErrorCode::InvalidArbitrationPolicy);
+    let policy: Account<ArbitrationPolicy> = Account::try_from(info)?;
+    Ok(policy.eligible_arbitrators)
 }
 
 /// Where an arbitration deposit goes once a case ends.
@@ -248,8 +296,16 @@ fn settle_deposit(
     }
 }
 
-/// Sums each revealed vote's weight per outcome and returns the winner,
-/// or `None` when the round reached no decision.
+/// Sums each revealed vote's weight per outcome and returns the winner —
+/// or `None` when the round reached no decision — together with how many
+/// reveals were actually counted.
+///
+/// The count comes back rather than staying private because an undecided
+/// round has to say *why* it was undecided, and "fewer than
+/// [`MIN_ARBITRATORS`] reveals were counted" and "the weights tied" are
+/// different failures with different causes. Recomputing it at the call site
+/// would mean two places encoding the zero-weight rule, which is the one part
+/// of this tally an attacker has already tried to exploit.
 ///
 /// Zero-weight reveals are skipped outright rather than counted as votes
 /// worth nothing. Counting them was load-bearing in the seat-squatting
@@ -262,7 +318,7 @@ fn settle_deposit(
 /// to resolve to `InvalidDispute`, which pays the seller — meaning any
 /// party able to manufacture indecision was paid for it. Deciding nothing
 /// must never be worth more than losing.
-fn tally(dispute_case: &DisputeCase) -> Option<DisputeOutcome> {
+fn tally(dispute_case: &DisputeCase) -> (Option<DisputeOutcome>, usize) {
     let mut totals = [0u128; 4];
     let mut counted = 0usize;
     for (outcome, weight) in dispute_case
@@ -288,7 +344,7 @@ fn tally(dispute_case: &DisputeCase) -> Option<DisputeOutcome> {
     // totals above actually include, so zero-weight reveals cannot pad the
     // way to a quorum.
     if counted < MIN_ARBITRATORS {
-        return None;
+        return (None, counted);
     }
 
     let max = *totals.iter().max().unwrap();
@@ -299,14 +355,15 @@ fn tally(dispute_case: &DisputeCase) -> Option<DisputeOutcome> {
         .map(|(i, _)| i)
         .collect();
     if winners.len() != 1 {
-        return None;
+        return (None, counted);
     }
-    Some(match winners[0] {
+    let outcome = match winners[0] {
         0 => DisputeOutcome::BuyerWins,
         1 => DisputeOutcome::MerchantWins,
         2 => DisputeOutcome::MutualSettlement,
         _ => DisputeOutcome::InvalidDispute,
-    })
+    };
+    (Some(outcome), counted)
 }
 
 pub fn handle_execute_dispute_outcome(mut ctx: Context<ExecuteDisputeOutcome>) -> Result<()> {
@@ -316,8 +373,9 @@ pub fn handle_execute_dispute_outcome(mut ctx: Context<ExecuteDisputeOutcome>) -
         ErrorCode::RevealWindowStillOpen
     );
 
-    let Some(outcome) = tally(&ctx.accounts.dispute_case) else {
-        return handle_undecided_round(ctx, now);
+    let (outcome, counted_reveals) = tally(&ctx.accounts.dispute_case);
+    let Some(outcome) = outcome else {
+        return handle_undecided_round(ctx, now, counted_reveals);
     };
 
     // Total weight behind the winning outcome — the denominator each
@@ -432,7 +490,30 @@ pub fn handle_execute_dispute_outcome(mut ctx: Context<ExecuteDisputeOutcome>) -
 /// neither side profits from driving a case into the ground — both lose
 /// half. See [`MAX_DISPUTE_ROUNDS`] and `split_trade_escrow_evenly`; both
 /// the bound and the terminal policy are `[PROPOSED — NEEDS SIGN-OFF]`.
-fn handle_undecided_round(mut ctx: Context<ExecuteDisputeOutcome>, now: i64) -> Result<()> {
+///
+/// # A round the pool cannot staff is not re-opened (OFS-4100 Annex A)
+///
+/// Barring and the round budget compose into a floor on the arbitrator pool
+/// that neither of them states: a case is only decidable if the eligible pool
+/// holds `MIN_ARBITRATORS + MAX_BARRED_ARBITRATORS` wallets. Below that the
+/// final round cannot reach quorum however honestly everyone behaves, so the
+/// case lands on the terminal even split — which is exactly what the party
+/// facing a losing verdict was trying to buy. Bouncing twice more first
+/// changes nothing about that except how long the escrow stays frozen and how
+/// hard the condition is to see from outside.
+///
+/// So when the pool provably cannot staff another round, this stops there and
+/// says so. The split is identical; what is new is that it is recorded as
+/// [`TerminalSplitReason::PoolExhausted`] rather than being indistinguishable
+/// from arbitrators who genuinely disagreed. Every terminal split now carries
+/// a reason, including on deployments that publish no pool size at all — see
+/// [`PoolFloor::exhausted_rounds_reason`], which reads only the case's own
+/// bookkeeping.
+fn handle_undecided_round(
+    mut ctx: Context<ExecuteDisputeOutcome>,
+    now: i64,
+    counted_reveals: usize,
+) -> Result<()> {
     let next_round = ctx
         .accounts
         .dispute_case
@@ -440,37 +521,119 @@ fn handle_undecided_round(mut ctx: Context<ExecuteDisputeOutcome>, now: i64) -> 
         .checked_add(1)
         .ok_or(ErrorCode::Overflow)?;
 
-    if next_round >= MAX_DISPUTE_ROUNDS {
-        // Nobody was found at fault, so the deposit goes back to the
-        // merchant rather than being forfeited — see `settle_deposit`.
-        let (reward_pool, deposit_refunded) = settle_deposit(&mut ctx, None)?;
-        split_trade_escrow_evenly(
-            &mut ctx.accounts.trade_escrow,
-            &ctx.accounts.trade_escrow_token_vault,
-            &ctx.accounts.buyer_token_account,
-            &mut ctx.accounts.liquidity_vault,
-            &ctx.accounts.liquidity_token_vault,
-            &ctx.accounts.mint,
-            &ctx.accounts.token_program,
-        )?;
-        let case = &mut ctx.accounts.dispute_case;
-        case.resolved = true;
-        case.outcome = None;
+    let seats_this_round = ctx.accounts.dispute_case.arbitrators.len();
+    // Retire this round's silent seats before anything is decided. What they
+    // cost the case is the input to the pool floor below, not a consequence
+    // of it — and the arrays that record who was silent are cleared the
+    // moment a new round opens.
+    bar_silent_seats(&mut ctx.accounts.dispute_case);
 
-        emit!(DisputeResolved {
-            reservation_id: case.reservation_id,
-            buyer: ctx.accounts.trade_escrow.buyer,
-            seller: ctx.accounts.trade_escrow.seller,
-            outcome: None,
-            round: case.round,
-            winning_weight: 0,
-            arbitrator_count: case.arbitrators.len() as u8,
-            reward_pool,
-            deposit_refunded,
-            timestamp: now,
-        });
-        return Ok(());
+    let floor = PoolFloor {
+        barred: ctx.accounts.dispute_case.barred.len() as u32,
+        seats_taken_total: ctx.accounts.dispute_case.seats_taken_total,
+        seats_this_round: seats_this_round as u32,
+        counted_reveals: counted_reveals as u32,
+        published_pool: published_pool_size(ctx.remaining_accounts)?,
+    };
+
+    let reason = if next_round >= MAX_DISPUTE_ROUNDS {
+        floor.exhausted_rounds_reason()
+    } else if floor.next_round_is_staffable() {
+        return reopen_round(ctx, now, next_round);
+    } else {
+        TerminalSplitReason::PoolExhausted
+    };
+
+    // Nobody was found at fault, so the deposit goes back to the merchant
+    // rather than being forfeited — see `settle_deposit`.
+    let (reward_pool, deposit_refunded) = settle_deposit(&mut ctx, None)?;
+    split_trade_escrow_evenly(
+        &mut ctx.accounts.trade_escrow,
+        &ctx.accounts.trade_escrow_token_vault,
+        &ctx.accounts.buyer_token_account,
+        &mut ctx.accounts.liquidity_vault,
+        &ctx.accounts.liquidity_token_vault,
+        &ctx.accounts.mint,
+        &ctx.accounts.token_program,
+    )?;
+    let case = &mut ctx.accounts.dispute_case;
+    case.resolved = true;
+    case.outcome = None;
+    case.terminal_reason = Some(reason);
+
+    emit!(DisputeResolved {
+        reservation_id: case.reservation_id,
+        buyer: ctx.accounts.trade_escrow.buyer,
+        seller: ctx.accounts.trade_escrow.seller,
+        outcome: None,
+        round: case.round,
+        winning_weight: 0,
+        arbitrator_count: case.arbitrators.len() as u8,
+        reward_pool,
+        deposit_refunded,
+        timestamp: now,
+    });
+    // Alongside, never instead of, the event above: that one says what
+    // happened to the money, this one says why arbitration produced no
+    // verdict. See [`DisputeTerminalSplit`].
+    emit!(DisputeTerminalSplit {
+        reservation_id: case.reservation_id,
+        reason,
+        round: case.round,
+        seats_this_round: seats_this_round as u8,
+        counted_reveals: counted_reveals as u8,
+        barred: floor.barred as u8,
+        seats_taken_total: floor.seats_taken_total,
+        required_pool: floor.required_for_next_round(),
+        published_pool: floor.published_pool,
+        timestamp: now,
+    });
+    Ok(())
+}
+
+/// Retires every seat that committed this round and never revealed.
+///
+/// Whoever took a seat and stayed silent loses it for the rest of the case.
+/// Run before the per-round arrays are cleared, because after that there is
+/// no record of who was silent — and a fresh draw alone does not stop a stake
+/// large enough to qualify from qualifying again.
+///
+/// # The cap has to be counted as it fills
+///
+/// `barred` is a `#[max_len(MAX_BARRED_ARBITRATORS)]` vector, so pushing past
+/// that capacity does not truncate — it makes the account fail to serialize,
+/// which would leave the escrow frozen with no instruction able to move it.
+/// The guard therefore counts what this round is *about* to add as well as
+/// what is already stored. Reading only the stored length, as it did, meant a
+/// round starting at 13 barred could push 7 more and reach 20: unreachable
+/// while `MAX_DISPUTE_ROUNDS` is 3 and only two rounds ever bar anyone, but
+/// live the moment either of those facts changes — which is exactly what
+/// happened when the terminal round started barring too.
+fn bar_silent_seats(dispute_case: &mut DisputeCase) {
+    let mut barred_this_round: Vec<Pubkey> = Vec::new();
+    for (index, arbitrator) in dispute_case.arbitrators.iter().enumerate() {
+        if dispute_case.barred.len() + barred_this_round.len() >= MAX_BARRED_ARBITRATORS {
+            break;
+        }
+        let revealed = dispute_case
+            .revealed_outcomes
+            .get(index)
+            .is_some_and(|outcome| outcome.is_some());
+        if !revealed && !dispute_case.barred.contains(arbitrator) {
+            barred_this_round.push(*arbitrator);
+        }
     }
+    dispute_case.barred.extend(barred_this_round);
+}
+
+/// Re-opens the case for another round: fresh deadlines, a fresh draw, and an
+/// empty bench.
+fn reopen_round(ctx: Context<ExecuteDisputeOutcome>, now: i64, next_round: u8) -> Result<()> {
+    let seed = crate::instructions::shared_logic::latch_case_seed(
+        &ctx.accounts.slot_hashes.to_account_info(),
+        ctx.accounts.dispute_case.reservation_id,
+        &ctx.accounts.dispute_case.trade_escrow,
+    )?;
 
     let dispute_case = &mut ctx.accounts.dispute_case;
     let commit_deadline = now
@@ -489,29 +652,7 @@ fn handle_undecided_round(mut ctx: Context<ExecuteDisputeOutcome>, now: i64) -> 
     // attacker who won the draw once would hold those seats for every
     // remaining round — and forcing a re-round is something they can do
     // deliberately by committing and never revealing.
-    dispute_case.case_seed = crate::instructions::shared_logic::latch_case_seed(
-        &ctx.accounts.slot_hashes.to_account_info(),
-        dispute_case.reservation_id,
-        &dispute_case.trade_escrow,
-    )?;
-    let mut barred_this_round: Vec<Pubkey> = Vec::new();
-    // Whoever took a seat and never revealed loses it for the rest of the
-    // case. Collected before the arrays are cleared, because after that
-    // there is no record of who was silent — and a fresh draw alone does
-    // not stop a stake large enough to qualify from qualifying again.
-    for (index, arbitrator) in dispute_case.arbitrators.iter().enumerate() {
-        let revealed = dispute_case
-            .revealed_outcomes
-            .get(index)
-            .is_some_and(|outcome| outcome.is_some());
-        if !revealed
-            && !dispute_case.barred.contains(arbitrator)
-            && dispute_case.barred.len() < MAX_BARRED_ARBITRATORS
-        {
-            barred_this_round.push(*arbitrator);
-        }
-    }
-    dispute_case.barred.extend(barred_this_round);
+    dispute_case.case_seed = seed;
 
     dispute_case.arbitrators = Vec::new();
     dispute_case.commitments = Vec::new();

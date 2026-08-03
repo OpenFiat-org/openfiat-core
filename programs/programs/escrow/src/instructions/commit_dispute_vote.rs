@@ -51,6 +51,30 @@ use crate::{constants::*, error::ErrorCode, state::*};
 /// Both 2 and 3 are governance parameters that ship disabled, because
 /// neither can be satisfied by anybody on a chain younger than the
 /// requirement it imposes; see `RECOMMENDED_MIN_ARBITRATOR_STAKE_AGE_SECS`.
+///
+/// # Every account here is boxed
+///
+/// Not tidiness. `Account<'info, T>` holds the deserialized `T` inline in
+/// `try_accounts`' stack frame, and SBF gives that frame 4 KB total.
+/// `FeeConfig` alone carries a `[Pubkey; 16]` — 512 bytes — and `DisputeCase`
+/// carries six vectors' worth of headers; `StakingConfig` carries two
+/// per-role arrays.
+///
+/// Unboxed, this struct did not overflow: the build reported nothing before
+/// the boxes went in. What is *not* known is by how much, because the
+/// toolchain says nothing at all until the frame is already over — there is
+/// no margin readout, only silence and then a hard error. So "it fits today"
+/// is the whole of the evidence, and it was obtained on a struct that this
+/// change was about to grow (`DisputeCase` gained two fields). Boxing costs a
+/// heap allocation and removes the question.
+///
+/// The question is worth removing because the failure is not a build failure.
+/// `cargo build-sbf` reports an overflow as a non-fatal `Error:` line and
+/// still emits a working-looking binary, which then dies at runtime with an
+/// access violation attributed to whatever code happened to run — not to the
+/// field that pushed the frame over. `execute_dispute_outcome` carries the
+/// same note for the same reason, and `staking::recover_stake_shortfall` was
+/// caught 8 bytes over. Keep new accounts here boxed, and keep these boxed.
 #[derive(Accounts)]
 pub struct CommitDisputeVote<'info> {
     pub arbitrator: Signer<'info>,
@@ -60,7 +84,7 @@ pub struct CommitDisputeVote<'info> {
         seeds = [DISPUTE_CASE_SEED, &dispute_case.reservation_id.to_le_bytes()],
         bump = dispute_case.bump,
     )]
-    pub dispute_case: Account<'info, DisputeCase>,
+    pub dispute_case: Box<Account<'info, DisputeCase>>,
 
     /// Read for the current Arbitrator-role minimum, so the gate follows a
     /// governance parameter change with no redeploy here.
@@ -69,7 +93,7 @@ pub struct CommitDisputeVote<'info> {
         seeds::program = staking::ID,
         bump = staking_config.bump,
     )]
-    pub staking_config: Account<'info, staking::StakingConfig>,
+    pub staking_config: Box<Account<'info, staking::StakingConfig>>,
 
     /// This arbitrator's own Arbitrator-role stake. Same constraint style
     /// as `reveal_dispute_vote`: the seeds pin both owner and role, so
@@ -80,13 +104,13 @@ pub struct CommitDisputeVote<'info> {
         seeds::program = staking::ID,
         bump = arbitrator_stake.bump,
     )]
-    pub arbitrator_stake: Account<'info, staking::StakeAccount>,
+    pub arbitrator_stake: Box<Account<'info, staking::StakeAccount>>,
 
     /// Holds both arbitrator-eligibility parameters — read here rather than
     /// baked in as constants so governance can turn the age gate and the
     /// draw on without a redeploy of this program.
     #[account(seeds = [FEE_CONFIG_SEED], bump = fee_config.bump)]
-    pub fee_config: Account<'info, FeeConfig>,
+    pub fee_config: Box<Account<'info, FeeConfig>>,
 }
 
 pub fn handle_commit_dispute_vote(
@@ -166,5 +190,14 @@ pub fn handle_commit_dispute_vote(
     dispute_case.commitments.push(commitment);
     dispute_case.revealed_outcomes.push(None);
     dispute_case.weights.push(0);
+    // Survives the per-round arrays being cleared, which is the whole point:
+    // it is the only record that a wallet ever served on this case once the
+    // round it served in is gone. The pool floor uses it to refuse to believe
+    // a published pool smaller than the participation this case has already
+    // seen — see `DisputeCase::seats_taken_total`.
+    dispute_case.seats_taken_total = dispute_case
+        .seats_taken_total
+        .checked_add(1)
+        .ok_or(ErrorCode::Overflow)?;
     Ok(())
 }

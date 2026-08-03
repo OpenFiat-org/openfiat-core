@@ -67,6 +67,69 @@ pub struct DisputeResolved {
     pub timestamp: i64,
 }
 
+/// Why a dispute case ended on the terminal even split. Emitted by
+/// `execute_dispute_outcome` alongside — never instead of —
+/// [`DisputeResolved`] (OFS-4100 Annex A, option A).
+///
+/// A separate event rather than a field on `DisputeResolved` for the same
+/// reason [`StakeRecoveryClaimRecorded`] is separate from
+/// [`ArbitrationDepositTaken`]: the two answer different questions.
+/// `DisputeResolved` says what happened to the money and fires on every
+/// resolution; this fires only on the split and says why arbitration did not
+/// produce a verdict. An indexer that wants to alert on a failing arbitrator
+/// pool subscribes to this one and nothing else.
+///
+/// Everything below is carried explicitly rather than left to be joined
+/// against the account, because the whole point is that an operator can act
+/// on the log alone. `reason` distinguishes the failure; the counts are the
+/// evidence behind it.
+#[event]
+pub struct DisputeTerminalSplit {
+    pub reservation_id: u64,
+    pub reason: crate::arbitration::TerminalSplitReason,
+    /// The round the case stopped on, from 0. Below
+    /// `MAX_DISPUTE_ROUNDS - 1` only for
+    /// [`TerminalSplitReason::PoolExhausted`](crate::arbitration::TerminalSplitReason::PoolExhausted),
+    /// which is the one path that stops short of the round budget.
+    pub round: u8,
+    /// Seats filled in that round.
+    pub seats_this_round: u8,
+    /// Reveals the tally counted in that round — zero-weight reveals
+    /// excluded, exactly as `MIN_ARBITRATORS` is checked.
+    pub counted_reveals: u8,
+    /// Wallets barred from this case by the time it ended.
+    pub barred: u8,
+    /// How many times a seat was taken across every round of this case.
+    pub seats_taken_total: u32,
+    /// How large the eligible pool had to be for another round to be worth
+    /// opening: `MIN_ARBITRATORS + barred`.
+    pub required_pool: u32,
+    /// Governance's published eligible-arbitrator count at that moment.
+    /// **Zero means unpublished**, which disables the pool floor — so a
+    /// `RoundUnstaffed` alongside a zero here is a network that should
+    /// consider publishing one, not a network whose pool is empty.
+    pub published_pool: u32,
+    pub timestamp: i64,
+}
+
+/// Governance published a new eligible-arbitrator count. Emitted by
+/// `publish_arbitrator_pool_size`.
+///
+/// Worth an event of its own because the figure it carries can end live
+/// dispute cases early, and a parameter with that reach should leave a
+/// record of who moved it and when rather than only its latest value.
+#[event]
+pub struct ArbitratorPoolSizePublished {
+    pub admin: Pubkey,
+    pub previous: u32,
+    pub eligible_arbitrators: u32,
+    /// The floor from OFS-4100 Annex A, carried so a reader can see at a
+    /// glance whether the published pool clears it without knowing the
+    /// protocol's constants.
+    pub min_decidable_pool: u32,
+    pub timestamp: i64,
+}
+
 /// An arbitration deposit taken from the merchant's OPEN liquidity vault
 /// when a case opened. Emitted by `open_dispute_case`.
 ///

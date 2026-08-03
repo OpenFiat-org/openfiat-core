@@ -1,3 +1,4 @@
+pub mod arbitration;
 pub mod constants;
 pub mod error;
 pub mod events;
@@ -6,6 +7,7 @@ pub mod state;
 
 use anchor_lang::prelude::*;
 
+pub use arbitration::*;
 pub use constants::*;
 pub use events::*;
 pub use instructions::*;
@@ -38,6 +40,21 @@ pub mod escrow {
     /// see `initialize_arbitration_pool`.
     pub fn initialize_arbitration_pool(ctx: Context<InitializeArbitrationPool>) -> Result<()> {
         crate::instructions::initialize_arbitration_pool::handle_initialize_arbitration_pool(ctx)
+    }
+
+    /// Publishes how many wallets are eligible to arbitrate, so a case can
+    /// refuse to open a round the pool cannot staff (OFS-4100 Annex A).
+    /// Admin-gated, creates the singleton on first use, and zero means
+    /// "unpublished" — which leaves the pool floor off. See
+    /// `publish_arbitrator_pool_size`.
+    pub fn publish_arbitrator_pool_size(
+        ctx: Context<PublishArbitratorPoolSize>,
+        eligible_arbitrators: u32,
+    ) -> Result<()> {
+        crate::instructions::publish_arbitrator_pool_size::handle_publish_arbitrator_pool_size(
+            ctx,
+            eligible_arbitrators,
+        )
     }
 
     /// Charges a merchant the advertisement-listing fee against their OPEN

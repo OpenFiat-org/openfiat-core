@@ -310,6 +310,13 @@ pub fn handle_open_dispute_case(
     dispute_case.weights = Vec::new();
     dispute_case.reward_claimed = Vec::new();
     dispute_case.barred = Vec::new();
+    dispute_case.seats_taken_total = 0;
+    // Set only when the case ends on the terminal even split. Written here
+    // for the same reason every other field is, rather than left to the
+    // allocator's zero-fill: an `init` that relies on the runtime happening
+    // to zero a field makes its starting value an allocator detail instead of
+    // a decision.
+    dispute_case.terminal_reason = None;
     dispute_case.bump = ctx.bumps.dispute_case;
 
     ctx.accounts.trade_escrow.state = VaultState::Frozen;

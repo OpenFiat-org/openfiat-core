@@ -99,4 +99,9 @@ pub enum ErrorCode {
     NoDepositShortfall,
     #[msg("This vault has no available balance to put toward the deposit shortfall")]
     NoLiquidityForShortfall,
+    /// Raised only when a caller supplies *something* in the arbitration
+    /// policy's remaining-account slot. Supplying nothing is legal and simply
+    /// leaves the pool floor unenforced — see `published_pool_size`.
+    #[msg("The supplied arbitration policy account is not the canonical singleton")]
+    InvalidArbitrationPolicy,
 }

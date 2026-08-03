@@ -34,6 +34,11 @@ pub const MIN_ARBITRATORS: usize = 3;
 ///
 /// Every round but the last can bar a full bench — the last one ends the
 /// case either way, so nothing it bars would ever be consulted.
+///
+/// Composed with [`MIN_ARBITRATORS`] this is also what puts a floor under
+/// the arbitrator pool; see
+/// [`MIN_DECIDABLE_ARBITRATOR_POOL`](crate::arbitration::MIN_DECIDABLE_ARBITRATOR_POOL)
+/// and OFS-4100 Annex A.
 pub const MAX_BARRED_ARBITRATORS: usize =
     MAX_ARBITRATORS * (crate::constants::MAX_DISPUTE_ROUNDS as usize - 1);
 
@@ -206,6 +211,85 @@ impl FeeConfig {
     }
 }
 
+/// Governance's published count of wallets eligible to arbitrate — the one
+/// input to the pool floor that the program cannot work out for itself
+/// (OFS-4100 Annex A, option A).
+///
+/// # Why this is a published number and not a derived one
+///
+/// The floor Annex A asks for is `eligible pool >= MIN_ARBITRATORS + barred
+/// so far`. The right-hand side is exact: barring is this program's own
+/// bookkeeping, on this program's own account. The left-hand side is the
+/// problem, and it is worth being plain about why.
+///
+/// A Solana program cannot enumerate accounts. There is no way for
+/// `execute_dispute_outcome` to count how many wallets hold a qualifying
+/// Arbitrator stake, because counting means iterating `openfiat-staking`'s
+/// `StakeAccount`s and nothing on chain can do that. Three sources were
+/// considered:
+///
+/// 1. **Derive it from the case's own rounds.** The wallets that have taken
+///    a seat here are a *lower* bound on the pool, and a lower bound cannot
+///    prove a pool is too small — it is the wrong side of the inequality.
+///    Used that way it would end decidable cases, which is a worse bug than
+///    the one being fixed. It is still used, but only to *raise* the
+///    estimate; see
+///    [`PoolFloor::evidenced_pool`](crate::arbitration::PoolFloor::evidenced_pool).
+/// 2. **A counter maintained by `openfiat-staking`**, incremented and
+///    decremented as arbitrator stakes cross the minimum. This is the
+///    correct long-run source: it is exact, it cannot go stale, and no
+///    human has to remember to update it. It is not what ships here because
+///    it means changing `StakingConfig`'s layout on a live singleton and
+///    touching every stake-lifecycle path in another program — a change
+///    that belongs to staking, not to this task. The field below is shaped
+///    so that counter can replace it later without the floor changing.
+/// 3. **A governance attestation** — this account. Weaker than (2) in
+///    exactly one way, and the doc for
+///    [`Self::eligible_arbitrators`] says which.
+///
+/// # It ships absent, and absent means the floor is off
+///
+/// No `initialize_arbitration_policy` has run on any cluster, so on every
+/// existing deployment this account does not exist,
+/// `execute_dispute_outcome` reads no pool size, and the case bounces to its
+/// round budget exactly as it does today. That is the intended default. The
+/// floor is an operator tool that governance opts into by publishing a
+/// number it stands behind, not a behaviour that appears at upgrade time.
+#[account]
+#[derive(InitSpace)]
+pub struct ArbitrationPolicy {
+    /// Pinned to [`FeeConfig::admin`] at creation and checked on every
+    /// write, so the pool figure moves through the same authority as every
+    /// other arbitration parameter rather than acquiring a second one.
+    pub admin: Pubkey,
+    /// How many wallets governance asserts currently hold a qualifying
+    /// Arbitrator-role stake.
+    ///
+    /// **Zero means unpublished**, and disables the pool floor outright — it
+    /// is not "a pool of zero". A pool genuinely at zero is indistinguishable
+    /// from an unmaintained account, and the two must not lead to the same
+    /// action when one of them ends live cases early.
+    ///
+    /// The honest weakness, stated once: this is an assertion, not a
+    /// measurement. A value left stale and *high* makes the floor inert,
+    /// which is the failure the design is biased toward. A value left stale
+    /// and *low* would end a case on the terminal split earlier than the
+    /// round budget would have — same payout, same parties, but sooner, and
+    /// sooner is what a griefing party wants. That is why
+    /// [`PoolFloor::evidenced_pool`](crate::arbitration::PoolFloor::evidenced_pool)
+    /// refuses to let this number fall below what the case has actually
+    /// seen, and why a deployment that cannot keep it current should leave
+    /// it at zero.
+    pub eligible_arbitrators: u32,
+    /// When [`Self::eligible_arbitrators`] was last written. Carried so an
+    /// indexer, an operator or a governance proposal can see the figure's
+    /// age — the program does not expire it, because a staleness bound is
+    /// itself a parameter nobody has signed off, and silently discarding a
+    /// published figure would be a second way to surprise an operator.
+    pub updated_at: i64,
+    pub bump: u8,
+}
+
 /// On-chain bridge for a trade escrow's dispute (Phase 4b, plan decision
 /// #2 — not itself named in OFS-4200 §4). Arbitrator wallets relay the
 /// same signed `VoteCommit`/`VoteReveal` events `crates/disputes` already
@@ -367,6 +451,37 @@ pub struct DisputeCase {
     /// settlement if `execute_dispute_outcome` is somehow re-entered.
     pub deposit_settled: bool,
     pub bump: u8,
+    /// How many times a seat has been taken across every round of this case,
+    /// counting a wallet once per round it serves.
+    ///
+    /// Deliberately not deduplicated across rounds. It exists to put a floor
+    /// under the pool estimate in
+    /// [`PoolFloor::evidenced_pool`](crate::arbitration::PoolFloor::evidenced_pool),
+    /// and there it is only ever used to *raise* the estimate — so counting
+    /// an honest repeat server twice makes the pool floor harder to trip,
+    /// never easier. Deduplicating would need the full history of every
+    /// round's bench, which the per-round arrays deliberately discard.
+    ///
+    /// Placed in declaration order rather than appended, on the same grounds
+    /// [`Self::case_seed`] and [`Self::deposit_shortfall`] were, and
+    /// re-verified the same way: a `getProgramAccounts` sweep of
+    /// `HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP` on devnet immediately
+    /// before this field was added returned one `FeeConfig`, two
+    /// `LiquidityVault`s and three `TradeEscrowVault`s, and **no** account
+    /// carrying `DisputeCase`'s discriminator. One live case would have made
+    /// this a migration instead.
+    pub seats_taken_total: u32,
+    /// Why this case ended on the terminal even split, or `None` while it is
+    /// unresolved or if it was decided on a verdict (OFS-4100 Annex A).
+    ///
+    /// The split pays out identically whichever reason applies. It is
+    /// recorded because from outside they are otherwise the same event — a
+    /// case that quietly bounced to its round budget — and an operator
+    /// cannot act on "the arbitrators disagreed" and "there were not enough
+    /// arbitrators left to ask" without being able to tell them apart. Also
+    /// emitted as [`DisputeTerminalSplit`](crate::events::DisputeTerminalSplit)
+    /// so an indexer never has to fetch the account to learn it.
+    pub terminal_reason: Option<crate::arbitration::TerminalSplitReason>,
 }
 
 /// One merchant's standing debt for arbitration deposits their OPEN
