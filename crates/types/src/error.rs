@@ -22,6 +22,17 @@ macro_rules! error_registry {
         }
 
         impl ErrorCode {
+            /// Every code in the registry, in declaration order.
+            ///
+            /// Exists so the registry can be checked *as a whole* rather
+            /// than one spot-checked entry at a time — that a number is
+            /// never reused, that a name is never reused, and that
+            /// `retryable` is only ever true where somebody said so out
+            /// loud. See this module's tests. A hand-written list would
+            /// drift from the macro the first time a code was added
+            /// without it; this one cannot.
+            pub const ALL: &'static [ErrorCode] = &[ $( $( Self::$variant, )+ )+ ];
+
             /// The numeric code (e.g. `4004` for `InsufficientAvailableLiquidity`).
             pub const fn code(self) -> u16 {
                 match self {
@@ -92,6 +103,15 @@ error_registry! {
         InvalidAdvertisement = 3003, "INVALID_ADVERTISEMENT", false;
         DuplicateAdvertisement = 3004, "DUPLICATE_ADVERTISEMENT", false;
         UnsupportedPaymentMethod = 3005, "UNSUPPORTED_PAYMENT_METHOD", false;
+        // One merchant has reached `openfiat_taxonomy::store::
+        // MAX_METHODS_PER_MERCHANT` and this definition displaces none of
+        // them. Its own code rather than `RateLimitExceeded`, which is
+        // where it used to land: a rate limit is a speed, and every client
+        // that handles one handles it by waiting and trying again. This
+        // cap is a count. It does not decay, nothing frees a slot but the
+        // merchant retiring a definition, and a caller told to back off
+        // will back off forever.
+        PaymentMethodLimitReached = 3006, "PAYMENT_METHOD_LIMIT_REACHED", false;
     }
     range "Reservation & Marketplace (4000-4999)" {
         ReservationNotFound = 4000, "RESERVATION_NOT_FOUND", false;
@@ -120,6 +140,21 @@ error_registry! {
         SettlementAlreadyCompleted = 5005, "SETTLEMENT_ALREADY_COMPLETED", false;
         SettlementAlreadyCancelled = 5006, "SETTLEMENT_ALREADY_CANCELLED", false;
         FlaggedDepositAddress = 5007, "FLAGGED_DEPOSIT_ADDRESS", false;
+        // The pair the reservation range has had since it was written
+        // (`ReservationNotFound` 4000 / `InvalidReservationState` 4006),
+        // arriving here late and for a reason: both of these used to be
+        // `SettlementFailed`, which is retryable.
+        //
+        // That was survivable while the only settlement mutations were
+        // `sendPaymentSubmitted` and `sendSettlementApproved`. It stopped
+        // being survivable when cancellation, rejection and payment
+        // reversal became reachable, because those are the calls a client
+        // makes speculatively — "can I still cancel this?" — and the
+        // answer "no, it is too late" was arriving as a retryable code
+        // with the same name and number as "no such settlement". A client
+        // could neither tell the two apart nor learn to stop asking.
+        SettlementNotFound = 5008, "SETTLEMENT_NOT_FOUND", false;
+        InvalidSettlementState = 5009, "INVALID_SETTLEMENT_STATE", false;
     }
     range "Disputes (6000-6999)" {
         DisputeNotFound = 6000, "DISPUTE_NOT_FOUND", false;
@@ -155,6 +190,115 @@ error_registry! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    /// Retrying is the exception, and every exception is named here.
+    ///
+    /// This list is the point of the test below it. `retryable` is a
+    /// promise to every client in every language that the same request,
+    /// sent again unchanged, may succeed — so a code that carries it
+    /// wrongly does not produce a wrong error message, it produces a
+    /// client that never stops asking.
+    ///
+    /// That is not hypothetical. `SettlementFailed` was `true` and was
+    /// the code for *both* "no such settlement" and "that transition is
+    /// illegal from this state". The second is permanent by definition,
+    /// and once cancellation, rejection and payment reversal became
+    /// reachable over RPC it became the answer to the most speculative
+    /// question a client asks — "can I still cancel this?". Splitting
+    /// those two out (5008/5009) fixed the instance. This list is what
+    /// stops the next one, because adding a retryable code now means
+    /// writing it down here, next to the reason retryability is load
+    /// bearing.
+    const RETRYABLE: &[ErrorCode] = &[
+        // Transient by nature: the machine, the network, or the chain is
+        // busy, unreachable, or behind, and none of that is a property of
+        // the request.
+        ErrorCode::InternalError,
+        ErrorCode::OperationTimeout,
+        ErrorCode::RateLimitExceeded,
+        ErrorCode::NetworkError,
+        ErrorCode::PeerNotFound,
+        ErrorCode::NodeNotSynchronized,
+        ErrorCode::NetworkUnavailable,
+        ErrorCode::ChainUnavailable,
+        ErrorCode::BlockhashExpired,
+        ErrorCode::TransactionSubmissionFailed,
+        ErrorCode::BlockchainConfirmationTimeout,
+        ErrorCode::DatabaseError,
+        // A resource that replenishes without anyone fixing anything: a
+        // merchant's liquidity returns when a reservation expires, a
+        // merchant comes back online, a quote moves back into range.
+        ErrorCode::InsufficientAvailableLiquidity,
+        ErrorCode::MerchantOffline,
+        ErrorCode::PriceDisagreement,
+        ErrorCode::VaultInsufficientBalance,
+        // Delivery, where "again" is the entire remedy.
+        ErrorCode::NotificationProviderUnavailable,
+        ErrorCode::DeliveryFailed,
+        // The one judgement call in this list, and `openfiat_snapshot`'s
+        // own `code()` explains it at length: a snapshot that fails
+        // verification is permanently bad, but the retry a bootstrapping
+        // node performs is against a *different* snapshot from a
+        // different provider, which is exactly the loop this flag drives.
+        // That crate deliberately routes the permanent cases
+        // (`InsufficientProviderStake`) to a non-retryable code instead.
+        ErrorCode::SnapshotVerificationFailed,
+        // Settlement's remaining generic failure. Nothing maps to it
+        // today — `SettlementNotFound` and `InvalidSettlementState` took
+        // over the two conditions that did — but it is OFS-8000's own
+        // code and stays in the registry.
+        ErrorCode::SettlementFailed,
+    ];
+
+    /// The check that turns "we thought about retryability" into
+    /// something a future edit cannot quietly undo.
+    ///
+    /// Modelled on `openfiat_api::openrpc`'s
+    /// `no_method_is_documented_by_accident`, for the same reason: a
+    /// hand-maintained judgement that fails open is a judgement that
+    /// stops being made. A new code defaults to non-retryable here, which
+    /// is the safe direction — the worst case is a client that gives up
+    /// on something it could have retried, rather than one that hammers a
+    /// node over an outcome that will never change.
+    #[test]
+    fn no_code_is_retryable_by_accident() {
+        let expected: HashSet<u16> = RETRYABLE.iter().map(|c| c.code()).collect();
+        for code in ErrorCode::ALL {
+            assert_eq!(
+                code.retryable(),
+                expected.contains(&code.code()),
+                "{} ({}) disagrees with the RETRYABLE list in this module. If you have just \
+                 marked it retryable, add it to that list and say why: `retryable` tells every \
+                 client in every language that sending the same request again may work, so a \
+                 permanent outcome wearing it produces a client that never stops asking. If you \
+                 have just added it to the list, set the flag.",
+                code.name(),
+                code.code(),
+            );
+        }
+    }
+
+    /// Two variants sharing a number, or a name, would make the registry
+    /// ambiguous on the wire — a client matching on `ofsErrorCode` would
+    /// silently handle one condition as another. Nothing prevented it
+    /// before; the macro cannot, and three codes were added to this file
+    /// by hand in one sitting.
+    #[test]
+    fn every_code_and_name_appears_exactly_once() {
+        let mut numbers = HashSet::new();
+        let mut names = HashSet::new();
+        for code in ErrorCode::ALL {
+            assert!(
+                numbers.insert(code.code()),
+                "{} reuses numeric code {}",
+                code.name(),
+                code.code()
+            );
+            assert!(names.insert(code.name()), "duplicate name {}", code.name());
+        }
+        assert_eq!(numbers.len(), ErrorCode::ALL.len());
+    }
 
     #[test]
     fn codes_and_names_match_the_registry() {

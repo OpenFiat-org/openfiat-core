@@ -41,6 +41,7 @@ use openfiat_reservations::events::{
 };
 use openfiat_reservations::{ReservationId, ReservationState};
 use openfiat_rpc::dispatch::{MethodTable, encode_bytes};
+use openfiat_rpc::error::RpcError;
 use openfiat_rpc::methods::build_table;
 use openfiat_rpc::state::NodeState;
 use openfiat_settlement::events::{
@@ -52,7 +53,7 @@ use openfiat_settlement::record::PaymentDiscrepancy;
 use openfiat_settlement::{SettlementId, SettlementState};
 use openfiat_storage::mem::MemoryStore;
 use openfiat_taxonomy::PaymentMethodRef;
-use openfiat_types::{Amount, FiatCurrency, PeerId, Timestamp};
+use openfiat_types::{Amount, ErrorCode, FiatCurrency, PeerId, Timestamp};
 use serde_json::Value;
 
 /// The four method names a client sends. Written out here, once, so the
@@ -770,4 +771,63 @@ fn withdrawing_a_declaration_re_arms_the_merchants_cancel() {
             .state,
         SettlementState::Cancelled
     );
+}
+
+/// A refusal has to say *which* refusal it is.
+///
+/// Both of these used to come back as `SETTLEMENT_FAILED`, code 5000,
+/// flagged retryable — the same string and the same number for "this node
+/// has never heard of that settlement" and "you are too late to cancel".
+/// A client could not tell them apart, and the one piece of advice the
+/// registry did give it was to try again, at an outcome that is permanent
+/// by construction.
+///
+/// It is asserted here rather than in `openfiat_types`' own tests because
+/// this is where it is observable: the mapping is only worth anything if
+/// it survives the trip through a domain crate's error type and out
+/// through the dispatch table a client talks to.
+#[test]
+fn a_settlement_refusal_says_whether_it_is_unknown_or_merely_too_late() {
+    let (table, state, buyer, seller) = a_settlement();
+    declare_payment(&table, &state, &buyer);
+
+    let cancel = |id: &str| {
+        send_params(&SignedSettlementCancelled::sign(
+            SettlementCancelled {
+                settlement_id: SettlementId::new(id),
+                canceller: peer(&seller),
+                timestamp: Timestamp::from_millis(1_300),
+            },
+            &seller,
+        ))
+    };
+
+    let too_late = table.dispatch(&state, SETTLEMENT_CANCELLED, cancel(SETTLEMENT));
+    let never_existed = table.dispatch(&state, SETTLEMENT_CANCELLED, cancel("settle-no-such"));
+
+    let code_of = |result: Result<Value, RpcError>| match result {
+        Err(RpcError::Application(code)) => code,
+        other => panic!("expected an application error, got {other:?}"),
+    };
+    let too_late = code_of(too_late);
+    let never_existed = code_of(never_existed);
+
+    assert_eq!(too_late, ErrorCode::InvalidSettlementState);
+    assert_eq!(never_existed, ErrorCode::SettlementNotFound);
+    assert_ne!(
+        too_late, never_existed,
+        "a client that cannot distinguish these two cannot tell a user whether the trade is \
+         gone or the moment is"
+    );
+    for code in [too_late, never_existed] {
+        assert!(
+            !code.retryable(),
+            "{} is flagged retryable. Neither of these outcomes changes on a repeated identical \
+             request — a settlement does not re-enter a state it has left, and one this node has \
+             never seen will not arrive because the same call was made twice. `retryable` tells \
+             every client in every language that it may. See the RETRYABLE list in \
+             openfiat_types::error.",
+            code.name()
+        );
+    }
 }

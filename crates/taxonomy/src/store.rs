@@ -182,6 +182,7 @@ mod tests {
     use crate::fixtures::{keypair, merchant_method, peer};
     use crate::record::PaymentMethodCategory;
     use openfiat_storage::mem::MemoryStore;
+    use openfiat_types::ErrorCode;
 
     fn define(
         registry: &PaymentMethodRegistry<MemoryStore>,
@@ -259,6 +260,45 @@ mod tests {
             Err(TaxonomyError::MalformedDefinition)
         );
         assert!(registry.all().is_empty());
+    }
+
+    /// A full shelf is a count, and the code has to say so.
+    ///
+    /// This used to answer `RATE_LIMIT_EXCEEDED`, which is the one code a
+    /// generic client is most likely to handle automatically — and it
+    /// handles it by waiting and sending the same request again. Nothing
+    /// about waiting frees a slot here: the cap does not decay, and the
+    /// only thing that opens one is the merchant retiring a definition or
+    /// publishing one that sorts ahead of what they already hold. A
+    /// client told to back off backs off forever.
+    ///
+    /// Asserted on the OFS-8000 code rather than the variant because the
+    /// variant was never wrong. What crossed the wire was.
+    #[test]
+    fn a_merchant_past_the_cap_is_told_the_shelf_is_full_not_that_they_are_going_too_fast() {
+        let registry = PaymentMethodRegistry::new(MemoryStore::new());
+        // Names chosen so the last one sorts after a full shelf and so
+        // displaces nothing — the only case that is actually refused.
+        for n in 0..MAX_METHODS_PER_MERCHANT {
+            define(&registry, 1, &format!("Acme Rail {n:02}")).expect("under the cap");
+        }
+        let mut refused = Err(TaxonomyError::InvalidSignature);
+        for suffix in 'a'..='z' {
+            refused = define(&registry, 1, &format!("Acme Rail zz{suffix}"));
+            if refused.is_err() {
+                break;
+            }
+        }
+
+        assert_eq!(refused, Err(TaxonomyError::TooManyMethods));
+        let code = TaxonomyError::TooManyMethods.code();
+        assert_eq!(code, ErrorCode::PaymentMethodLimitReached);
+        assert!(
+            !code.retryable(),
+            "{} is flagged retryable, so a client will send this same definition again \
+             forever. The cap is a count, not a speed.",
+            code.name()
+        );
     }
 
     /// Two nodes hear one merchant's flood in opposite orders. They must

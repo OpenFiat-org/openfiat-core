@@ -40,7 +40,11 @@ impl TradeChannelError {
     pub const fn code(self) -> ErrorCode {
         match self {
             Self::InvalidSignature => ErrorCode::InvalidSignature,
-            Self::SettlementNotFound => ErrorCode::ResourceNotFound,
+            // The settlement range's own code rather than the generic
+            // `ResourceNotFound` this used to answer with — see
+            // `openfiat_disputes`'s note on why the three crates that
+            // raise this condition now answer it identically.
+            Self::SettlementNotFound => ErrorCode::SettlementNotFound,
             Self::NotAParty | Self::RecipientNotPermitted => ErrorCode::InvalidIdentityClaim,
             Self::EntryTooLarge => ErrorCode::InvalidParameter,
             Self::SequenceReused => ErrorCode::ResourceAlreadyExists,

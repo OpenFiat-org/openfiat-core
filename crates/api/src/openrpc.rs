@@ -314,7 +314,8 @@ fn description_for(method: &str) -> Option<&'static str> {
              key that reservation already carries. A key supplied in the payload is never \
              consulted, so naming someone else's reservation gets you nothing. \
              Legal only from `EscrowLocked`, the only non-terminal reservation state — \
-             cancelling one already `Cancelled` or `Expired` returns an application error \
+             cancelling one already `Cancelled` or `Expired` returns `INVALID_RESERVATION_STATE` \
+             (4006), and one this node has never seen returns `RESERVATION_NOT_FOUND` (4000) \
              rather than succeeding quietly. On success the merchant's advertised liquidity \
              is credited back immediately and the reservation moves to `Cancelled`; the \
              alternative, and the only option before this method existed, was waiting out the \
@@ -328,6 +329,24 @@ fn description_for(method: &str) -> Option<&'static str> {
              reservation — see `sendSettlementCancelled` for that, and send both if you mean \
              to abandon a trade that has already reached settlement.",
         ),
+        "sendPaymentMethodDefine" => Some(
+            "Publish a payment rail this build does not ship, under the defining merchant's \
+             own peer id. The resulting id is `<merchant peer id>:<digest>` and only that \
+             merchant may select it on an advertisement — see `getPaymentMethods`, which \
+             returns a merchant's own definitions in a separate `merchant` list for exactly \
+             that reason. \
+             Re-sending an identical definition is a no-op that returns the same id, so a \
+             client retrying after a dropped connection is safe. \
+             One merchant may hold 32 definitions. The 33rd returns \
+             `PAYMENT_METHOD_LIMIT_REACHED` (3006), which is non-retryable and means what it \
+             says: the cap is a count, not a speed, and nothing frees a slot except the \
+             merchant retiring a definition. It used to return `RATE_LIMIT_EXCEEDED` (9), \
+             which invited exactly the wrong response — a client that backs off and retries \
+             will back off and retry forever. \
+             Definitions are gossiped to every node and kept, which is why there is a cap at \
+             all: unlike an advertisement, a definition costs its author no liquidity and no \
+             counterparty.",
+        ),
         "sendPaymentReversed" => Some(
             "The buyer taking back \"I paid\" — the counterpart to `sendPaymentSubmitted`, and \
              the buyer-side mirror of `sendSettlementRejected`. \
@@ -336,8 +355,9 @@ fn description_for(method: &str) -> Option<&'static str> {
              buyer's key. \
              Legal only from `PaymentSubmitted` and only under the buyer on file, so it \
              cannot undo a decision already taken: once the merchant has approved or \
-             rejected, the settlement has left `PaymentSubmitted` and this returns an \
-             invalid-state error. It returns the settlement to `AwaitingPayment` and clears \
+             rejected, the settlement has left `PaymentSubmitted` and this returns \
+             `INVALID_SETTLEMENT_STATE` (5009). It returns the settlement to \
+             `AwaitingPayment` and clears \
              `payment_reference`. \
              It also clears `payment_submitted_at`, which matters to both parties' \
              reputation: that field is what `getReputation` reads as \"this buyer made a \
@@ -388,10 +408,16 @@ fn description_for(method: &str) -> Option<&'static str> {
              examined, and a party signing under the other's name fails the check that \
              follows. \
              Legal only from `AwaitingPayment`. Once the buyer has sent \
-             `sendPaymentSubmitted` this method returns an invalid-state error, and the \
-             merchant's remaining moves are approval, `sendSettlementRejected`, or a dispute \
-             — none of which can be taken unilaterally and silently. That restriction is the \
-             whole security property here, so do not design a client around cancelling late. \
+             `sendPaymentSubmitted` this method returns `INVALID_SETTLEMENT_STATE` (5009), \
+             and the merchant's remaining moves are approval, `sendSettlementRejected`, or a \
+             dispute — none of which can be taken unilaterally and silently. That restriction \
+             is the whole security property here, so do not design a client around cancelling \
+             late. \
+             `INVALID_SETTLEMENT_STATE` is distinct from `SETTLEMENT_NOT_FOUND` (5008), and \
+             both are non-retryable. Show a user the difference: one means the trade moved on \
+             without you, the other means this node has never seen it. They used to arrive as \
+             the same retryable `SETTLEMENT_FAILED` (5000), so a client written against an \
+             older node cannot tell them apart and may be retrying one of them. \
              The one gap it cannot close is the interval between a buyer actually wiring \
              fiat and that buyer declaring it: a merchant may cancel inside it. Submit \
              `sendPaymentSubmitted` before the money leaves rather than after it lands — the \

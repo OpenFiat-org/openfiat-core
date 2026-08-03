@@ -34,7 +34,14 @@ impl DisputeError {
             Self::DuplicateDisputeId => ErrorCode::DisputeAlreadyOpen,
             Self::MalformedDispute => ErrorCode::DeserializationError,
             Self::DisputeNotFound => ErrorCode::DisputeNotFound,
-            Self::SettlementNotFound => ErrorCode::SettlementFailed,
+            // One condition, one code, wherever it is raised. Three
+            // crates hold a `SettlementNotFound` and they used to answer
+            // it two different ways — `SettlementFailed` here and in
+            // `openfiat_settlement`, `ResourceNotFound` in
+            // `openfiat_tradechannel` — so "does this node have that
+            // settlement?" got a different code depending on which method
+            // you happened to ask through.
+            Self::SettlementNotFound => ErrorCode::SettlementNotFound,
             Self::InvalidStateTransition => ErrorCode::DisputeClosed,
             Self::NotAParty => ErrorCode::InvalidIdentityClaim,
             Self::CommitmentMismatch => ErrorCode::InvalidEvidence,

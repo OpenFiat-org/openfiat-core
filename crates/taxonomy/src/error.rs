@@ -27,7 +27,13 @@ impl TaxonomyError {
             Self::MalformedDefinition | Self::ImpersonatesKnownMethod => {
                 ErrorCode::UnsupportedPaymentMethod
             }
-            Self::TooManyMethods => ErrorCode::RateLimitExceeded,
+            // Not `RateLimitExceeded`, which is where this used to land.
+            // A rate limit is a speed and every client that handles one
+            // handles it by waiting; [`crate::store::
+            // MAX_METHODS_PER_MERCHANT`] is a count that does not decay.
+            // Nothing frees a slot but the merchant retiring a
+            // definition, so a caller told to back off backs off forever.
+            Self::TooManyMethods => ErrorCode::PaymentMethodLimitReached,
         }
     }
 }
