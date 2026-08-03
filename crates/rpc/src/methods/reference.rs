@@ -879,6 +879,248 @@ mod tests {
         );
     }
 
+    /// Every country this method serves resolves to at least one rail
+    /// named for it, or appears in [`NO_LOCAL_RAIL`] with a reason.
+    ///
+    /// This is the test the coverage gap needed. Half the country table
+    /// used to fall through to the eight globals — cash, the two generic
+    /// transfers, and four fintechs — which reads to a merchant as "this
+    /// network does not work where I live" and is indistinguishable, in a
+    /// picker, from a build that simply forgot them. Counting is the only
+    /// way that stays true: a country added to the table below without a
+    /// rail fails here rather than quietly joining the fall-through.
+    ///
+    /// The second assertion is what keeps the exception list honest. A
+    /// code that has since gained a rail must come *off* the list, or the
+    /// list slowly becomes a place where coverage goes to be forgotten.
+    #[test]
+    fn every_country_resolves_to_a_local_rail_or_is_on_the_reviewed_list() {
+        let data = fetch();
+        let covered: HashSet<&str> = data
+            .payment_methods
+            .iter()
+            .filter_map(|method| method.countries.as_ref())
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        let excused: HashSet<&str> = NO_LOCAL_RAIL.iter().map(|(code, _)| *code).collect();
+        assert_eq!(
+            excused.len(),
+            NO_LOCAL_RAIL.len(),
+            "a code excused twice is a review that happened once"
+        );
+
+        let unexplained: Vec<&str> = data
+            .countries
+            .iter()
+            .map(|country| country.code.as_str())
+            .filter(|code| !covered.contains(code) && !excused.contains(code))
+            .collect();
+        assert!(
+            unexplained.is_empty(),
+            "{unexplained:?} have no rail named for them and no reason on record"
+        );
+
+        let stale: Vec<&str> = NO_LOCAL_RAIL
+            .iter()
+            .map(|(code, _)| *code)
+            .filter(|code| covered.contains(code))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "{stale:?} now have a local rail and must come off the excused list"
+        );
+
+        // And every excused code is one the country table actually
+        // serves, so the list cannot accumulate places that were renamed
+        // or removed.
+        let phantom: Vec<&str> = NO_LOCAL_RAIL
+            .iter()
+            .map(|(code, _)| *code)
+            .filter(|code| !data.countries.iter().any(|c| c.code == *code))
+            .collect();
+        assert!(
+            phantom.is_empty(),
+            "{phantom:?} are not countries this build serves"
+        );
+    }
+
+    /// The countries this build names no local rail for, one line each.
+    ///
+    /// Not a backlog and not an apology — a reviewed answer. Three kinds
+    /// of entry are here and they mean different things:
+    ///
+    /// - **no resident population, or no retail banking at all.** Nothing
+    ///   to list, and a rail invented for one would be a rail nobody can
+    ///   be paid on.
+    /// - **the local rail genuinely is the generic one.** New Zealand's
+    ///   person-to-person rail is an ordinary bank transfer; there is no
+    ///   branded national scheme to name, and `bank-transfer` — offered
+    ///   everywhere — is the honest answer rather than a missing one.
+    /// - **a scheme probably exists and this build could not confirm it.**
+    ///   These are the real gaps, and they are left empty on purpose: a
+    ///   guessed rail is selected by a merchant, cannot be paid by a
+    ///   buyer, and kills the trade at the point money should move. A
+    ///   missing one only costs an ordering.
+    const NO_LOCAL_RAIL: &[(&str, &str)] = &[
+        // No resident population, or no retail banking of its own.
+        ("AQ", "Antarctica: research stations, no retail banking"),
+        ("BV", "Bouvet Island: uninhabited"),
+        ("GS", "South Georgia: no permanent population"),
+        ("HM", "Heard & McDonald: uninhabited"),
+        ("IO", "British Indian Ocean Territory: military use only"),
+        ("TF", "French Southern Territories: no resident population"),
+        ("UM", "U.S. Minor Outlying Islands: no resident population"),
+        (
+            "PN",
+            "Pitcairn: fewer than a hundred residents, no domestic scheme",
+        ),
+        // Banked through a larger neighbour, with no scheme of their own
+        // that this build can name. Bank transfer and cash are the rails,
+        // and both are offered everywhere.
+        (
+            "NZ",
+            "New Zealand: bank transfer is the P2P rail, under no brand",
+        ),
+        ("CK", "Cook Islands: NZ dollar, New Zealand banks"),
+        ("NU", "Niue: NZ dollar, New Zealand banks"),
+        ("TK", "Tokelau: NZ dollar, New Zealand banks"),
+        ("KI", "Kiribati: Australian dollar, no domestic scheme"),
+        ("NR", "Nauru: Australian dollar, no domestic scheme"),
+        ("TV", "Tuvalu: Australian dollar, no domestic scheme"),
+        ("FM", "Micronesia: US dollar, no domestic scheme"),
+        ("MH", "Marshall Islands: US dollar, no domestic scheme"),
+        ("PW", "Palau: US dollar, no domestic scheme"),
+        ("SH", "Saint Helena: sterling-pegged, no domestic scheme"),
+        (
+            "FK",
+            "Falkland Islands: sterling-pegged, no domestic scheme",
+        ),
+        (
+            "NC",
+            "New Caledonia: CFP franc, outside SEPA, no domestic scheme",
+        ),
+        ("PF", "French Polynesia: CFP franc, outside SEPA"),
+        ("WF", "Wallis & Futuna: CFP franc, outside SEPA"),
+        (
+            "FO",
+            "Faroe Islands: Danish krone, no confirmed Faroese scheme",
+        ),
+        (
+            "GL",
+            "Greenland: Danish krone, no confirmed Greenlandic scheme",
+        ),
+        // The Caribbean. DCash, the ECCB's shared digital currency, was
+        // withdrawn in January 2024 and nothing replaced it as a
+        // consumer-to-consumer rail across the XCD states.
+        (
+            "AG",
+            "Antigua & Barbuda: XCD, no scheme since DCash was withdrawn",
+        ),
+        ("AI", "Anguilla: XCD, no scheme since DCash was withdrawn"),
+        ("DM", "Dominica: XCD, no scheme since DCash was withdrawn"),
+        ("GD", "Grenada: XCD, no scheme since DCash was withdrawn"),
+        (
+            "KN",
+            "Saint Kitts & Nevis: XCD, no scheme since DCash was withdrawn",
+        ),
+        (
+            "LC",
+            "Saint Lucia: XCD, no scheme since DCash was withdrawn",
+        ),
+        ("MS", "Montserrat: XCD, no scheme since DCash was withdrawn"),
+        (
+            "VC",
+            "Saint Vincent: XCD, no scheme since DCash was withdrawn",
+        ),
+        ("AW", "Aruba: bank transfer, no domestic P2P scheme"),
+        ("BQ", "Caribbean Netherlands: US dollar, no domestic scheme"),
+        ("CW", "Curaçao: bank transfer, no domestic P2P scheme"),
+        ("SX", "Sint Maarten: bank transfer, no domestic P2P scheme"),
+        ("BM", "Bermuda: bank transfer, no domestic P2P scheme"),
+        (
+            "KY",
+            "Cayman Islands: bank transfer, no domestic P2P scheme",
+        ),
+        ("TC", "Turks & Caicos: US dollar, no domestic scheme"),
+        (
+            "VG",
+            "British Virgin Islands: US dollar, no domestic scheme",
+        ),
+        (
+            "BS",
+            "Bahamas: Sand Dollar exists, consumer use unconfirmed",
+        ),
+        ("BZ", "Belize: no domestic P2P scheme confirmed"),
+        // Gaps. A scheme is likely and this build would be guessing.
+        ("AF", "Afghanistan: hawala dominates, wallets unconfirmed"),
+        (
+            "AL",
+            "Albania: bank transfer; SEPA accession not confirmed here",
+        ),
+        ("BA", "Bosnia & Herzegovina: no domestic scheme confirmed"),
+        ("BY", "Belarus: ERIP is bill payment; P2P rail unconfirmed"),
+        ("BN", "Brunei: bank wallets unconfirmed"),
+        ("BT", "Bhutan: national QR exists, consumer P2P unconfirmed"),
+        (
+            "CV",
+            "Cabo Verde: Vinti4 is a card network, P2P unconfirmed",
+        ),
+        ("DJ", "Djibouti: D-Money reported, unconfirmed"),
+        ("EC", "Ecuador: bank wallets reported, unconfirmed"),
+        ("EH", "Western Sahara: no separately confirmable rail"),
+        ("ER", "Eritrea: no domestic scheme confirmed"),
+        (
+            "GE",
+            "Georgia: P2P runs inside bank apps, under no shared brand",
+        ),
+        ("GQ", "Equatorial Guinea: no domestic scheme confirmed"),
+        ("GY", "Guyana: mobile money reported, unconfirmed"),
+        ("KG", "Kyrgyzstan: bank wallets reported, unconfirmed"),
+        ("KM", "Comoros: telco wallet reported, unconfirmed"),
+        ("KP", "North Korea: no rail a counterparty could use"),
+        ("LY", "Libya: no domestic scheme confirmed"),
+        (
+            "MD",
+            "Moldova: bank transfer; SEPA accession not confirmed here",
+        ),
+        (
+            "ME",
+            "Montenegro: bank transfer; SEPA accession not confirmed here",
+        ),
+        ("MK", "North Macedonia: no domestic scheme confirmed"),
+        ("MV", "Maldives: bank wallets unconfirmed"),
+        ("NI", "Nicaragua: no domestic scheme confirmed"),
+        (
+            "PG",
+            "Papua New Guinea: bank mobile money reported, unconfirmed",
+        ),
+        ("PS", "Palestine: telco wallets reported, unconfirmed"),
+        ("SB", "Solomon Islands: no domestic scheme confirmed"),
+        ("SR", "Suriname: no domestic scheme confirmed"),
+        ("ST", "São Tomé & Príncipe: no domestic scheme confirmed"),
+        ("SY", "Syria: telco wallets reported, unconfirmed"),
+        ("TJ", "Tajikistan: fintech wallets reported, unconfirmed"),
+        ("TL", "Timor-Leste: no domestic scheme confirmed"),
+        ("TM", "Turkmenistan: no domestic scheme confirmed"),
+        ("TO", "Tonga: telco wallets reported, unconfirmed"),
+        ("VU", "Vanuatu: telco wallets reported, unconfirmed"),
+        ("WS", "Samoa: telco wallets reported, unconfirmed"),
+        (
+            "XK",
+            "Kosovo: bank transfer; SEPA accession not confirmed here",
+        ),
+        (
+            "XNC",
+            "Northern Cyprus: Turkish lira, scheme reach unconfirmed",
+        ),
+        (
+            "XTR",
+            "Transnistria: unrecognised banking, no reachable rail",
+        ),
+        ("YE", "Yemen: telco wallets reported, unconfirmed"),
+    ];
+
     /// The mints are relayed, not restated. A second transcription in
     /// this file could drift from `openfiat_chain::mints`, and then a
     /// client building a routing table from this method and a node

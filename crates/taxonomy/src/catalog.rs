@@ -40,6 +40,31 @@
 //!   those three.
 //!
 //! A client shows `None` rows in every country, after the suggested ones.
+//!
+//! # What "covered" means, and where the count is checked
+//!
+//! Half the country table used to name no rail at all. A merchant in
+//! Jakarta, Ho Chi Minh City, Riyadh or Caracas opened a picker, found
+//! cash, two generic transfers and four global fintechs, and had no way to
+//! tell that apart from a network that does not reach them. The rails were
+//! not missing because they do not exist — GoPay, VietQR, STC Pay and Pago
+//! Móvil are how those four places are paid — they were missing because
+//! nobody had written them down.
+//!
+//! `openfiat_rpc::methods::reference`'s
+//! `every_country_resolves_to_a_local_rail_or_is_on_the_reviewed_list`
+//! is where that is now counted, because it is the only place both this
+//! table and the country table are visible. A country with no rail must
+//! appear on that test's excused list with a reason, and a country that
+//! gains one must come off it.
+//!
+//! The bar for adding a row is that the scheme is real, current, and one a
+//! consumer can be paid over person-to-person. Card-acceptance networks
+//! and merchant-checkout schemes are not that, however national they are,
+//! and a rail this table is unsure of is left out and recorded as a gap
+//! rather than guessed. The failure a guess produces is not a cosmetic
+//! one: a merchant selects it, a buyer cannot pay it, and the trade dies
+//! at the moment money should have moved.
 
 use crate::record::{PaymentMethod, PaymentMethodCategory, PaymentMethodRef};
 use std::sync::OnceLock;
@@ -111,10 +136,23 @@ type Row = (
 /// The countries in the SEPA schemes' geographical scope. Written out
 /// rather than approximated as "the EU", which would drop Switzerland,
 /// Norway and the UK — three places a merchant is very likely to be.
+///
+/// The territories are in it for the same reason the UK is: the EPC's own
+/// scope list names them, and a merchant in Réunion or Martinique holds a
+/// French IBAN that a SEPA credit transfer reaches exactly as it reaches
+/// one in Lyon. Leaving them out was not a neutral omission — it made nine
+/// inhabited places look like they had no bank rail at all. Åland is here
+/// for the same reason under Finland, and Guernsey, Jersey, the Isle of
+/// Man and Gibraltar were already.
+///
+/// The French Pacific territories (New Caledonia, French Polynesia,
+/// Wallis and Futuna) are deliberately *not* here. They are outside the
+/// scope list, and they settle in CFP francs rather than euro.
 const SEPA: &[&str] = &[
-    "AD", "AT", "BE", "BG", "CH", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR", "GB", "GG", "GI",
-    "GR", "HR", "HU", "IE", "IM", "IS", "IT", "JE", "LI", "LT", "LU", "LV", "MC", "MT", "NL", "NO",
-    "PL", "PT", "RO", "SE", "SI", "SK", "SM", "VA",
+    "AD", "AT", "AX", "BE", "BG", "BL", "CH", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR", "GB",
+    "GF", "GG", "GI", "GP", "GR", "HR", "HU", "IE", "IM", "IS", "IT", "JE", "LI", "LT", "LU", "LV",
+    "MC", "MF", "MQ", "MT", "NL", "NO", "PL", "PM", "PT", "RE", "RO", "SE", "SI", "SK", "SM", "VA",
+    "YT",
 ];
 
 const CATALOG: &[Row] = &[
@@ -221,12 +259,22 @@ const CATALOG: &[Row] = &[
             "NE", "SL", "SN", "TN",
         ]),
     ),
+    // Egypt only. Vodafone Ghana became Telecel Ghana and the wallet
+    // became Telecel Cash, so listing Ghana here would offer a merchant a
+    // brand that no longer answers to the name — see `telecel-cash`.
     (
         "vodafone-cash",
         "Vodafone Cash",
         MobileMoney,
         &["vodafone"],
-        Some(&["EG", "GH"]),
+        Some(&["EG"]),
+    ),
+    (
+        "telecel-cash",
+        "Telecel Cash",
+        MobileMoney,
+        &["telecel", "telecel ghana"],
+        Some(&["GH"]),
     ),
     (
         "telebirr",
@@ -295,6 +343,121 @@ const CATALOG: &[Row] = &[
         &["tigo money"],
         Some(&["BO", "GT", "HN", "PY", "SV"]),
     ),
+    // The rest of M-Pesa. One row per operating company rather than one
+    // row for the brand, because the accounts do not interoperate: a
+    // Tanzanian M-Pesa number cannot be paid from a Kenyan M-Pesa
+    // account, and a merchant offered "M-Pesa" in Dar es Salaam would be
+    // advertising a rail their buyer cannot reach. None of them carries
+    // the bare `mpesa` alias — that belongs to Kenya, where the brand
+    // started and where an unqualified "M-Pesa" means one thing.
+    (
+        "mpesa-tanzania",
+        "M-Pesa Tanzania",
+        MobileMoney,
+        &["mpesa tanzania", "vodacom tanzania"],
+        Some(&["TZ"]),
+    ),
+    (
+        "mpesa-drc",
+        "M-Pesa DRC",
+        MobileMoney,
+        &["mpesa congo", "vodacom congo"],
+        Some(&["CD"]),
+    ),
+    (
+        "mpesa-lesotho",
+        "M-Pesa Lesotho",
+        MobileMoney,
+        &["mpesa lesotho"],
+        Some(&["LS"]),
+    ),
+    (
+        "mpesa-ethiopia",
+        "M-Pesa Ethiopia",
+        MobileMoney,
+        &["mpesa ethiopia", "safaricom ethiopia"],
+        Some(&["ET"]),
+    ),
+    (
+        "cbe-birr",
+        "CBE Birr",
+        MobileMoney,
+        &["cbebirr", "commercial bank of ethiopia"],
+        Some(&["ET"]),
+    ),
+    // West Africa. Bank transfer is the unusual rail across most of this
+    // list; these are how people are actually paid.
+    (
+        "wave-money",
+        "Wave Mobile Money",
+        MobileMoney,
+        // Not the bare "wave": Myanmar has an unrelated operator trading
+        // under that word, so an unqualified alias would resolve to
+        // whichever of the two this table happened to list first.
+        &["wave africa", "wave senegal"],
+        Some(&["BF", "CI", "GM", "ML", "SN", "UG"]),
+    ),
+    (
+        "moov-money",
+        "Moov Money",
+        MobileMoney,
+        &["moov", "moov africa", "flooz"],
+        Some(&["BF", "BJ", "CF", "CI", "GA", "ML", "NE", "TD", "TG"]),
+    ),
+    // Horn of Africa. Somaliland is `XS` here, the pseudo-code
+    // `openfiat_rpc`'s country table gives it; ZAAD is Telesom's and does
+    // not serve the south, where EVC Plus does.
+    (
+        "evc-plus",
+        "EVC Plus",
+        MobileMoney,
+        &["evcplus", "hormuud"],
+        Some(&["SO"]),
+    ),
+    (
+        "zaad",
+        "ZAAD",
+        MobileMoney,
+        &["telesom zaad"],
+        Some(&["XS"]),
+    ),
+    (
+        "bankily",
+        "Bankily",
+        MobileMoney,
+        &["bankily mauritania"],
+        Some(&["MR"]),
+    ),
+    // The Americas and the Pacific.
+    (
+        "moncash",
+        "MonCash",
+        MobileMoney,
+        &["digicel moncash"],
+        Some(&["HT"]),
+    ),
+    (
+        "transfermovil",
+        "Transfermóvil",
+        MobileMoney,
+        &["transfermovil", "etecsa"],
+        Some(&["CU"]),
+    ),
+    (
+        "mpaisa",
+        "M-PAiSA",
+        MobileMoney,
+        &["mpaisa fiji", "vodafone fiji"],
+        Some(&["FJ"]),
+    ),
+    // South Asia.
+    (
+        "rocket-dbbl",
+        "Rocket (Dutch-Bangla)",
+        MobileMoney,
+        &["rocket bangladesh", "dutch bangla"],
+        Some(&["BD"]),
+    ),
     // Bank rails, local schemes first.
     (
         "im-bank",
@@ -341,7 +504,17 @@ const CATALOG: &[Row] = &[
         &["fps", "fps hong kong", "轉數快"],
         Some(&["HK"]),
     ),
-    ("ach", "ACH", BankTransfer, &["ach transfer"], Some(&["US"])),
+    // The territories are on the ACH network, not an approximation of it:
+    // a bank in San Juan or Hagåtña routes through the same operators as
+    // one in Ohio. Leaving them off made five inhabited places that use
+    // the dollar and US banks look like they had no bank rail.
+    (
+        "ach",
+        "ACH",
+        BankTransfer,
+        &["ach transfer"],
+        Some(&["AS", "GU", "MP", "PR", "US", "VI"]),
+    ),
     (
         "promptpay",
         "PromptPay",
@@ -361,7 +534,10 @@ const CATALOG: &[Row] = &[
         "PayID",
         BankTransfer,
         &["payid australia", "osko"],
-        Some(&["AU"]),
+        // The Indian Ocean and Norfolk territories bank with Australian
+        // banks on the Australian dollar, so the New Payments Platform
+        // reaches them.
+        Some(&["AU", "CC", "CX", "NF"]),
     ),
     (
         "spei",
@@ -396,7 +572,9 @@ const CATALOG: &[Row] = &[
         "Vipps",
         BankTransfer,
         &["vipps norway"],
-        Some(&["NO"]),
+        // Svalbard is Norway for banking purposes; Bouvet Island has no
+        // population and is not listed.
+        Some(&["NO", "SJ"]),
     ),
     (
         "mobilepay",
@@ -467,6 +645,166 @@ const CATALOG: &[Row] = &[
         BankTransfer,
         &["juice mauritius", "mcb juice"],
         Some(&["MU"]),
+    ),
+    // National instant-payment schemes. Each of these is the rail a person
+    // in that country means when they say "send it to my phone" — the same
+    // role PIX plays in Brazil — and each is reachable by a consumer for a
+    // person-to-person transfer, which is the test for being in this table
+    // at all. Card-acceptance networks and merchant-checkout schemes are
+    // not, however national.
+    (
+        "payshap",
+        "PayShap",
+        BankTransfer,
+        &["payshap south africa", "shapid"],
+        Some(&["ZA"]),
+    ),
+    (
+        "fnb-ewallet",
+        "FNB eWallet",
+        BankTransfer,
+        &["fnb ewallet"],
+        Some(&["NA", "ZA"]),
+    ),
+    (
+        "instapay-eg",
+        "InstaPay (Egypt)",
+        BankTransfer,
+        // Never the bare "instapay": the Philippines runs an unrelated
+        // scheme of the same name, and a merchant handed the wrong
+        // country's would be advertising one they cannot receive on. The
+        // same reasoning the UK and Hong Kong Faster Payments rows use.
+        &["instapay egypt"],
+        Some(&["EG"]),
+    ),
+    (
+        "instapay-ph",
+        "InstaPay (Philippines)",
+        BankTransfer,
+        &["instapay philippines"],
+        Some(&["PH"]),
+    ),
+    (
+        "multicaixa-express",
+        "Multicaixa Express",
+        BankTransfer,
+        &["multicaixa", "emis angola"],
+        Some(&["AO"]),
+    ),
+    (
+        "raast",
+        "Raast",
+        BankTransfer,
+        &["raast pakistan"],
+        Some(&["PK"]),
+    ),
+    ("imps", "IMPS", BankTransfer, &["imps india"], Some(&["IN"])),
+    (
+        "bi-fast",
+        "BI-FAST",
+        BankTransfer,
+        &["bifast", "bi fast indonesia"],
+        Some(&["ID"]),
+    ),
+    (
+        "duitnow",
+        "DuitNow",
+        BankTransfer,
+        &["duitnow malaysia"],
+        Some(&["MY"]),
+    ),
+    (
+        "paynow-sg",
+        "PayNow (Singapore)",
+        BankTransfer,
+        &["paynow singapore"],
+        Some(&["SG"]),
+    ),
+    (
+        "vietqr",
+        "VietQR",
+        BankTransfer,
+        &["vietqr vietnam", "napas"],
+        Some(&["VN"]),
+    ),
+    (
+        "bakong",
+        "Bakong",
+        BankTransfer,
+        &["bakong cambodia"],
+        Some(&["KH"]),
+    ),
+    (
+        "sbp-russia",
+        "SBP (Fast Payments System)",
+        BankTransfer,
+        &["sbp", "sbp russia"],
+        Some(&["RU"]),
+    ),
+    (
+        "privat24",
+        "Privat24",
+        BankTransfer,
+        &["privatbank"],
+        Some(&["UA"]),
+    ),
+    (
+        "fast-turkey",
+        "FAST (Turkey)",
+        BankTransfer,
+        &["fast turkey", "kolas"],
+        Some(&["TR"]),
+    ),
+    ("aani", "Aani", BankTransfer, &["aani uae"], Some(&["AE"])),
+    (
+        "shetab",
+        "Shetab",
+        BankTransfer,
+        &["shetab iran", "card to card"],
+        Some(&["IR"]),
+    ),
+    (
+        "bizum",
+        "Bizum",
+        BankTransfer,
+        &["bizum spain"],
+        Some(&["ES"]),
+    ),
+    ("mb-way", "MB WAY", BankTransfer, &["mbway"], Some(&["PT"])),
+    (
+        "wero",
+        "Wero",
+        BankTransfer,
+        &["wero wallet"],
+        Some(&["BE", "DE", "FR"]),
+    ),
+    (
+        "iris-greece",
+        "IRIS (Greece)",
+        BankTransfer,
+        &["iris greece", "dias iris"],
+        Some(&["GR"]),
+    ),
+    (
+        "ips-serbia",
+        "IPS (Serbia)",
+        BankTransfer,
+        &["ips serbia"],
+        Some(&["RS"]),
+    ),
+    (
+        "pago-movil",
+        "Pago Móvil",
+        BankTransfer,
+        &["pago movil", "pagomovil"],
+        Some(&["VE"]),
+    ),
+    (
+        "cuenta-rut",
+        "Cuenta RUT (BancoEstado)",
+        BankTransfer,
+        &["cuenta rut", "bancoestado"],
+        Some(&["CL"]),
     ),
     // Fintech wallets.
     ("toss", "Toss", Fintech, &["toss korea"], Some(&["KR"])),
@@ -623,6 +961,132 @@ const CATALOG: &[Row] = &[
         &["mercadopago"],
         Some(&["AR", "BR", "CL", "CO", "MX", "PE", "UY"]),
     ),
+    // Nigeria. The dominant consumer rails here are wallets and neobanks
+    // rather than the telcos, which is the opposite of the pattern one
+    // country west, and is why the mobile-money rows above are not enough
+    // for the largest market on the continent.
+    ("opay", "OPay", Fintech, &["opay nigeria"], Some(&["NG"])),
+    ("palmpay", "PalmPay", Fintech, &[], Some(&["NG"])),
+    ("kuda", "Kuda", Fintech, &["kuda bank"], Some(&["NG"])),
+    ("moniepoint", "Moniepoint", Fintech, &[], Some(&["NG"])),
+    // South-east Asia.
+    (
+        "gopay",
+        "GoPay",
+        Fintech,
+        &["gopay indonesia", "gojek"],
+        Some(&["ID"]),
+    ),
+    ("ovo", "OVO", Fintech, &["ovo indonesia"], Some(&["ID"])),
+    ("dana", "DANA", Fintech, &["dana indonesia"], Some(&["ID"])),
+    (
+        "momo-vietnam",
+        "MoMo (Vietnam)",
+        Fintech,
+        // Not the bare "momo": MTN's mobile money answers to that across
+        // sixteen African countries, and the two are unrelated companies.
+        &["momo vietnam", "momo wallet"],
+        Some(&["VN"]),
+    ),
+    ("zalopay", "ZaloPay", Fintech, &["zalo pay"], Some(&["VN"])),
+    (
+        "truemoney",
+        "TrueMoney Wallet",
+        Fintech,
+        &["truemoney", "true money"],
+        Some(&["KH", "PH", "TH"]),
+    ),
+    (
+        "tng-ewallet",
+        "Touch 'n Go eWallet",
+        Fintech,
+        &["tng", "touch n go"],
+        Some(&["MY"]),
+    ),
+    ("kbzpay", "KBZPay", Fintech, &["kbz pay"], Some(&["MM"])),
+    (
+        "paypay",
+        "PayPay",
+        Fintech,
+        &["paypay japan"],
+        Some(&["JP"]),
+    ),
+    // Eastern Europe, the Caucasus and the Levant.
+    ("monobank", "monobank", Fintech, &["mono"], Some(&["UA"])),
+    ("m10", "m10", Fintech, &["m10 azerbaijan"], Some(&["AZ"])),
+    (
+        "bit-israel",
+        "Bit (Israel)",
+        Fintech,
+        &["bit israel"],
+        Some(&["IL"]),
+    ),
+    (
+        "paybox-israel",
+        "PayBox (Israel)",
+        Fintech,
+        &["paybox israel"],
+        Some(&["IL"]),
+    ),
+    (
+        "whish-money",
+        "Whish Money",
+        Fintech,
+        &["whish"],
+        Some(&["LB"]),
+    ),
+    ("stc-pay", "STC Pay", Fintech, &["stcpay"], Some(&["SA"])),
+    // Western Europe, beside SEPA rather than instead of it: a euro
+    // transfer reaches any of these countries, and none of it is what a
+    // person there hands a friend a phone number for.
+    ("lydia", "Lydia", Fintech, &["lydia france"], Some(&["FR"])),
+    (
+        "satispay",
+        "Satispay",
+        Fintech,
+        &["satispay italy"],
+        Some(&["IT"]),
+    ),
+    (
+        "tikkie",
+        "Tikkie",
+        Fintech,
+        &["tikkie netherlands"],
+        Some(&["NL"]),
+    ),
+    // The Americas.
+    ("venmo", "Venmo", Fintech, &[], Some(&["US"])),
+    ("cash-app", "Cash App", Fintech, &["cashapp"], Some(&["US"])),
+    (
+        "nequi",
+        "Nequi",
+        Fintech,
+        &["nequi colombia"],
+        Some(&["CO"]),
+    ),
+    (
+        "daviplata",
+        "Daviplata",
+        Fintech,
+        &["davivienda"],
+        Some(&["CO"]),
+    ),
+    (
+        "yape",
+        "Yape",
+        Fintech,
+        &["yape peru", "bcp yape"],
+        Some(&["PE"]),
+    ),
+    ("plin", "Plin", Fintech, &["plin peru"], Some(&["PE"])),
+    (
+        "uala",
+        "Ualá",
+        Fintech,
+        &["uala argentina"],
+        Some(&["AR", "CO", "MX"]),
+    ),
+    ("enzona", "EnZona", Fintech, &["enzona cuba"], Some(&["CU"])),
     // No country claim: see the module doc. Widely available, changing
     // constantly, and a wrong list would hide them where they do work.
     ("revolut", "Revolut", Fintech, &["rev"], None),
@@ -671,6 +1135,40 @@ mod tests {
             ("DE", "SEPA"),
             ("NG", "MTN Mobile Money"),
             ("PH", "GCash"),
+            // The markets this table used to answer with nothing local.
+            ("ID", "GoPay"),
+            ("VN", "VietQR"),
+            ("MY", "DuitNow"),
+            ("SG", "PayNow (Singapore)"),
+            ("RU", "SBP (Fast Payments System)"),
+            ("UA", "Privat24"),
+            ("SA", "STC Pay"),
+            ("AE", "Aani"),
+            ("IL", "Bit (Israel)"),
+            ("VE", "Pago Móvil"),
+            ("HT", "MonCash"),
+            ("SO", "EVC Plus"),
+            ("AO", "Multicaixa Express"),
+            ("LS", "M-Pesa Lesotho"),
+            ("TG", "Moov Money"),
+            // A French overseas department reaches a French IBAN over
+            // SEPA exactly as Lyon does; leaving the territories out of
+            // the scope list made nine inhabited places look unbanked.
+            ("RE", "SEPA"),
+            ("MQ", "SEPA"),
+            // And the depth cases: one rail was all these had.
+            ("ZA", "PayShap"),
+            ("TZ", "M-Pesa Tanzania"),
+            ("ET", "M-Pesa Ethiopia"),
+            ("EG", "InstaPay (Egypt)"),
+            ("PK", "Raast"),
+            ("MX", "SPEI"),
+            ("CO", "Nequi"),
+            ("PE", "Yape"),
+            ("CL", "Cuenta RUT (BancoEstado)"),
+            ("AR", "Ualá"),
+            ("US", "Venmo"),
+            ("GB", "Faster Payments (UK)"),
         ] {
             let (suggested, _) = for_country(Some(country));
             assert!(
@@ -751,6 +1249,49 @@ mod tests {
                         method.name
                     );
                 }
+            }
+        }
+    }
+
+    /// Four brand names are used by unrelated operators in unrelated
+    /// countries, and the skeleton check catches the collision only if
+    /// somebody writes the ambiguous spelling down. It cannot catch the
+    /// quieter mistake: giving one of the two the *unqualified* alias, so
+    /// that a merchant typing the word reaches whichever row this table
+    /// happens to list first — and advertises a rail their buyer cannot
+    /// reach.
+    ///
+    /// So the rule is that where two operators share a word, neither
+    /// holds it alone. `fps` belongs to Hong Kong and the UK row is
+    /// spelled out; `mpesa` belongs to Kenya, where the brand began, and
+    /// every other operating company is qualified; `momo` belongs to
+    /// MTN's sixteen African markets and Vietnam's wallet is qualified;
+    /// `instapay` belongs to neither Egypt nor the Philippines, and
+    /// `wave` to neither West Africa nor Myanmar.
+    #[test]
+    fn a_word_two_operators_answer_to_is_never_one_operators_alone() {
+        for ambiguous in ["mpesa", "momo", "instapay", "wave", "fps"] {
+            let claimants: Vec<&str> = catalog()
+                .iter()
+                .filter(|method| method.aliases.iter().any(|alias| alias == ambiguous))
+                .map(|method| method.name.as_str())
+                .collect();
+            assert!(
+                claimants.len() <= 1,
+                "{ambiguous:?} is claimed by {claimants:?}, so typing it reaches \
+                 whichever of them a client indexed first"
+            );
+            if let [only] = claimants[..] {
+                assert!(
+                    matches!(
+                        only,
+                        "M-Pesa Kenya (Safaricom)"
+                            | "MTN Mobile Money"
+                            | "FPS (Faster Payment System)"
+                    ),
+                    "{ambiguous:?} is held by {only:?}, which is not the operator \
+                     this table decided the unqualified word means"
+                );
             }
         }
     }

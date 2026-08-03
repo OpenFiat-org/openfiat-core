@@ -4,7 +4,8 @@
 //! # The threat this exists for
 //!
 //! A merchant-defined method's name is arbitrary text that every client
-//! renders in a picker, beside eighty-odd rails this build ships. If that
+//! renders in a picker, beside the hundred and fifty-odd rails this build
+//! ships. If that
 //! text may be anything, the first thing somebody writes is `M-Pesa` —
 //! with a trailing space, or a Cyrillic `М`, or a zero-width joiner in the
 //! middle — and a buyer choosing it believes they are being paid over

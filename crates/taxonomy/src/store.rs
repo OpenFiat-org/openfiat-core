@@ -38,8 +38,8 @@ pub const COLUMN_FAMILY: &str = "payment_methods";
 /// liquidity, no counterparty, no trade. Unbounded, one wallet is a
 /// permanent write amplifier against every node's disk. Thirty-two is far
 /// past what a real merchant needs (the whole of this build's catalog is
-/// eighty-odd rails across every country on earth) and small enough that
-/// a flood is pointless.
+/// a hundred and fifty-odd rails across every country on earth) and small
+/// enough that a flood is pointless.
 pub const MAX_METHODS_PER_MERCHANT: usize = 32;
 
 pub struct PaymentMethodRegistry<S> {
