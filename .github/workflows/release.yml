@@ -59,7 +59,7 @@ jobs:
         run: ${{ matrix.archive_cmd }}
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
           path: openfiat-node-*.${{ matrix.archive_ext }}
