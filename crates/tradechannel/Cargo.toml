@@ -18,7 +18,7 @@ openfiat-storage = { path = "../storage", version = "0.1.0" }
 # The symmetric half of the hybrid scheme (see `crate::key`). Same AEAD,
 # same version, as the one `openfiat-crypto`'s sealed box already uses, so
 # a node links one ChaCha20-Poly1305 implementation rather than two.
-chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
 rand = { version = "0.10.2", features = ["std", "std_rng"] }
 serde = { version = "1.0.229", features = ["derive"] }
 
