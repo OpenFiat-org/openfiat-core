@@ -1613,9 +1613,26 @@ async fn poll_vote_verifications<S: KvStore + 'static>(
                     (Ok(signed), Ok(decoded))
                         if decoded.owner == *signed.vote.voter_public_key.as_bytes() =>
                     {
-                        let _ = state
+                        // The weight is verified; whether the *vote* is
+                        // admissible is a separate question the registry
+                        // answers (unknown proposal, closed voting window,
+                        // a voter who already voted). Reported rather than
+                        // discarded: every other branch of this function
+                        // says why it dropped a vote, and a vote that
+                        // passed on-chain verification only to vanish here
+                        // was the one case with no diagnostic at all —
+                        // which is how a verified vote goes missing with
+                        // nothing in the log to explain it.
+                        if let Err(err) = state
                             .governance
-                            .apply_vote_with_verified_weight(signed, decoded.amount);
+                            .apply_vote_with_verified_weight(signed, decoded.amount)
+                        {
+                            eprintln!(
+                                "openfiat-rpc: verified a governance vote's weight against stake \
+                                 account {} but the registry refused it: {err}",
+                                pending.stake_account
+                            );
+                        }
                     }
                     _ => {
                         // Undecodable account layout, or a `StakeAccount`
