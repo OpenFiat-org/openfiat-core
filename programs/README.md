@@ -271,3 +271,30 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo deny check   # uses this directory's own deny.toml
 ```
+
+Those three are the gates, and `programs-ci.yml` runs all three.
+
+### There is deliberately no formatter for the TypeScript here
+
+`package.json` used to carry `anchor init`'s stock
+`prettier … --check` as `npm run lint`, with no `.prettierrc` beside it.
+It failed on 29 of the 32 files under `tests/` and `scripts/` and had
+done for as long as anyone had run it, because nobody ever chose prettier
+for this directory — the script and the four-year-old `prettier@2` pin
+came with the template. No CI job invoked it. It gated nothing, and a
+check nobody can pass is a check nobody reads.
+
+Configuring around it does not work either: sweeping `printWidth`
+∈ {80, 88, 90, 100} against `trailingComma` ∈ {none, es5, all} moves the
+failure count between 29 and 32 files. The differences are not width —
+they are hand-wrapping plus the absent trailing comma in multiline object
+literals — so there is no setting under which this code is nearly
+formatted. Running `--write` is +2503/−1085 lines across 31 files, every
+one of which had been rewritten within the previous week, and it would
+take `git blame` on that work with it.
+
+So the script is gone rather than left red. The TypeScript here is
+hand-formatted; match the file you are editing. Adopting a formatter
+later is a fine decision — it is just one somebody should make on
+purpose, with a `.prettierrc` recording it, at a moment when a whole-tree
+rewrite is not landing on top of live security work.
