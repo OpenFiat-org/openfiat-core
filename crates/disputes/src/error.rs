@@ -42,10 +42,23 @@ impl DisputeError {
             // settlement?" got a different code depending on which method
             // you happened to ask through.
             Self::SettlementNotFound => ErrorCode::SettlementNotFound,
-            Self::InvalidStateTransition => ErrorCode::DisputeClosed,
+            // 6005, not `DisputeClosed` (6002), which is what both of
+            // these used to answer with. 6002 states an outcome — the
+            // case is over — that had not happened in any of the paths
+            // that reached it: a commit before the case locks, a reveal
+            // before the commit phase ends, a join into a panel that
+            // filled a moment ago. Every one of those is a live dispute
+            // whose participants were being told to stop participating.
+            Self::InvalidStateTransition => ErrorCode::InvalidDisputeState,
             Self::NotAParty => ErrorCode::InvalidIdentityClaim,
             Self::CommitmentMismatch => ErrorCode::InvalidEvidence,
-            Self::ArbitrationFull => ErrorCode::DisputeClosed,
+            // A full panel is a statement about the dispute's state, not
+            // about its life: the case is `Open`, it is simply no longer
+            // joinable. An arbitrator told 6002 concludes the case ended
+            // without them and stops watching it — the opposite of the
+            // truth, which is that the case is about to be heard by the
+            // colleagues who got there first.
+            Self::ArbitrationFull => ErrorCode::InvalidDisputeState,
             Self::NotAnArbitrator => ErrorCode::InvalidIdentityClaim,
         }
     }

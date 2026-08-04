@@ -26,13 +26,25 @@ impl GovernanceError {
     pub const fn code(self) -> ErrorCode {
         match self {
             Self::InvalidSignature => ErrorCode::InvalidSignature,
-            Self::Unauthorized => ErrorCode::InvalidProposal,
-            Self::DuplicateProposalId => ErrorCode::InvalidProposal,
+            // The answer every other domain in this workspace gives to
+            // "you are not who you would have to be for this to be
+            // allowed" — `openfiat_disputes`, `openfiat_reviews`,
+            // `openfiat_tradechannel` and `openfiat_registry` all use
+            // 2001 for it. This used to be `InvalidProposal` (7004),
+            // which is a verdict on the proposal rather than on the
+            // signer: an author told 7004 for someone else's withdrawal
+            // attempt rewrites a proposal that was never wrong.
+            Self::Unauthorized => ErrorCode::InvalidIdentityClaim,
+            Self::DuplicateProposalId => ErrorCode::ProposalAlreadyExists,
             Self::MalformedProposal => ErrorCode::DeserializationError,
             Self::ProposalNotFound => ErrorCode::ProposalNotFound,
             Self::VotingClosed => ErrorCode::VotingClosed,
             Self::DuplicateVote => ErrorCode::DuplicateVote,
-            Self::InvalidStateTransition => ErrorCode::InvalidProposal,
+            // Also 7004 until now, and the same confusion in its second
+            // form: "this proposal is not in a state that allows that"
+            // is fixed by looking at the proposal's status, never by
+            // editing its text.
+            Self::InvalidStateTransition => ErrorCode::InvalidProposalState,
         }
     }
 }

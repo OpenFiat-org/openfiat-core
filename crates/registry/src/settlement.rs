@@ -490,7 +490,15 @@ impl FeeSettlementError {
             | Self::FeeDisagreement
             | Self::PriceDisagreement
             | Self::QuoteWindowTooLong => ErrorCode::InvalidRequest,
-            Self::QuoteExpired => ErrorCode::SessionExpired,
+            // The quote's validity window has passed, so the signed
+            // settlement is a stale artifact — the same shape as
+            // `WalletError::RequestExpired`, and the same code. Not
+            // `SessionExpired` (1006), where this used to land: a payer
+            // told their session expired re-authenticates and re-sends
+            // the same settlement, carrying the same expired quote. The
+            // fee is still owed; what has to change is the rate it is
+            // quoted at.
+            Self::QuoteExpired => ErrorCode::RequestExpired,
         }
     }
 }

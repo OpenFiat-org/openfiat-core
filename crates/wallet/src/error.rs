@@ -21,7 +21,12 @@ impl WalletError {
         match self {
             Self::MalformedRequest => ErrorCode::InvalidRequest,
             Self::InvalidSignature => ErrorCode::InvalidSignature,
-            Self::RequestExpired => ErrorCode::SessionExpired,
+            // 1015, not `SessionExpired` (1006). What expired is this
+            // one signed request's freshness window; there is no session
+            // in this crate to have expired, and a caller that responds
+            // to 1006 by re-authenticating has left the timestamp inside
+            // the signed bytes exactly as stale as it was.
+            Self::RequestExpired => ErrorCode::RequestExpired,
         }
     }
 }
@@ -33,3 +38,27 @@ impl fmt::Display for WalletError {
 }
 
 impl std::error::Error for WalletError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The mapping is a one-line `match` arm and nothing else in this
+    /// workspace reaches it — `openfiat-wallet` is depended on by
+    /// `openfiat-cli` alone, so the shared guard in
+    /// `openfiat-rpc/tests/error_codes.rs` cannot cover this one.
+    ///
+    /// `SessionExpired` (1006) is what this used to answer with, and a
+    /// caller acting on it re-authenticates: the wrong remedy, since
+    /// what expired is the timestamp inside the bytes they signed, and
+    /// a new session does not change those bytes.
+    #[test]
+    fn an_expired_request_is_not_an_expired_session() {
+        assert_eq!(
+            WalletError::RequestExpired.code(),
+            ErrorCode::RequestExpired
+        );
+        assert_eq!(WalletError::RequestExpired.code().code(), 1015);
+        assert!(!WalletError::RequestExpired.code().retryable());
+    }
+}

@@ -42,6 +42,25 @@ impl NetworkError {
             Self::DuplicateSequence => ErrorCode::ReplayAttackDetected,
             Self::OutOfOrderSequence => ErrorCode::MessageOutOfOrder,
             Self::Timeout => ErrorCode::OperationTimeout,
+            // Imprecise and knowingly kept. A rate limit is a speed and
+            // exhaustion is a level, the distinction that earned
+            // `PaymentMethodLimitReached` (3006) its own code — but the
+            // two arguments do not land the same way. 3006 was a
+            // permanent cap wearing a retryable code, so a client backed
+            // off forever over something no amount of waiting fixed.
+            // These two are both retryable and both truthfully so: a
+            // transport out of buffers and a caller over quota are both
+            // relieved by waiting, and every client's next move is the
+            // same backoff.
+            //
+            // The variant also has no construction site anywhere in this
+            // workspace — OFNP §22 names the category, and nothing in
+            // the transport raises it yet. A code minted for it today
+            // would enter the registry with no wire evidence behind it.
+            // Worth revisiting when backpressure is actually wired up,
+            // because "the node is full, try another peer" and "you are
+            // over quota, slow down" do diverge once a client has more
+            // than one peer to choose from.
             Self::ResourceExhaustion => ErrorCode::RateLimitExceeded,
             Self::Internal => ErrorCode::InternalError,
         }

@@ -33,7 +33,13 @@ impl SessionError {
             Self::MalformedSession => ErrorCode::DeserializationError,
             Self::DuplicateSessionId => ErrorCode::ResourceAlreadyExists,
             Self::SessionNotFound => ErrorCode::ResourceNotFound,
-            Self::AlreadyRevoked => ErrorCode::SessionExpired,
+            // 1014, not `SessionExpired` (1006). Revocation and expiry
+            // are the two ways a session ends and they are not
+            // interchangeable: expiry is the clock running out, and a
+            // renew fixes it; revocation is a decision, it is permanent
+            // (§16), and a client that responds to it by renewing is
+            // asking for the one thing that will never be granted.
+            Self::AlreadyRevoked => ErrorCode::SessionRevoked,
             Self::StaleVersion => ErrorCode::InvalidRequest,
         }
     }

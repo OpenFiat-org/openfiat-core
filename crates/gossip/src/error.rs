@@ -54,10 +54,15 @@ impl GossipError {
             // by does not describe it.
             Self::EventIdMismatch => ErrorCode::DeserializationError,
             Self::TimestampTooFarAhead => ErrorCode::InvalidRequest,
-            // The closest existing code: an event whose origin cannot be
-            // what it claims is exactly a signature that does not
-            // establish what it appears to.
-            Self::IdentityInUseElsewhere => ErrorCode::InvalidSignature,
+            // 2006, not `InvalidSignature` (1003). The old mapping
+            // reasoned that an origin which cannot be what it claims is
+            // a signature that fails to establish what it appears to —
+            // but the signature did establish it, correctly, which is
+            // the whole problem. A peer told 1003 re-signs and resends;
+            // an operator told 1003 goes looking for a bug in signing.
+            // Neither of those is the remedy, and 2006 names the one
+            // that is.
+            Self::IdentityInUseElsewhere => ErrorCode::IdentityInUseElsewhere,
         }
     }
 }

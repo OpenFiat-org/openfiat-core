@@ -29,7 +29,17 @@ impl OracleError {
             Self::InvalidSignature => ErrorCode::InvalidSignature,
             Self::Unauthorized => ErrorCode::InvalidRequest,
             Self::MalformedRecord => ErrorCode::DeserializationError,
-            Self::AlreadyExpired => ErrorCode::SessionExpired,
+            // The record's `expires_at` does not follow its own
+            // `published_at`: one field contradicts another, which is
+            // what `InvalidParameter` is for. It used to be
+            // `SessionExpired` (1006) — a code naming a session, in a
+            // crate that has none, for a record that has not expired and
+            // never could, since it was refused before it was ever
+            // stored. Distinct from `StaleVersion` below, which is a
+            // well-formed record arriving too late; this one is
+            // ill-formed on its face and the publisher can see that
+            // without asking anyone.
+            Self::AlreadyExpired => ErrorCode::InvalidParameter,
             Self::StaleVersion => ErrorCode::InvalidRequest,
             Self::OracleNotFound => ErrorCode::ResourceNotFound,
         }

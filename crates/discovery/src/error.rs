@@ -18,9 +18,16 @@ impl DiscoveryError {
     pub const fn code(self) -> ErrorCode {
         match self {
             Self::MalformedAdvertisement => ErrorCode::DeserializationError,
-            // No dedicated "invalid public key" code exists; this falls
-            // back to the same category a bad signature would.
-            Self::InvalidPublicKey => ErrorCode::InvalidSignature,
+            // Raised before any signature is looked at: the
+            // advertisement's `public_key` field is not a key a Peer ID
+            // can be derived from. `InvalidSignature` (1003), which this
+            // used to answer with, describes a check that has not run
+            // yet and points a publisher at their signing code instead
+            // of at the malformed field. `InvalidParameter` is the plain
+            // statement — one field of the record is not a value this
+            // protocol accepts — and is what `openfiat_content` uses for
+            // the same shape of failure.
+            Self::InvalidPublicKey => ErrorCode::InvalidParameter,
             Self::PeerIdMismatch => ErrorCode::InvalidIdentityClaim,
             Self::InvalidSignature => ErrorCode::InvalidSignature,
         }

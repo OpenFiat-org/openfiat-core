@@ -71,6 +71,27 @@ error_registry! {
         ResourceAlreadyExists = 7, "RESOURCE_ALREADY_EXISTS", false;
         OperationTimeout = 8, "OPERATION_TIMEOUT", true;
         RateLimitExceeded = 9, "RATE_LIMIT_EXCEEDED", true;
+        // A sealed payload that did not open — `openfiat_crypto`'s
+        // `seal`, and every domain that carries a sealed payload through
+        // it. Its own code rather than `InvalidSignature` (1003), where
+        // it used to land: nothing about a signature is in question. The
+        // envelope's signature verified, and what failed afterwards was
+        // opening a box with a key that does not fit it. A peer told 1003
+        // re-signs and re-sends the same undecryptable bytes.
+        //
+        // Says only that the box did not open. "Wrong key", "tampered
+        // ciphertext" and "payload lifted from another slot" stay
+        // collapsed into one code for the reason `SealError` collapses
+        // them into one variant: telling them apart is an oracle.
+        //
+        // General rather than domain-ranged because no domain owns it —
+        // it is raised by the crypto layer on behalf of whoever called
+        // it, and OFS-8000's general range is where conditions with no
+        // single owner live.
+        //
+        // Not retryable: the same ciphertext and the same key fail the
+        // same way for as long as both are unchanged.
+        DecryptionFailed = 10, "DECRYPTION_FAILED", false;
     }
     range "Network (1000-1999)" {
         NetworkError = 1000, "NETWORK_ERROR", true;
@@ -87,6 +108,28 @@ error_registry! {
         BlockhashExpired = 1011, "BLOCKHASH_EXPIRED", true;
         MalformedTransaction = 1012, "MALFORMED_TRANSACTION", false;
         TransactionSubmissionFailed = 1013, "TRANSACTION_SUBMISSION_FAILED", true;
+        // A session that was revoked, which is not a session that
+        // expired. Both used to arrive as `SessionExpired` (1006), and
+        // they call for opposite responses: expiry is the ordinary end of
+        // a session's life and renewal is the remedy, while revocation is
+        // deliberate and permanent (OFS-1400 §16) and no renewal undoes
+        // it. A client told 1006 renews and is refused again; a client
+        // told 1014 knows to establish a new session, and an operator
+        // knows to ask who revoked this one.
+        SessionRevoked = 1014, "SESSION_REVOKED", false;
+        // A signed artifact whose own validity window has passed: a
+        // wallet request outside its freshness window, a fee-settlement
+        // quote past `MAX_QUOTE_VALIDITY`. Both were `SessionExpired`
+        // (1006), which was the wrong instruction twice over — there is
+        // no session anywhere in either path, and a client that responds
+        // by re-authenticating has not touched the thing that expired.
+        //
+        // The remedy is to build the artifact again from current values
+        // and sign it again: a fresh timestamp, or a fresh quote at the
+        // current rate. Not retryable, because the stale value is inside
+        // the bytes that were signed — the identical request carries the
+        // identical expired window.
+        RequestExpired = 1015, "REQUEST_EXPIRED", false;
     }
     range "Identity (2000-2999)" {
         IdentityNotFound = 2000, "IDENTITY_NOT_FOUND", false;
@@ -95,6 +138,20 @@ error_registry! {
         IdentityRevoked = 2003, "IDENTITY_REVOKED", false;
         ClaimVerificationFailed = 2004, "CLAIM_VERIFICATION_FAILED", false;
         InvalidSignatureChain = 2005, "INVALID_SIGNATURE_CHAIN", false;
+        // An event signed by a node's own key that this node did not
+        // emit: proof that a second process holds the same identity.
+        //
+        // Its own code rather than `InvalidSignature` (1003), where it
+        // used to land. The signature verified — that is the entire
+        // finding, and the code that says otherwise sends everyone who
+        // reads it to the wrong place. A peer told 1003 re-signs; an
+        // operator told 1003 audits their signing path. The actual
+        // remedy is to stop running a copied `wallet.json` and rotate
+        // the key, which no signature-shaped code will ever suggest.
+        //
+        // Not retryable: the duplicate holds the key until a human takes
+        // it away.
+        IdentityInUseElsewhere = 2006, "IDENTITY_IN_USE_ELSEWHERE", false;
     }
     range "Advertisement (3000-3999)" {
         AdvertisementNotFound = 3000, "ADVERTISEMENT_NOT_FOUND", false;
@@ -184,6 +241,27 @@ error_registry! {
         DisputeClosed = 6002, "DISPUTE_CLOSED", false;
         InvalidEvidence = 6003, "INVALID_EVIDENCE", false;
         DisputeTimeout = 6004, "DISPUTE_TIMEOUT", false;
+        // The analogue of `InvalidReservationState` (4006) and
+        // `InvalidSettlementState` (5009) that this range never had —
+        // which is why an action illegal from the dispute's current
+        // state had nowhere to land but `DisputeClosed` (6002).
+        //
+        // 6002 says the case is over. Almost nothing that reached it
+        // was: an arbitrator joining a panel that has just filled, a
+        // vote committed before the case locks, a reveal before the
+        // commit phase ends. Every one of those is a live dispute, and a
+        // participant told the dispute is closed stops acting on a case
+        // they are still entitled — and sometimes obliged — to act on.
+        //
+        // 6002 keeps its number and its meaning and is mapped from
+        // nothing today, the position 5005 holds. It is the right answer
+        // for a case that genuinely resolved, and `openfiat-disputes`
+        // does not yet separate that from the other illegal transitions;
+        // the wrong answer is to keep calling the others by its name.
+        //
+        // Not retryable: a dispute's state moves when someone acts on
+        // it, never because the same request arrived twice.
+        InvalidDisputeState = 6005, "INVALID_DISPUTE_STATE", false;
     }
     range "Governance (7000-7999)" {
         ProposalNotFound = 7000, "PROPOSAL_NOT_FOUND", false;
@@ -191,6 +269,30 @@ error_registry! {
         DuplicateVote = 7002, "DUPLICATE_VOTE", false;
         InsufficientVotingPower = 7003, "INSUFFICIENT_VOTING_POWER", false;
         InvalidProposal = 7004, "INVALID_PROPOSAL", false;
+        // "That proposal id is already taken", which is the one thing
+        // `InvalidProposal` (7004) does not say. A duplicate id used to
+        // land there, and 7004 is a verdict on a proposal's *content*:
+        // an author told their proposal is invalid rewrites text that
+        // was never the problem, when the only thing wrong is a
+        // collision — with a stranger's proposal, or with their own
+        // resend after a dropped connection.
+        //
+        // Its own code rather than the generic `ResourceAlreadyExists`
+        // (7), for the reason `SettlementAlreadyExists` (5010) gives:
+        // the generic belongs to the domains OFS-8000 allocated no range
+        // to, and governance has one.
+        ProposalAlreadyExists = 7005, "PROPOSAL_ALREADY_EXISTS", false;
+        // Withdrawing a proposal that already executed, activating one
+        // already active, voting on a status that does not accept votes.
+        // The state analogue this range lacked, and the second condition
+        // 7004 was absorbing: "you cannot do that from here" is not
+        // "your proposal is invalid", and only one of the two is fixed
+        // by editing the proposal.
+        //
+        // Not retryable, for the reason 5009 is not: the transition is
+        // illegal for as long as the proposal stays where it is, and
+        // nothing about resending changes where it is.
+        InvalidProposalState = 7006, "INVALID_PROPOSAL_STATE", false;
     }
     range "Notifications (8000-8999)" {
         NotificationProviderUnavailable = 8000, "NOTIFICATION_PROVIDER_UNAVAILABLE", true;

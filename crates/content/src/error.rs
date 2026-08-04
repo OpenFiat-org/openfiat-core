@@ -19,7 +19,16 @@ pub enum ContentError {
     /// The author's declared size exceeds [`crate::MAX_ATTACHMENT_BYTES`].
     TooLarge,
     InvalidSignature,
-    /// The signer is not a party to the settlement they are attaching to.
+    /// The author's claimed [`openfiat_types::PeerId`] is not the one
+    /// their own public key derives to.
+    ///
+    /// Named for the authorization it was meant to enforce, but the
+    /// check it actually performs is in [`crate::events`] and is about
+    /// self-consistency: whether this record's two identity fields agree
+    /// with each other. Whether the signer is a party to the settlement
+    /// is decided at read time by
+    /// [`crate::store::AttachmentRegistry::find_by_settlement`], which
+    /// filters rather than errors.
     NotAParty,
     DuplicateAttachmentId,
     AttachmentNotFound,
@@ -35,10 +44,26 @@ impl ContentError {
                 ErrorCode::InvalidParameter
             }
             Self::InvalidSignature => ErrorCode::InvalidSignature,
-            // 6003 rather than a generic authorization code, of which
-            // OFS-8000 has none: an attachment from someone who is not a
-            // party to the trade is precisely evidence that is not valid.
-            Self::NotAParty => ErrorCode::InvalidEvidence,
+            // 2001, not `InvalidEvidence` (6003), and the old mapping's
+            // stated reasoning was wrong on both halves.
+            //
+            // It claimed OFS-8000 has no generic authorization code.
+            // 2001 is exactly that code, and it is what the three
+            // neighbours raising this same condition already use —
+            // `openfiat_reviews`, `openfiat_tradechannel` and
+            // `openfiat_disputes` all answer `NotAParty` with it.
+            //
+            // It then claimed the caller is not a party to the trade.
+            // The check this variant guards does not look at the trade
+            // at all: it compares the record's claimed author against
+            // the Peer ID its own public key derives to — the same
+            // condition `DiscoveryError::PeerIdMismatch` reports, also
+            // as 2001. A false identity claim, made by whoever signed.
+            //
+            // 6003 meanwhile says the attachment is bad, and an author
+            // who believes that re-encodes, re-uploads and re-pins a
+            // file that was never the problem.
+            Self::NotAParty => ErrorCode::InvalidIdentityClaim,
             Self::DuplicateAttachmentId => ErrorCode::ResourceAlreadyExists,
             Self::AttachmentNotFound => ErrorCode::ResourceNotFound,
             Self::MalformedAttachment => ErrorCode::DeserializationError,

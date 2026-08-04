@@ -49,7 +49,14 @@ impl TradeChannelError {
             Self::EntryTooLarge => ErrorCode::InvalidParameter,
             Self::SequenceReused => ErrorCode::ResourceAlreadyExists,
             Self::MalformedEntry => ErrorCode::DeserializationError,
-            Self::PayloadDidNotOpen => ErrorCode::InvalidSignature,
+            // The same code `openfiat_crypto::SealError::Failed` now
+            // reports, and for the same reason: the entry's signature
+            // verified before decryption was ever attempted, so
+            // `InvalidSignature` (1003) was telling a reader whose key
+            // does not fit this entry to go and re-sign it. The remedy
+            // is a key grant, which 0010 at least does not argue
+            // against.
+            Self::PayloadDidNotOpen => ErrorCode::DecryptionFailed,
         }
     }
 }

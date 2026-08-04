@@ -102,7 +102,13 @@ impl SealError {
     pub const fn code(self) -> ErrorCode {
         match self {
             Self::InvalidRecipientKey => ErrorCode::InvalidParameter,
-            Self::Failed => ErrorCode::InvalidSignature,
+            // 0010, not `InvalidSignature` (1003). A sealed box that did
+            // not open says nothing about any signature — the caller
+            // usually verified one already, and it passed. The two
+            // failures have different remedies (obtain the right key
+            // versus sign correctly) and sharing a code hid that from
+            // everyone downstream.
+            Self::Failed => ErrorCode::DecryptionFailed,
         }
     }
 }
