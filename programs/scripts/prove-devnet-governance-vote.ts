@@ -25,14 +25,21 @@
  * which is a different claim: a `VoteRecord` holding the right number while the
  * tally it feeds moved by a different one would be a real and silent bug.
  *
- * # Quorum
+ * # The rest of the lifecycle
  *
- * The proposal created here cannot pass, and is not meant to. Quorum is 10% of
- * the 1,000,000,000 OPEN supply — 100,000,000 OPEN — against roughly 102,000
- * currently staked across the whole devnet cluster. Quorum is evaluated by
- * `tally_and_finalize`, not by `cast_vote`, so it does not affect what is being
- * proven; it is called out because a reader who sees the proposal fail later
- * should know that was expected arithmetic, not a fault.
+ * It then waits the voting window out, calls `tally_and_finalize`, and settles
+ * the proposer's deposit. Those two steps used to be unreachable here: quorum
+ * was 10% of the 1,000,000,000 OPEN supply — 100,000,000 OPEN — against roughly
+ * 102,000 staked cluster-wide, so every devnet proposal was unpassable by
+ * arithmetic and the accept branch, the threshold comparison and the deposit
+ * *refund* path had never run against real state. `set-devnet-governance-quorum.ts`
+ * rescaled quorum to 100,000 OPEN, which is what makes the whole lifecycle
+ * provable rather than only its first half.
+ *
+ * The outcome is asserted against independently computed arithmetic rather
+ * than merely reported, in both directions: below quorum this must resolve
+ * `Rejected` with the deposit forfeited, at or above it `Accepted` with the
+ * deposit refunded. Quorum alone decides refund-vs-forfeit — not acceptance.
  *
  * IDEMPOTENT. Picks a fresh proposal id and skips a vote that already exists,
  * so a re-run after an RPC timeout resumes rather than failing.
@@ -50,7 +57,11 @@ import {
   PublicKey,
   SYSVAR_RENT_PUBKEY,
 } from "@solana/web3.js";
-import { TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
+import {
+  TOKEN_2022_PROGRAM_ID,
+  getAccount,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 import * as anchor from "@anchor-lang/core";
 import { BN } from "@anchor-lang/core";
 
@@ -74,16 +85,45 @@ const ROLE_NAMES = [
   "SnapshotProvider",
 ];
 
-const VOTING_PERIOD_SECS = 3600;
+/**
+ * How long the proposal stays open.
+ *
+ * Short by default so this script can wait the window out and carry on
+ * through `tally_and_finalize` and the deposit settlement — the two steps
+ * that were unreachable on devnet until quorum was rescaled (see
+ * `set-devnet-governance-quorum.ts`). Raise it with `VOTING_PERIOD_SECS` to
+ * leave a proposal open for others to vote on instead.
+ */
+const VOTING_PERIOD_SECS = Number(process.env.VOTING_PERIOD_SECS ?? 60);
 const OPEN_DECIMALS = 9;
 
 const leU64 = (n: number | bigint) => new BN(n.toString()).toArrayLike(Buffer, "le", 8);
 const stateName = (s: Record<string, unknown>) => Object.keys(s)[0];
 const whole = (units: bigint) =>
   (Number(units) / 10 ** OPEN_DECIMALS).toLocaleString("en-US");
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The validator's own clock, which is what `voting_ends_at` is compared
+ *  against on chain — never `Date.now()`, which drifts from it. */
+async function chainTime(connection: Connection): Promise<number> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const slot = await connection.getSlot("confirmed");
+    const time = await connection.getBlockTime(slot);
+    if (time !== null) return time;
+    await sleep(1_000);
+  }
+  throw new Error("could not read the validator's block time after 5 attempts");
+}
+
+async function tokenBalance(connection: Connection, address: PublicKey): Promise<bigint> {
+  const info = await connection.getAccountInfo(address, "confirmed");
+  if (!info) return 0n;
+  return (await getAccount(connection, address, "confirmed", TOKEN_2022_PROGRAM_ID)).amount;
+}
 
 interface GovernanceConfigAccount {
   mint: PublicKey;
+  forfeitDestination: PublicKey;
   depositAmount: BN;
   quorumBps: number;
   totalOpenSupply: BN;
@@ -96,6 +136,7 @@ interface ProposalAccount {
   state: Record<string, unknown>;
   votingEndsAt: BN;
   quorumSnapshot: BN;
+  quorumMet: boolean;
 }
 interface VoteRecordAccount {
   proposal: PublicKey;
@@ -362,15 +403,92 @@ async function main() {
     throw new Error(`${failures.length} check(s) failed`);
   }
 
-  console.log("\nPASS");
+  console.log("\nvote PASS");
   console.log(
     `  the chain independently computed ${whole(recordedWeight)} OPEN of weight from the`,
   );
   console.log("  voter's own StakeAccount, and the tally moved by exactly that.");
+
+  // ---- Step 4: tally ------------------------------------------------------
+  const quorum = BigInt(after.quorumSnapshot.toString());
+  const endsAt = Number(after.votingEndsAt);
+  console.log(`\n--- Step 4: tally_and_finalize ---`);
+  console.log(`quorum for this proposal: ${whole(quorum)} OPEN`);
+  console.log(`votes cast              : ${whole(votesFor)} OPEN`);
+  if (votesFor < quorum) {
+    console.log(
+      "\nvotes are below quorum, so this proposal will resolve Rejected with the deposit " +
+        "forfeited. That is a valid outcome to prove, but it is not the accept path — " +
+        "stake more, or lower quorum with set-devnet-governance-quorum.ts, to reach it.",
+    );
+  }
+
+  for (;;) {
+    const now = await chainTime(connection);
+    if (now >= endsAt) break;
+    console.log(`  waiting out the voting window: ${endsAt - now}s to go`);
+    await sleep(10_000);
+  }
+
+  const tallySig = await governance.methods
+    .tallyAndFinalize()
+    .accountsPartial({ proposal: proposalPda })
+    .rpc({ commitment: "confirmed" });
+  console.log(`tally_and_finalize: ${tallySig}`);
+
+  const tallied = await gov.proposal.fetch(proposalPda);
+  console.log(`  state      : ${stateName(tallied.state)}`);
+  console.log(`  quorum_met : ${tallied.quorumMet}`);
+
+  const expectedQuorumMet = votesFor >= quorum;
+  if (tallied.quorumMet !== expectedQuorumMet) {
+    throw new Error(
+      `quorum_met is ${tallied.quorumMet} but ${whole(votesFor)} OPEN cast against a ` +
+        `${whole(quorum)} OPEN quorum says it should be ${expectedQuorumMet}`,
+    );
+  }
+  // A single unanimous "approve" clears any threshold, so with quorum met the
+  // only correct outcome is Accepted. Asserted rather than reported: this is
+  // the branch that had never once run on devnet.
+  const expectedState = expectedQuorumMet ? "accepted" : "rejected";
+  if (stateName(tallied.state) !== expectedState) {
+    throw new Error(`proposal is ${stateName(tallied.state)}, expected ${expectedState}`);
+  }
+
+  // ---- Step 5: settle the deposit ----------------------------------------
+  console.log("\n--- Step 5: refund_or_forfeit_deposit ---");
+  const balanceBefore = await tokenBalance(connection, proposerOpen);
+  const settleSig = await governance.methods
+    .refundOrForfeitDeposit()
+    .accountsPartial({
+      mint,
+      governanceConfig: governanceConfigPda,
+      depositVault,
+      proposal: proposalPda,
+      proposerTokenAccount: proposerOpen,
+      forfeitDestination: config.forfeitDestination,
+      tokenProgram: TOKEN_2022_PROGRAM_ID,
+    })
+    .rpc({ commitment: "confirmed" });
+  console.log(`refund_or_forfeit_deposit: ${settleSig}`);
+
+  // Quorum alone decides refund-vs-forfeit, not acceptance.
+  const balanceAfter = await tokenBalance(connection, proposerOpen);
+  const returned = balanceAfter - balanceBefore;
+  console.log(`proposer OPEN: ${whole(balanceBefore)} -> ${whole(balanceAfter)}`);
+  const expectedReturn = tallied.quorumMet ? deposit : 0n;
+  if (returned !== expectedReturn) {
+    throw new Error(
+      `deposit settlement returned ${whole(returned)} OPEN, expected ${whole(expectedReturn)} ` +
+        `(quorum_met=${tallied.quorumMet})`,
+    );
+  }
+
+  console.log("\nLIFECYCLE PASS");
   console.log(
-    `\nnote: this proposal cannot pass — quorum is ${whole(BigInt(after.quorumSnapshot.toString()))} ` +
-      "OPEN against ~102,000 staked cluster-wide. Quorum is evaluated by " +
-      "tally_and_finalize, not cast_vote, so it does not bear on what was proven here.",
+    `  create -> vote (${whole(recordedWeight)} OPEN of real stake) -> tally (${stateName(tallied.state)}, ` +
+      `quorum ${tallied.quorumMet ? "met" : "missed"}) -> deposit ` +
+      `${tallied.quorumMet ? "refunded" : "forfeited"}.`,
   );
 }
 
