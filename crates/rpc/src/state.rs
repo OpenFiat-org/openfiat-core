@@ -447,7 +447,10 @@ impl<S: KvStore + 'static> NodeState<S> {
             Rc::clone(&store),
             Rc::clone(&advertisements),
         ));
-        let settlements = Rc::new(SettlementRegistry::new(Rc::clone(&store)));
+        let settlements = Rc::new(SettlementRegistry::new(
+            Rc::clone(&store),
+            Rc::clone(&reservations),
+        ));
         let disputes = Rc::new(DisputeRegistry::new(
             Rc::clone(&store),
             Rc::clone(&settlements),
@@ -462,7 +465,7 @@ impl<S: KvStore + 'static> NodeState<S> {
             Rc::clone(&disputes),
         ));
         let trades = TradeView::new(Rc::clone(&reservations), Rc::clone(&settlements));
-        let counterparties = CounterpartyView::new(Rc::clone(&settlements), Rc::clone(&disputes));
+        let counterparties = CounterpartyView::new(Rc::clone(&settlements));
         let reputation = ReputationView::new(
             Rc::clone(&reservations),
             Rc::clone(&settlements),

@@ -87,10 +87,12 @@ impl<S: KvStore> ReputationView<S> {
                 }
             }
             match settlement.state {
-                // Not currently reachable — see `openfiat_settlement`'s own
-                // note on why `Approved` and `Completed` are still kept as
-                // two states even though this crate's `apply_approved`
-                // transitions straight to `Completed`.
+                // Counted together, and `Approved` is the one that
+                // matters: it is the last signed peer-to-peer act in a
+                // trade, where `Completed` is each node's own observation
+                // of the chain (`apply_escrow_released`). Counting only
+                // `Completed` would make a wallet's reputation depend on
+                // which node you asked.
                 SettlementState::Approved | SettlementState::Completed => {
                     profile.trades_completed += 1;
                     profile.record_volume(settlement.amount);
@@ -104,6 +106,16 @@ impl<S: KvStore> ReputationView<S> {
                 SettlementState::Cancelled | SettlementState::Rejected => {
                     profile.trades_cancelled += 1
                 }
+                // Nothing is counted for a trade that has not finished,
+                // and `Disputed` is one of those: the escrow is frozen
+                // and neither party has been shown to be right yet.
+                // Counting it as a cancellation would fault whichever of
+                // them turns out to have been telling the truth, and
+                // arbitration then moves the settlement into `Completed`
+                // or `Cancelled` (OFS-2300 §5a), where it is counted once
+                // — by the arm above or the one before it — as whatever
+                // the chain decided it was. The dispute loop below is
+                // where being *in* a dispute is counted.
                 SettlementState::AwaitingPayment
                 | SettlementState::PaymentSubmitted
                 | SettlementState::Disputed => {}

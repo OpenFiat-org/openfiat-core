@@ -3,6 +3,7 @@
 //! consistent resolution across every node in a gossip cluster.
 
 use futures::future::select_all;
+use openfiat_advertisements::AdvertisementRegistry;
 use openfiat_crypto::Keypair;
 use openfiat_disputes::{DisputeService, DisputeStatus, Vote};
 use openfiat_gossip::EventStore;
@@ -10,7 +11,7 @@ use openfiat_gossip::channel::Subscription;
 use openfiat_network::identity::peer_id_from_public_key;
 use openfiat_network::identity::{peer_id, to_libp2p_keypair};
 use openfiat_network::{Multiaddr, Node};
-use openfiat_reservations::ReservationId;
+use openfiat_reservations::{ReservationId, ReservationRegistry};
 use openfiat_settlement::events::SignedSettlementInitiate;
 use openfiat_settlement::{SettlementId, SettlementRegistry};
 use openfiat_storage::mem::MemoryStore;
@@ -25,7 +26,16 @@ fn seeded_settlements(
     buyer: &Keypair,
     seller: &Keypair,
 ) -> Rc<SettlementRegistry<MemoryStore>> {
-    let registry = Rc::new(SettlementRegistry::new(MemoryStore::new()));
+    let registry = Rc::new(SettlementRegistry::new(
+        MemoryStore::new(),
+        // No reservation is created in this test — it is about dispute
+        // replication — so OFS-2300 §5a's reservation transitions find
+        // nothing and change nothing.
+        Rc::new(ReservationRegistry::new(
+            MemoryStore::new(),
+            Rc::new(AdvertisementRegistry::new(MemoryStore::new())),
+        )),
+    ));
     let initiate = openfiat_settlement::events::SettlementInitiate {
         id: settlement_id.clone(),
         reservation_id: ReservationId::new("res-1"),

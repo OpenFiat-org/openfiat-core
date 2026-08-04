@@ -42,9 +42,45 @@ pub enum SettlementState {
     Completed,
     Rejected,
     Cancelled,
-    /// Escalated to Dispute (OFS-2400) — that crate takes over resolution
-    /// of a settlement in this state; this crate doesn't depend on it.
+    /// Escalated to Dispute (OFS-2400) — the escrow is frozen and this
+    /// settlement's own transitions are suspended until arbitration
+    /// concludes.
+    ///
+    /// Written by [`crate::SettlementRegistry::apply_dispute_opened`] and
+    /// left by [`crate::SettlementRegistry::apply_dispute_resolved`], both
+    /// called by `openfiat-disputes` — which already holds this registry,
+    /// so the dependency still runs one way and this crate still knows
+    /// nothing about disputes beyond what the escrow did.
+    ///
+    /// It has to be both, not either. Entry without an exit would be
+    /// worse than the nothing that was here before: dispute resolution
+    /// terminates on the dispute record, so a settlement parked in
+    /// `Disputed` would never satisfy `apply_escrow_released`'s
+    /// `Approved` precondition and every arbitrated trade would strand
+    /// here permanently.
     Disputed,
+}
+
+/// What arbitration did to the escrow, in the only terms this crate has
+/// any business knowing (OFS-2400 §17, OFS-4200 §2).
+///
+/// Not `openfiat_disputes::Resolution` re-exported: that enum names
+/// *verdicts* (`BuyerWins`, `MutualSettlement`, …) and lives downstream
+/// of this crate, so depending on it would be the cycle. Two outcomes are
+/// all the settlement state machine can act on, because the two are the
+/// only distinction the escrow makes — the program's
+/// `execute_dispute_outcome` either releases the trade escrow to the
+/// buyer or unwinds it back to the merchant's liquidity vault, and the
+/// mapping from four verdicts onto these two lives in
+/// `openfiat-disputes`, next to the verdicts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DisputeVerdict {
+    /// The escrow was released to the buyer — what an uncontested
+    /// approval would have done, reached by arbitration instead.
+    EscrowReleased,
+    /// The escrow was returned to the merchant. No transfer happened, so
+    /// this is an abandoned trade rather than a completed one.
+    EscrowReturned,
 }
 
 /// Why a merchant rejected a submitted payment, as one of OFS-3000 §14's
@@ -116,6 +152,18 @@ pub struct Settlement {
     /// Set only on rejection — §14's typed discrepancy kind.
     #[serde(default)]
     pub payment_discrepancy: Option<PaymentDiscrepancy>,
+    /// When this settlement was escalated to arbitration (OFS-2400), from
+    /// the opener's own signed event timestamp. `None` if it never was.
+    ///
+    /// Kept after the dispute resolves, when `state` has moved on to
+    /// `Completed` or `Cancelled` and no longer says anything happened.
+    /// "Was this trade arbitrated?" is a question about the trade's
+    /// history, and this is the only place the answer survives — it is
+    /// what lets `openfiat-trade` answer it without holding the dispute
+    /// registry, and by construction it can only ever be read by someone
+    /// already reading the settlement.
+    #[serde(default)]
+    pub disputed_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }

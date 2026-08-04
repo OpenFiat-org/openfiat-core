@@ -7,7 +7,7 @@
 //! the same documented deferral `openfiat-settlement` makes for escrow
 //! release.
 
-use openfiat_settlement::SettlementId;
+use openfiat_settlement::{DisputeVerdict, SettlementId};
 use openfiat_types::{PeerId, PublicKey, Timestamp};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -68,6 +68,30 @@ pub enum Resolution {
     MerchantWins,
     MutualSettlement,
     Invalid,
+}
+
+impl Resolution {
+    /// What this verdict did to the trade escrow, which is all the
+    /// settlement state machine needs in order to leave
+    /// `SettlementState::Disputed` (OFS-2300 §5a).
+    ///
+    /// The mapping lives here, beside the verdicts, because it is a claim
+    /// about arbitration rather than about settlement — and because
+    /// `openfiat-settlement` cannot see this enum without becoming
+    /// circular.
+    ///
+    /// It follows the escrow program's own `execute_dispute_outcome`
+    /// exactly: `BuyerWins` releases the escrow by the same code path as
+    /// an uncontested approval, `MerchantWins` and `Invalid` unwind it
+    /// back to the merchant's liquidity vault, and `MutualSettlement`
+    /// splits it — part of which reaches the buyer, so it is a trade that
+    /// transferred rather than one that was abandoned.
+    pub fn escrow_verdict(self) -> DisputeVerdict {
+        match self {
+            Resolution::BuyerWins | Resolution::MutualSettlement => DisputeVerdict::EscrowReleased,
+            Resolution::MerchantWins | Resolution::Invalid => DisputeVerdict::EscrowReturned,
+        }
+    }
 }
 
 /// An arbitrator's vote (distinct from [`Resolution`]: an individual vote

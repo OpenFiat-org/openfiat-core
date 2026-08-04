@@ -17,6 +17,11 @@ openfiat-storage = { path = "../storage", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]
+# Only so tests can build the reservation registry a settlement
+# registry requires (OFS-2300 §5a), and a real advertisement for it to
+# draw liquidity from.
+openfiat-advertisements = { path = "../advertisements", version = "0.1.0" }
+openfiat-taxonomy = { path = "../taxonomy", version = "0.1.0" }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 futures = { version = "0.3.33", default-features = false, features = ["std", "async-await"] }
 libp2p = { version = "0.56.0", features = ["request-response"] }

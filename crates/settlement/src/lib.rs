@@ -5,10 +5,14 @@
 //! cancelled) travel as gossip events and every node derives its local
 //! settlement state purely by consuming them — the same replication
 //! pattern used throughout this workspace. This crate picks up authority
-//! at `EscrowLocked` (§5, handed off from `openfiat-reservations`) and
-//! its own authority ends where the on-chain program's escrow-release
-//! instruction begins (see `record` module doc) — that Solana-side
-//! integration is a separate, later piece of work.
+//! at `EscrowLocked` (§5, handed off from `openfiat-reservations`) —
+//! and, per §5a, says so in the reservation itself rather than leaving
+//! the handoff implicit: the registry holds the reservation index and
+//! marks a reservation `Settling` for as long as a settlement is running
+//! against it. See [`store`] for why that handle points this way round
+//! and closes no cycle. Its own authority ends where the on-chain
+//! program's escrow-release instruction begins (see `record` module doc)
+//! — that Solana-side integration is a separate, later piece of work.
 //!
 //! The [`recovery`] module is the exception to that boundary, and
 //! deliberately so: a settlement that ends in a dispute the merchant's
@@ -26,7 +30,7 @@ pub mod service;
 pub mod store;
 
 pub use error::SettlementError;
-pub use record::{PaymentDiscrepancy, Settlement, SettlementId, SettlementState};
+pub use record::{DisputeVerdict, PaymentDiscrepancy, Settlement, SettlementId, SettlementState};
 pub use recovery::{MerchantStake, RecoveryClaim, RecoveryPlan};
 pub use service::SettlementService;
 pub use store::SettlementRegistry;

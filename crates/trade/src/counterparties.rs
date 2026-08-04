@@ -33,11 +33,10 @@
 //! reached `Approved` or `Completed`, and every other outcome is
 //! reported separately rather than folded in or silently dropped.
 
-use openfiat_disputes::DisputeRegistry;
-use openfiat_settlement::{Settlement, SettlementId, SettlementRegistry, SettlementState};
+use openfiat_settlement::{Settlement, SettlementRegistry, SettlementState};
 use openfiat_storage::KvStore;
 use openfiat_types::{PeerId, Timestamp};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 /// Everything one wallet has done with one counterparty.
@@ -71,14 +70,22 @@ pub struct CounterpartySummary {
     /// but not a trade either.
     pub abandoned: u32,
     /// How many of the settlements above were escalated to arbitration
-    /// (OFS-2400).
+    /// (OFS-2400) — whether the case is still running or has long since
+    /// resolved.
     ///
-    /// Overlapping rather than exclusive because a dispute does not move
-    /// a settlement out of its own state machine — `openfiat-disputes`
-    /// keeps the case in its own registry keyed by settlement id, and
-    /// nothing in the workspace ever writes `SettlementState::Disputed`.
-    /// A disputed settlement is therefore still counted once in one of
-    /// the three buckets above, and once here.
+    /// Overlapping rather than exclusive, because it answers a question
+    /// about a trade's *history* rather than its state. A live case does
+    /// have a state of its own now (`SettlementState::Disputed`, counted
+    /// in `in_progress`), but arbitration that concluded leaves the
+    /// settlement in `Completed` or `Cancelled` like any other, and
+    /// "eleven of your twelve trades with this wallet went to
+    /// arbitration" is exactly the thing someone deciding whether to deal
+    /// with them again needs to see.
+    ///
+    /// Read from the settlement's own `disputed_at`, which is why this
+    /// view no longer holds the dispute registry: the settlement a wallet
+    /// is party to is the only record consulted, so a caller physically
+    /// cannot learn about a case they were not in.
     pub disputed: u32,
     /// When the most recent counted trade was approved, or `None` if no
     /// settlement between the pair has reached approval.
@@ -110,7 +117,7 @@ impl CounterpartySummary {
         self.trades + self.in_progress + self.abandoned
     }
 
-    fn record(&mut self, settlement: &Settlement, disputed: &HashSet<SettlementId>) {
+    fn record(&mut self, settlement: &Settlement) {
         match settlement.state {
             SettlementState::Approved | SettlementState::Completed => {
                 self.trades += 1;
@@ -122,16 +129,16 @@ impl CounterpartySummary {
                     None => concluded_at,
                 });
             }
-            // `Disputed` is grouped with the live states rather than given
-            // a bucket of its own because nothing writes it (see the
-            // `disputed` field); if something ever does, an escalated
-            // trade is unresolved, which is what these two mean.
+            // `Disputed` belongs with the live states: a frozen escrow in
+            // front of arbitrators is unresolved, which is what all three
+            // of these mean. It resolves into one of the buckets above
+            // once the chain moves the escrow (OFS-2300 §5a).
             SettlementState::AwaitingPayment
             | SettlementState::PaymentSubmitted
             | SettlementState::Disputed => self.in_progress += 1,
             SettlementState::Rejected | SettlementState::Cancelled => self.abandoned += 1,
         }
-        if disputed.contains(&settlement.id) {
+        if settlement.disputed_at.is_some() {
             self.disputed += 1;
         }
     }
@@ -157,27 +164,22 @@ impl CounterpartySummary {
 /// type for a relationship that wallet is not part of.
 pub struct CounterpartyView<S> {
     settlements: Rc<SettlementRegistry<S>>,
-    disputes: Rc<DisputeRegistry<S>>,
 }
 
 impl<S: KvStore> CounterpartyView<S> {
-    pub fn new(settlements: Rc<SettlementRegistry<S>>, disputes: Rc<DisputeRegistry<S>>) -> Self {
-        Self {
-            settlements,
-            disputes,
-        }
+    pub fn new(settlements: Rc<SettlementRegistry<S>>) -> Self {
+        Self { settlements }
     }
 
     /// Everyone `wallet` has ever started a settlement with, most-traded
     /// first.
     ///
-    /// Computed on demand — O(settlements + disputes) per call, matching
+    /// Computed on demand — O(settlements) per call, matching
     /// `ReputationView::profile`. Reflects only what this node has
     /// replicated: a node that joined recently will honestly report
     /// fewer trades than happened, so a count is always "as far as this
     /// node has seen", never an authoritative total.
     pub fn for_wallet(&self, wallet: &PeerId) -> Vec<CounterpartySummary> {
-        let disputed = self.disputed_settlements(wallet);
         let mut by_counterparty: HashMap<PeerId, CounterpartySummary> = HashMap::new();
         for settlement in self.settlements.all() {
             let Some(counterparty) = counterparty_of(&settlement, wallet) else {
@@ -186,7 +188,7 @@ impl<S: KvStore> CounterpartyView<S> {
             by_counterparty
                 .entry(counterparty.clone())
                 .or_insert_with(|| CounterpartySummary::empty(counterparty))
-                .record(&settlement, &disputed);
+                .record(&settlement);
         }
 
         let mut summaries: Vec<CounterpartySummary> = by_counterparty.into_values().collect();
@@ -212,26 +214,12 @@ impl<S: KvStore> CounterpartyView<S> {
         if wallet == counterparty {
             return summary;
         }
-        let disputed = self.disputed_settlements(wallet);
         for settlement in self.settlements.all() {
             if counterparty_of(&settlement, wallet).as_ref() == Some(counterparty) {
-                summary.record(&settlement, &disputed);
+                summary.record(&settlement);
             }
         }
         summary
-    }
-
-    /// The settlements `wallet` is a party to that have a dispute case
-    /// against them. Scoped to the wallet for the same reason everything
-    /// else here is: a dispute someone else opened is none of this
-    /// caller's business.
-    fn disputed_settlements(&self, wallet: &PeerId) -> HashSet<SettlementId> {
-        self.disputes
-            .all()
-            .into_iter()
-            .filter(|dispute| &dispute.buyer == wallet || &dispute.seller == wallet)
-            .map(|dispute| dispute.settlement_id)
-            .collect()
     }
 }
 
@@ -257,24 +245,27 @@ fn counterparty_of(settlement: &Settlement, wallet: &PeerId) -> Option<PeerId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openfiat_advertisements::AdvertisementRegistry;
     use openfiat_crypto::Keypair;
-    use openfiat_disputes::DisputeId;
     use openfiat_disputes::events::{DisputeOpen, SignedDisputeOpen};
+    use openfiat_disputes::{DisputeId, DisputeRegistry, Resolution};
     use openfiat_network::identity::peer_id_from_public_key;
-    use openfiat_reservations::ReservationId;
-    use openfiat_settlement::PaymentDiscrepancy;
+    use openfiat_reservations::{ReservationId, ReservationRegistry};
     use openfiat_settlement::events::{
         PaymentSubmitted, SettlementApproved, SettlementCancelled, SettlementInitiate,
         SettlementRejected, SignedPaymentSubmitted, SignedSettlementApproved,
         SignedSettlementCancelled, SignedSettlementInitiate, SignedSettlementRejected,
     };
+    use openfiat_settlement::{PaymentDiscrepancy, SettlementId};
     use openfiat_storage::mem::MemoryStore;
     use openfiat_types::Amount;
 
     /// Every settlement in these tests is driven through the real signed
     /// events, so a state a test asserts on is a state the protocol can
-    /// actually reach. `Disputed` is absent from this list on purpose —
-    /// nothing in the workspace produces it.
+    /// actually reach. `Disputed` was absent from this list for exactly
+    /// that reason until OFS-2300 §5a gave it a writer; it is here now,
+    /// and it is reached the only way it can be — by opening a real
+    /// dispute against a real settlement.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Outcome {
         AwaitingPayment,
@@ -283,6 +274,7 @@ mod tests {
         Completed,
         Rejected,
         Cancelled,
+        Disputed,
     }
 
     struct Fixture {
@@ -293,7 +285,16 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let settlements = Rc::new(SettlementRegistry::new(MemoryStore::new()));
+            // These tests fold settlements; the reservations behind them
+            // are another crate's subject. None is ever created, so §5a's
+            // reservation transitions find nothing and no-op — which is
+            // itself the behaviour a node needs when a settlement arrives
+            // ahead of the reservation it names.
+            let reservations = Rc::new(ReservationRegistry::new(
+                MemoryStore::new(),
+                Rc::new(AdvertisementRegistry::new(MemoryStore::new())),
+            ));
+            let settlements = Rc::new(SettlementRegistry::new(MemoryStore::new(), reservations));
             let disputes = Rc::new(DisputeRegistry::new(
                 MemoryStore::new(),
                 Rc::clone(&settlements),
@@ -306,7 +307,7 @@ mod tests {
         }
 
         fn view(&self) -> CounterpartyView<MemoryStore> {
-            CounterpartyView::new(Rc::clone(&self.settlements), Rc::clone(&self.disputes))
+            CounterpartyView::new(Rc::clone(&self.settlements))
         }
 
         fn settle(
@@ -398,12 +399,20 @@ mod tests {
                             .expect("release is legal from Approved");
                     }
                 }
+                Outcome::Disputed => {
+                    self.dispute(&id, buyer, at);
+                }
                 Outcome::AwaitingPayment | Outcome::Cancelled => unreachable!("handled above"),
             }
             id
         }
 
-        fn dispute(&mut self, settlement_id: &SettlementId, opener: &Keypair, at: Timestamp) {
+        fn dispute(
+            &mut self,
+            settlement_id: &SettlementId,
+            opener: &Keypair,
+            at: Timestamp,
+        ) -> DisputeId {
             self.next_id += 1;
             self.disputes
                 .apply_open(SignedDisputeOpen::sign(
@@ -417,7 +426,23 @@ mod tests {
                     },
                     opener,
                 ))
-                .expect("a party to the settlement may open a dispute");
+                .expect("a party to the settlement may open a dispute")
+        }
+
+        /// The chain executed the case and this node observed it — the
+        /// only thing that resolves a dispute, and now the only thing
+        /// that moves the settlement back out of `Disputed`.
+        fn resolve(&self, dispute_id: &DisputeId, outcome: Resolution) {
+            self.disputes
+                .apply_onchain_execution(dispute_id, "dispute-execution-signature", Some(outcome))
+                .expect("an unresolved case records the chain's outcome");
+        }
+
+        fn state_of(&self, settlement_id: &SettlementId) -> SettlementState {
+            self.settlements
+                .get(settlement_id)
+                .expect("the settlement exists")
+                .state
         }
     }
 
@@ -492,9 +517,10 @@ mod tests {
         );
     }
 
-    /// A dispute lives in its own registry and never changes the
-    /// settlement's state, so it has to be counted as an overlay or it
-    /// would not be counted at all.
+    /// Arbitration is an overlay on the three buckets rather than a
+    /// fourth: a case that has concluded leaves the settlement in an
+    /// ordinary terminal state, so counting it exclusively would take the
+    /// trade out of the count it belongs in.
     #[test]
     fn an_arbitrated_trade_is_counted_once_as_a_trade_and_once_as_disputed() {
         let mut fixture = Fixture::new();
@@ -513,6 +539,88 @@ mod tests {
             summary.settlements(),
             2,
             "the dispute overlays the buckets rather than adding to them"
+        );
+    }
+
+    /// The state a settlement is in while arbitrators are looking at it.
+    ///
+    /// `SettlementState::Disputed` was declared, documented, and written
+    /// by nothing: opening a dispute left the settlement wherever it was,
+    /// so a trade in front of arbitrators was indistinguishable from one
+    /// waiting on a merchant who had not got round to it. Everything a
+    /// user is told about a frozen escrow hangs off this being written.
+    #[test]
+    fn opening_a_dispute_freezes_the_settlement_it_is_about() {
+        let mut fixture = Fixture::new();
+        let me = Keypair::generate();
+        let them = Keypair::generate();
+
+        let contested = fixture.settle(&me, &them, Outcome::Disputed, at(1_000));
+
+        assert_eq!(
+            fixture.state_of(&contested),
+            SettlementState::Disputed,
+            "a settlement in front of arbitrators must say so"
+        );
+        let summary = fixture.view().pair(&peer(&me), &peer(&them));
+        assert_eq!(summary.in_progress, 1, "a frozen escrow is unresolved");
+        assert_eq!(summary.trades, 0);
+        assert_eq!(summary.disputed, 1);
+    }
+
+    /// The other half, and the half that makes writing `Disputed` safe to
+    /// do at all: a settlement has to be able to leave it.
+    ///
+    /// Without an exit every arbitrated trade would strand — dispute
+    /// resolution terminates on the dispute record, and
+    /// `apply_escrow_released` only accepts `Approved`, so a buyer who won
+    /// their case could never have the release recorded against the
+    /// settlement it belongs to.
+    #[test]
+    fn arbitration_moves_the_settlement_to_the_outcome_the_chain_executed() {
+        let mut fixture = Fixture::new();
+        let me = Keypair::generate();
+        let them = Keypair::generate();
+
+        let won = fixture.settle(&me, &them, Outcome::PaymentSubmitted, at(1_000));
+        let case = fixture.dispute(&won, &me, at(1_500));
+        fixture.resolve(&case, Resolution::BuyerWins);
+
+        let lost = fixture.settle(&me, &them, Outcome::PaymentSubmitted, at(2_000));
+        let case = fixture.dispute(&lost, &me, at(2_500));
+        fixture.resolve(&case, Resolution::MerchantWins);
+
+        assert_eq!(
+            fixture.state_of(&won),
+            SettlementState::Completed,
+            "the escrow was released to the buyer, which is a completed trade whatever \
+             route it took"
+        );
+        assert_eq!(
+            fixture
+                .settlements
+                .get(&won)
+                .expect("the settlement exists")
+                .escrow_release_signature,
+            Some("dispute-execution-signature".to_string()),
+            "the transaction that released the escrow is the one recorded against it"
+        );
+        assert_eq!(
+            fixture.state_of(&lost),
+            SettlementState::Cancelled,
+            "the escrow went back to the merchant, so nothing was traded"
+        );
+
+        let summary = fixture.view().pair(&peer(&me), &peer(&them));
+        assert_eq!(summary.trades, 1);
+        assert_eq!(summary.abandoned, 1);
+        assert_eq!(
+            summary.in_progress, 0,
+            "a resolved case must not go on counting as a live trade"
+        );
+        assert_eq!(
+            summary.disputed, 2,
+            "both were arbitrated, and that stays true after they conclude"
         );
     }
 

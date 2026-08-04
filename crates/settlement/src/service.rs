@@ -11,7 +11,7 @@ use crate::protocol;
 use crate::record::{PaymentDiscrepancy, Settlement, SettlementId};
 use crate::store::SettlementRegistry;
 use openfiat_gossip::GossipService;
-use openfiat_reservations::ReservationId;
+use openfiat_reservations::{ReservationId, ReservationRegistry};
 use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
@@ -24,8 +24,18 @@ pub struct SettlementService<S> {
 }
 
 impl<S: KvStore + 'static> SettlementService<S> {
-    pub fn new(mut gossip: GossipService<S>, store: S) -> Self {
-        let registry = Rc::new(SettlementRegistry::new(store));
+    /// `reservations` is this node's reservation index — the same handle
+    /// `ReservationService::registry` hands out. Required rather than
+    /// optional: a settlement registry that cannot mark a reservation
+    /// `Settling` would silently allow the reservation to be cancelled or
+    /// swept out from under a live trade (§5a), and an invariant that
+    /// depends on remembering to wire something is not an invariant.
+    pub fn new(
+        mut gossip: GossipService<S>,
+        store: S,
+        reservations: Rc<ReservationRegistry<S>>,
+    ) -> Self {
+        let registry = Rc::new(SettlementRegistry::new(store, reservations));
         let handler_registry = Rc::clone(&registry);
         gossip.add_event_handler(move |event| handler_registry.apply_event(event));
         Self { gossip, registry }

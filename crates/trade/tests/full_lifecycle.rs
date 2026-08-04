@@ -9,8 +9,11 @@ use openfiat_advertisements::events::{AdvertisementCreate, SignedAdvertisementCr
 use openfiat_advertisements::{AdvertisementId, AdvertisementRegistry, Direction, PricingModel};
 use openfiat_crypto::{Keypair, MintAddress};
 use openfiat_network::identity::peer_id_from_public_key;
+use openfiat_reservations::ReservationError;
 use openfiat_reservations::ReservationRegistry;
-use openfiat_reservations::events::{ReservationRequest, SignedReservationRequest};
+use openfiat_reservations::events::{
+    ReservationCancel, ReservationRequest, SignedReservationCancel, SignedReservationRequest,
+};
 use openfiat_settlement::SettlementRegistry;
 use openfiat_settlement::events::{
     PaymentSubmitted, SettlementApproved, SettlementInitiate, SignedPaymentSubmitted,
@@ -29,7 +32,10 @@ fn a_trade_progresses_through_the_expected_aggregate_statuses() {
         MemoryStore::new(),
         Rc::clone(&advertisements),
     ));
-    let settlements = Rc::new(SettlementRegistry::new(MemoryStore::new()));
+    let settlements = Rc::new(SettlementRegistry::new(
+        MemoryStore::new(),
+        Rc::clone(&reservations),
+    ));
     let trades = TradeView::new(Rc::clone(&reservations), Rc::clone(&settlements));
 
     let merchant = Keypair::generate();
@@ -126,4 +132,124 @@ fn a_trade_progresses_through_the_expected_aggregate_statuses() {
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].reservation.id, reservation_id);
     assert!(all[0].settlement.is_some());
+}
+
+/// The composition failing, which is what OFS-2300 §5a is about.
+///
+/// The two sub-protocols are separately replicated records, and until the
+/// settlement said so in the reservation the buyer could declare payment
+/// and then cancel the reservation anyway. The merchant's advertisement
+/// was credited liquidity committed to a live trade, and the trade view —
+/// which matched on the reservation first — reported `Cancelled` while
+/// the settlement ran on to `Completed` and the escrow released.
+///
+/// Driven through the registries rather than the RPC surface on purpose:
+/// the gossiped cancel reaches `apply_cancel` with no node-local guard in
+/// front of it, so this is the layer the refusal has to live at.
+#[test]
+fn a_buyer_cannot_cancel_the_reservation_under_a_settlement_they_have_already_paid() {
+    let advertisements = Rc::new(AdvertisementRegistry::new(MemoryStore::new()));
+    let reservations = Rc::new(ReservationRegistry::new(
+        MemoryStore::new(),
+        Rc::clone(&advertisements),
+    ));
+    let settlements = Rc::new(SettlementRegistry::new(
+        MemoryStore::new(),
+        Rc::clone(&reservations),
+    ));
+    let trades = TradeView::new(Rc::clone(&reservations), Rc::clone(&settlements));
+
+    let merchant = Keypair::generate();
+    let buyer = Keypair::generate();
+    let ad_id = AdvertisementId::new("ad-race");
+    advertisements
+        .apply_create(SignedAdvertisementCreate::sign(
+            AdvertisementCreate {
+                id: ad_id.clone(),
+                merchant: peer_id_from_public_key(&merchant.public_key()).unwrap(),
+                merchant_public_key: merchant.public_key(),
+                asset_mint: MintAddress::parse("2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU")
+                    .unwrap(),
+                direction: Direction::Sell,
+                fiat_currency: FiatCurrency::parse("KES").unwrap(),
+                min_trade: Amount::new(1_000_000, 6),
+                max_trade: Amount::new(5_000_000, 6),
+                initial_liquidity: Amount::new(10_000_000, 6),
+                pricing: PricingModel::Fixed {
+                    price: Amount::new(129_000_000, 6),
+                },
+                payment_methods: vec![PaymentMethodRef::builtin("mpesa-kenya").unwrap()],
+                timestamp: Timestamp::now(),
+            },
+            &merchant,
+        ))
+        .unwrap();
+
+    let reservation_id = reservations
+        .apply_request(SignedReservationRequest::sign(
+            ReservationRequest {
+                id: openfiat_reservations::ReservationId::new("res-race"),
+                advertisement_id: ad_id.clone(),
+                requester: peer_id_from_public_key(&buyer.public_key()).unwrap(),
+                requester_public_key: buyer.public_key(),
+                amount: Amount::new(2_000_000, 6),
+                agreed_price: Amount::new(129_000_000, 6),
+                agreed_mid: None,
+                timestamp: Timestamp::now(),
+            },
+            &buyer,
+        ))
+        .unwrap();
+
+    let settlement_id = openfiat_settlement::SettlementId::new("settle-race");
+    settlements
+        .apply_initiate(SignedSettlementInitiate::sign(
+            SettlementInitiate {
+                id: settlement_id.clone(),
+                reservation_id: reservation_id.clone(),
+                buyer: peer_id_from_public_key(&buyer.public_key()).unwrap(),
+                buyer_public_key: buyer.public_key(),
+                seller: peer_id_from_public_key(&merchant.public_key()).unwrap(),
+                seller_public_key: merchant.public_key(),
+                amount: Amount::new(2_000_000, 6),
+                timestamp: Timestamp::now(),
+            },
+            &buyer,
+        ))
+        .unwrap();
+    settlements
+        .apply_payment_submitted(SignedPaymentSubmitted::sign(
+            PaymentSubmitted {
+                settlement_id,
+                buyer: peer_id_from_public_key(&buyer.public_key()).unwrap(),
+                payment_reference: Some("TXN-RACE".to_string()),
+                timestamp: Timestamp::now(),
+            },
+            &buyer,
+        ))
+        .unwrap();
+
+    let refused = reservations.apply_cancel(SignedReservationCancel::sign(
+        ReservationCancel {
+            id: reservation_id.clone(),
+            requester: peer_id_from_public_key(&buyer.public_key()).unwrap(),
+            timestamp: Timestamp::now(),
+        },
+        &buyer,
+    ));
+    assert_eq!(
+        refused,
+        Err(ReservationError::SettlementInFlight),
+        "the reservation belongs to the settlement now"
+    );
+    assert_eq!(
+        advertisements.get(&ad_id).unwrap().available_liquidity,
+        Amount::new(8_000_000, 6),
+        "the merchant's advertisement must not be credited liquidity a live trade holds"
+    );
+    assert_eq!(
+        trades.get(&reservation_id).unwrap().status(),
+        TradeStatus::PaymentSubmitted,
+        "and the trade goes on saying what it is actually doing"
+    );
 }

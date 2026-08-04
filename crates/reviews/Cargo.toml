@@ -17,4 +17,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]
 openfiat-reservations = { path = "../reservations", version = "0.1.0" }
+# Only so a test can build the reservation registry `SettlementRegistry`
+# now requires (OFS-2300 §5a). Nothing in this crate touches either.
+openfiat-advertisements = { path = "../advertisements", version = "0.1.0" }
 serde_json = "1.0"

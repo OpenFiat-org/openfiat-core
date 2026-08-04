@@ -199,7 +199,19 @@ mod tests {
     fn view() -> (ReviewsView<Store>, Rc<ReviewRegistry<Store>>) {
         let store = Rc::new(MemoryStore::new());
         let reviews = Rc::new(ReviewRegistry::new(Rc::clone(&store)));
-        let settlements = Rc::new(SettlementRegistry::new(Rc::clone(&store)));
+        // A settlement registry needs the node's reservation index now
+        // (OFS-2300 §5a). No reservation is ever created here — this is a
+        // test about who may review whom — so the reservation-side
+        // transitions find nothing and change nothing.
+        let settlements = Rc::new(SettlementRegistry::new(
+            Rc::clone(&store),
+            Rc::new(openfiat_reservations::ReservationRegistry::new(
+                Rc::clone(&store),
+                Rc::new(openfiat_advertisements::AdvertisementRegistry::new(
+                    Rc::clone(&store),
+                )),
+            )),
+        ));
         (ReviewsView::new(Rc::clone(&reviews), settlements), reviews)
     }
 

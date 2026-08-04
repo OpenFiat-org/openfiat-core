@@ -62,6 +62,17 @@ impl<S: KvStore> DisputeRegistry<S> {
     /// §5-8: only a party to the referenced settlement may open a
     /// dispute on it; buyer/seller/keys are copied from that
     /// already-verified record.
+    ///
+    /// §6: opening also freezes the escrow, which this records by moving
+    /// the settlement itself to `SettlementState::Disputed` (OFS-2300
+    /// §5a). Before that, this registry only ever read from the
+    /// settlement registry it holds, and `Disputed` was a state the
+    /// workspace declared and nothing wrote — so an actively arbitrated
+    /// trade went on displaying as `PaymentSubmitted`, indistinguishable
+    /// from one merely waiting on a merchant. The refusal below is the
+    /// other half: the settlement's own state machine decides whether a
+    /// dispute may be opened at all, so a case is never recorded against
+    /// an escrow that cannot be frozen.
     pub fn apply_open(&self, signed: SignedDisputeOpen) -> Result<DisputeId, DisputeError> {
         signed.verify()?;
         let id = signed.open.id.clone();
@@ -75,6 +86,10 @@ impl<S: KvStore> DisputeRegistry<S> {
         if signed.open.opener != settlement.buyer && signed.open.opener != settlement.seller {
             return Err(DisputeError::NotAParty);
         }
+
+        self.settlements
+            .apply_dispute_opened(&signed.open.settlement_id, signed.open.timestamp)
+            .map_err(|_| DisputeError::InvalidStateTransition)?;
 
         self.put(&Dispute {
             id: id.clone(),
@@ -295,6 +310,7 @@ impl<S: KvStore> DisputeRegistry<S> {
         signature: impl Into<String>,
         outcome: Option<Resolution>,
     ) -> Result<(), DisputeError> {
+        let signature = signature.into();
         let mut dispute = self.get(id).ok_or(DisputeError::DisputeNotFound)?;
         // Anything but an already-resolved case. The chain executes on
         // its own deadlines, not on this node's view of the phase: a
@@ -305,7 +321,7 @@ impl<S: KvStore> DisputeRegistry<S> {
         if dispute.status == DisputeStatus::Resolved {
             return Err(DisputeError::InvalidStateTransition);
         }
-        dispute.onchain_execution_signature = Some(signature.into());
+        dispute.onchain_execution_signature = Some(signature.clone());
         // The signature is always recorded — this node genuinely observed
         // that transaction confirm. The verdict is recorded only when the
         // node could actually read it from the case account. A node that
@@ -317,6 +333,22 @@ impl<S: KvStore> DisputeRegistry<S> {
         if let Some(outcome) = outcome {
             dispute.resolution = Some(outcome);
             dispute.status = DisputeStatus::Resolved;
+            // The settlement's way out of `Disputed` (OFS-2300 §5a). It
+            // is recorded here rather than left to the settlement layer
+            // to notice, because this is the moment — and the only
+            // moment — the escrow is known to have moved: the same
+            // confirmed transaction, read once.
+            //
+            // Not allowed to fail the resolution. The chain has already
+            // executed; a node that refused to record the dispute because
+            // it could not record the settlement would go on showing a
+            // live case that has already paid out, which is the exact
+            // divergence `AwaitingChainExecution` exists to prevent.
+            let _ = self.settlements.apply_dispute_resolved(
+                &dispute.settlement_id,
+                outcome.escrow_verdict(),
+                &signature,
+            );
         }
         self.put(&dispute);
         Ok(())
@@ -364,9 +396,10 @@ mod tests {
         ArbitratorJoin, DisputeOpen, MutualSettlementAgree, VoteCommit, VoteReveal,
     };
     use crate::record::Vote;
+    use openfiat_advertisements::AdvertisementRegistry;
     use openfiat_crypto::Keypair;
     use openfiat_network::identity::peer_id_from_public_key;
-    use openfiat_reservations::ReservationId;
+    use openfiat_reservations::{ReservationId, ReservationRegistry};
     use openfiat_settlement::SettlementId;
     use openfiat_settlement::events::SignedSettlementInitiate;
     use openfiat_storage::mem::MemoryStore;
@@ -379,7 +412,16 @@ mod tests {
         Keypair,
         SettlementId,
     ) {
-        let settlements = Rc::new(SettlementRegistry::new(MemoryStore::new()));
+        let settlements = Rc::new(SettlementRegistry::new(
+            MemoryStore::new(),
+            // The subject here is dispute state, not the reservation
+            // behind the settlement: none is created, so OFS-2300 §5a's
+            // reservation transitions find nothing and change nothing.
+            Rc::new(ReservationRegistry::new(
+                MemoryStore::new(),
+                Rc::new(AdvertisementRegistry::new(MemoryStore::new())),
+            )),
+        ));
         let buyer = Keypair::generate();
         let seller = Keypair::generate();
         let initiate = openfiat_settlement::events::SettlementInitiate {
@@ -443,6 +485,100 @@ mod tests {
         };
         let result = disputes.apply_open(SignedDisputeOpen::sign(open, &stranger));
         assert_eq!(result, Err(DisputeError::NotAParty));
+    }
+
+    /// §6: opening a dispute freezes the escrow, and OFS-2300 §5a is
+    /// where that freeze is recorded. This registry held the settlement
+    /// registry and only ever read from it, so `SettlementState::Disputed`
+    /// was a state the workspace declared and nothing produced.
+    #[test]
+    fn opening_a_dispute_moves_the_settlement_it_names_into_disputed() {
+        let (settlements, disputes, buyer, _seller, settlement_id) = setup();
+        open_dispute(&disputes, &buyer, &settlement_id);
+
+        let settlement = settlements.get(&settlement_id).expect("it exists");
+        assert_eq!(
+            settlement.state,
+            openfiat_settlement::SettlementState::Disputed
+        );
+        assert!(
+            settlement.disputed_at.is_some(),
+            "that the trade was arbitrated has to survive the case closing"
+        );
+    }
+
+    /// And out again. Without this the entry above would be worse than
+    /// nothing: dispute resolution terminates on the dispute record, and
+    /// `SettlementRegistry::apply_escrow_released` only accepts
+    /// `Approved`, so every arbitrated settlement would sit in `Disputed`
+    /// permanently — including one whose escrow the chain had already
+    /// released to the buyer.
+    #[test]
+    fn the_chains_outcome_is_what_moves_the_settlement_back_out_of_disputed() {
+        let (settlements, disputes, buyer, _seller, settlement_id) = setup();
+        let dispute_id = open_dispute(&disputes, &buyer, &settlement_id);
+
+        disputes
+            .apply_onchain_execution(&dispute_id, "arb-sig", Some(Resolution::BuyerWins))
+            .expect("the chain executed the case");
+
+        let settlement = settlements.get(&settlement_id).expect("it exists");
+        assert_eq!(
+            settlement.state,
+            openfiat_settlement::SettlementState::Completed,
+            "the escrow was released to the buyer"
+        );
+        assert_eq!(
+            settlement.escrow_release_signature,
+            Some("arb-sig".to_string()),
+            "the transaction that released it is the one recorded against it"
+        );
+    }
+
+    /// An execution this node saw but could not read leaves the case
+    /// unresolved, so the settlement stays frozen — the honest answer,
+    /// and the same one the dispute record gives.
+    #[test]
+    fn an_unreadable_execution_leaves_the_settlement_frozen_too() {
+        let (settlements, disputes, buyer, _seller, settlement_id) = setup();
+        let dispute_id = open_dispute(&disputes, &buyer, &settlement_id);
+
+        disputes
+            .apply_onchain_execution(&dispute_id, "sig-unreadable", None)
+            .unwrap();
+
+        assert_eq!(
+            settlements.get(&settlement_id).expect("it exists").state,
+            openfiat_settlement::SettlementState::Disputed
+        );
+    }
+
+    /// A second case against one settlement is what §5's "only one
+    /// dispute may be open per settlement" forbids, and the settlement's
+    /// own state machine is what enforces it — the duplicate-id check
+    /// above only catches a repeat of the *same* case.
+    #[test]
+    fn a_settlement_already_in_front_of_arbitrators_cannot_be_disputed_again() {
+        let (_settlements, disputes, buyer, seller, settlement_id) = setup();
+        open_dispute(&disputes, &buyer, &settlement_id);
+
+        let second = DisputeOpen {
+            id: DisputeId::new("dispute-2"),
+            settlement_id,
+            opener: peer_id_from_public_key(&seller.public_key()).unwrap(),
+            opener_public_key: seller.public_key(),
+            reason: "and another thing".to_string(),
+            timestamp: Timestamp::now(),
+        };
+        assert_eq!(
+            disputes.apply_open(SignedDisputeOpen::sign(second, &seller)),
+            Err(DisputeError::InvalidStateTransition)
+        );
+        assert_eq!(
+            disputes.all().len(),
+            1,
+            "a refused open must not leave a case behind"
+        );
     }
 
     #[test]

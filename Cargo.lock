@@ -3482,6 +3482,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "libp2p",
+ "openfiat-advertisements",
  "openfiat-crypto",
  "openfiat-gossip",
  "openfiat-network",
@@ -3658,6 +3659,7 @@ dependencies = [
 name = "openfiat-reviews"
 version = "0.1.0"
 dependencies = [
+ "openfiat-advertisements",
  "openfiat-crypto",
  "openfiat-network",
  "openfiat-reservations",
@@ -3783,12 +3785,14 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "libp2p",
+ "openfiat-advertisements",
  "openfiat-crypto",
  "openfiat-gossip",
  "openfiat-network",
  "openfiat-reservations",
  "openfiat-serialization",
  "openfiat-storage",
+ "openfiat-taxonomy",
  "openfiat-types",
  "serde",
  "tokio",
@@ -3884,6 +3888,7 @@ dependencies = [
  "chacha20poly1305",
  "futures",
  "libp2p",
+ "openfiat-advertisements",
  "openfiat-crypto",
  "openfiat-database",
  "openfiat-disputes",

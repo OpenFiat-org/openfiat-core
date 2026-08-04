@@ -252,6 +252,7 @@ mod tests {
             payment_submitted_at: Some(Timestamp::from_millis(10)),
             merchant_responded_at: Some(Timestamp::from_millis(20)),
             payment_discrepancy: None,
+            disputed_at: None,
             created_at: Timestamp::from_millis(1),
             updated_at: Timestamp::from_millis(30),
         }

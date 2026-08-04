@@ -15,11 +15,12 @@
 //! it impossible to happen quietly a second time for this crate: one
 //! demonstrates the loss, the other pins the list that prevents it.
 
+use openfiat_advertisements::AdvertisementRegistry;
 use openfiat_crypto::Keypair;
 use openfiat_database::Database;
 use openfiat_disputes::DisputeRegistry;
 use openfiat_network::identity::peer_id_from_public_key;
-use openfiat_reservations::ReservationId;
+use openfiat_reservations::{ReservationId, ReservationRegistry};
 use openfiat_settlement::events::{SettlementInitiate, SignedSettlementInitiate};
 use openfiat_settlement::{SettlementId, SettlementRegistry};
 use openfiat_storage::KvStore;
@@ -53,7 +54,13 @@ fn registry_over(
     seller: &Keypair,
 ) -> TradeChannelRegistry<Rc<Database>> {
     let database = Rc::new(Database::open(directory, families).expect("opens"));
-    let settlements = Rc::new(SettlementRegistry::new(Rc::clone(&database)));
+    let settlements = Rc::new(SettlementRegistry::new(
+        Rc::clone(&database),
+        Rc::new(ReservationRegistry::new(
+            Rc::clone(&database),
+            Rc::new(AdvertisementRegistry::new(Rc::clone(&database))),
+        )),
+    ));
     settlements
         .apply_initiate(SignedSettlementInitiate::sign(
             SettlementInitiate {
@@ -165,7 +172,13 @@ fn a_channel_survives_reopening_the_database() {
     }
 
     let database = Rc::new(Database::open(directory.path(), &families).expect("reopens"));
-    let settlements = Rc::new(SettlementRegistry::new(Rc::clone(&database)));
+    let settlements = Rc::new(SettlementRegistry::new(
+        Rc::clone(&database),
+        Rc::new(ReservationRegistry::new(
+            Rc::clone(&database),
+            Rc::new(AdvertisementRegistry::new(Rc::clone(&database))),
+        )),
+    ));
     let disputes = Rc::new(DisputeRegistry::new(
         Rc::clone(&database),
         Rc::clone(&settlements),

@@ -35,13 +35,30 @@ pub struct Trade {
 }
 
 impl Trade {
+    /// The one value a client displays.
+    ///
+    /// # Precedence: the settlement wins whenever there is one
+    ///
+    /// This used to match on the reservation first, and a `Cancelled` or
+    /// `Expired` reservation short-circuited everything — so a trade whose
+    /// settlement was running on toward `Completed` displayed as
+    /// `Cancelled`, contradicting where the money was actually going. The
+    /// data race behind it is now closed at the source (OFS-2300 §5a: a
+    /// reservation a settlement holds is `Settling`, and neither its owner
+    /// nor the expiry sweep can move it), but the ordering is what decides
+    /// what a user sees when the two records still disagree, and they
+    /// still can: expiry is computed against each node's own clock, so a
+    /// node that swept a minute early holds an `Expired` reservation for a
+    /// settlement its neighbours consider live.
+    ///
+    /// Settlement-first makes both nodes answer the same thing. It is also
+    /// the right way round on the merits: OFS-2200 §18 hands authority to
+    /// OFS-2300 §20 at `Escrow Locked`, and a reservation that has been
+    /// handed over has nothing left to say about the trade. The
+    /// reservation decides only while no settlement exists at all.
     pub fn status(&self) -> TradeStatus {
-        match (self.reservation.state, &self.settlement) {
-            (ReservationState::Cancelled, _) | (ReservationState::Expired, _) => {
-                TradeStatus::Cancelled
-            }
-            (ReservationState::EscrowLocked, None) => TradeStatus::EscrowLocked,
-            (ReservationState::EscrowLocked, Some(settlement)) => match settlement.state {
+        if let Some(settlement) = &self.settlement {
+            return match settlement.state {
                 SettlementState::AwaitingPayment => TradeStatus::AwaitingPayment,
                 SettlementState::PaymentSubmitted => TradeStatus::PaymentSubmitted,
                 // `Approved` (merchant approved, on-chain release not yet
@@ -54,8 +71,24 @@ impl Trade {
                 SettlementState::Approved | SettlementState::Completed => TradeStatus::Completed,
                 SettlementState::Rejected => TradeStatus::Rejected,
                 SettlementState::Cancelled => TradeStatus::Cancelled,
+                // Reachable at last. Nothing wrote this state, so a trade
+                // in front of arbitrators displayed as `PaymentSubmitted`
+                // — a merchant simply taking their time — for as long as
+                // the case ran.
                 SettlementState::Disputed => TradeStatus::Disputed,
-            },
+            };
+        }
+        match self.reservation.state {
+            ReservationState::EscrowLocked => TradeStatus::EscrowLocked,
+            // A reservation that says a settlement holds it, on a node
+            // that does not have that settlement. Not reachable through
+            // the registries — the write that sets `Settling` is the one
+            // that stores the settlement — but the honest answer if a
+            // replica ever gets there is the last thing both records
+            // agreed on: escrow is locked and the trade is under way.
+            ReservationState::Settling => TradeStatus::EscrowLocked,
+            ReservationState::Settled => TradeStatus::Completed,
+            ReservationState::Cancelled | ReservationState::Expired => TradeStatus::Cancelled,
         }
     }
 }
@@ -113,5 +146,104 @@ impl<S: KvStore> TradeView<S> {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openfiat_advertisements::AdvertisementId;
+    use openfiat_crypto::Keypair;
+    use openfiat_network::identity::peer_id_from_public_key;
+    use openfiat_settlement::SettlementId;
+    use openfiat_types::{Amount, Timestamp};
+
+    fn trade(
+        reservation_state: ReservationState,
+        settlement_state: Option<SettlementState>,
+    ) -> Trade {
+        let buyer = Keypair::generate();
+        let seller = Keypair::generate();
+        let buyer_id = peer_id_from_public_key(&buyer.public_key()).unwrap();
+        let seller_id = peer_id_from_public_key(&seller.public_key()).unwrap();
+        Trade {
+            reservation: Reservation {
+                id: ReservationId::new("res-1"),
+                advertisement_id: AdvertisementId::new("ad-1"),
+                requester: buyer_id.clone(),
+                requester_public_key: buyer.public_key(),
+                amount: Amount::new(2_000_000, 6),
+                agreed_price: Amount::new(129_000_000, 6),
+                agreed_mid: None,
+                state: reservation_state,
+                requested_at: Timestamp::from_millis(1),
+                updated_at: Timestamp::from_millis(1),
+                expires_at: Timestamp::from_millis(2),
+            },
+            settlement: settlement_state.map(|state| Settlement {
+                id: SettlementId::new("settle-1"),
+                reservation_id: ReservationId::new("res-1"),
+                buyer: buyer_id,
+                buyer_public_key: buyer.public_key(),
+                seller: seller_id,
+                seller_public_key: seller.public_key(),
+                amount: Amount::new(2_000_000, 6),
+                state,
+                payment_reference: None,
+                escrow_release_signature: None,
+                payment_submitted_at: None,
+                merchant_responded_at: None,
+                payment_discrepancy: None,
+                disputed_at: None,
+                created_at: Timestamp::from_millis(3),
+                updated_at: Timestamp::from_millis(3),
+            }),
+        }
+    }
+
+    /// The precedence, stated as the case that used to get it wrong.
+    ///
+    /// Expiry is computed against each node's own clock, so a node that
+    /// swept a minute early holds an `Expired` reservation for a
+    /// settlement its neighbours consider live. Reservation-first made
+    /// that node report `Cancelled` for a trade whose escrow was about to
+    /// release, and made two honest nodes disagree about the same trade.
+    #[test]
+    fn a_settlement_decides_the_status_even_when_the_reservation_disagrees() {
+        for stale in [ReservationState::Expired, ReservationState::Cancelled] {
+            assert_eq!(
+                trade(stale, Some(SettlementState::PaymentSubmitted)).status(),
+                TradeStatus::PaymentSubmitted,
+                "a running settlement is what the trade is doing"
+            );
+            assert_eq!(
+                trade(stale, Some(SettlementState::Approved)).status(),
+                TradeStatus::Completed,
+            );
+        }
+    }
+
+    /// The state that was declared and never written. A trade in front of
+    /// arbitrators displayed as `PaymentSubmitted` — a merchant merely
+    /// taking their time — for as long as the case ran.
+    #[test]
+    fn an_arbitrated_trade_says_so() {
+        assert_eq!(
+            trade(ReservationState::Settling, Some(SettlementState::Disputed)).status(),
+            TradeStatus::Disputed
+        );
+    }
+
+    #[test]
+    fn the_reservation_decides_only_while_no_settlement_exists() {
+        for (state, expected) in [
+            (ReservationState::EscrowLocked, TradeStatus::EscrowLocked),
+            (ReservationState::Settling, TradeStatus::EscrowLocked),
+            (ReservationState::Settled, TradeStatus::Completed),
+            (ReservationState::Cancelled, TradeStatus::Cancelled),
+            (ReservationState::Expired, TradeStatus::Cancelled),
+        ] {
+            assert_eq!(trade(state, None).status(), expected);
+        }
     }
 }

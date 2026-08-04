@@ -24,9 +24,40 @@ impl ReservationId {
 /// this implementation validates synchronously, so a reservation is
 /// stored either as `EscrowLocked` (validation succeeded) or not stored
 /// at all (validation failed — §7 "only valid reservations proceed").
+///
+/// `Settling` and `Settled` are the two states this crate defines but
+/// never writes: OFS-2300 §5a owns both, because they say what the
+/// *settlement* has done to a reservation it took authority over.
+/// `openfiat-settlement` writes them through
+/// [`crate::ReservationRegistry::settlement_started`] and its two
+/// conclusion counterparts, which is the direction the dependency already
+/// runs — this crate knows nothing about settlements and gains no
+/// dependency here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReservationState {
     EscrowLocked,
+    /// A settlement has been raised against this reservation and has not
+    /// concluded (OFS-2300 §5a).
+    ///
+    /// The reason this is a state rather than a lookup: the reservation
+    /// and the settlement are two independently replicated records, and
+    /// while they were only correlated at read time a taker could cancel
+    /// the reservation out from under a settlement that was already
+    /// running — crediting the merchant's advertisement with liquidity
+    /// committed to a live trade, and leaving the trade view contradicting
+    /// where the money actually went. Cancellation is refused from here
+    /// ([`crate::ReservationError::SettlementInFlight`]) and the expiry
+    /// sweep skips it, so the liquidity stays committed for exactly as
+    /// long as the settlement holds it.
+    Settling,
+    /// The settlement concluded with the escrow moving (OFS-2300 §5a) —
+    /// terminal, and deliberately *not* a state that returns liquidity.
+    ///
+    /// The asset was sold. Crediting the advertisement again here would
+    /// invent inventory the merchant no longer has, which is what the
+    /// expiry sweep did to every completed trade for as long as a
+    /// completed reservation sat in `EscrowLocked` waiting to go stale.
+    Settled,
     Cancelled,
     Expired,
 }

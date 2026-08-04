@@ -11,13 +11,16 @@ openfiat-types = { path = "../types", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
 openfiat-reservations = { path = "../reservations", version = "0.1.0" }
 openfiat-settlement = { path = "../settlement", version = "0.1.0" }
-# Read-only, for `counterparties`: a dispute never changes the
-# settlement's own state, so "how many of these went to arbitration" is
-# only answerable from the dispute registry.
-openfiat-disputes = { path = "../disputes", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]
+# Tests only. `counterparties` used to depend on this crate at runtime,
+# because a dispute never touched the settlement's own state and "how many
+# of these went to arbitration" was only answerable from the dispute
+# registry. A settlement now records its own escalation (OFS-2300 §5a), so
+# the view reads one registry instead of two — and the tests still drive
+# real signed dispute events rather than writing that field by hand.
+openfiat-disputes = { path = "../disputes", version = "0.1.0" }
 openfiat-taxonomy = { path = "../taxonomy", version = "0.1.0" }
 openfiat-crypto = { path = "../crypto", version = "0.1.0" }
 openfiat-network = { path = "../network", version = "0.1.0" }

@@ -71,7 +71,10 @@ impl<S: KvStore + 'static> FullNode<S> {
             Rc::clone(&store),
             Rc::clone(&advertisements),
         ));
-        let settlements = Rc::new(SettlementRegistry::new(Rc::clone(&store)));
+        let settlements = Rc::new(SettlementRegistry::new(
+            Rc::clone(&store),
+            Rc::clone(&reservations),
+        ));
         let disputes = Rc::new(DisputeRegistry::new(
             Rc::clone(&store),
             Rc::clone(&settlements),

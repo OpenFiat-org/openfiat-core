@@ -24,6 +24,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]
 openfiat-reservations = { path = "../reservations", version = "0.1.0" }
+# Only so a test can build the reservation registry `SettlementRegistry`
+# now requires (OFS-2300 §5a). Nothing in this crate touches either.
+openfiat-advertisements = { path = "../advertisements", version = "0.1.0" }
 # A real RocksDB, exclusively so `tests/column_families.rs` can prove what
 # a `MemoryStore` structurally cannot: that a column family missing from
 # the node's open list loses every write in silence.

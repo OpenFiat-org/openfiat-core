@@ -9,6 +9,7 @@
 //! test is what the *network* carries.
 
 use futures::future::select_all;
+use openfiat_advertisements::AdvertisementRegistry;
 use openfiat_crypto::Keypair;
 use openfiat_disputes::events::{
     ArbitratorJoin, DisputeOpen, SignedArbitratorJoin, SignedDisputeOpen,
@@ -18,7 +19,7 @@ use openfiat_gossip::EventStore;
 use openfiat_gossip::channel::Subscription;
 use openfiat_network::identity::{peer_id, peer_id_from_public_key, to_libp2p_keypair};
 use openfiat_network::{Multiaddr, Node};
-use openfiat_reservations::ReservationId;
+use openfiat_reservations::{ReservationId, ReservationRegistry};
 use openfiat_settlement::events::{SettlementInitiate, SignedSettlementInitiate};
 use openfiat_settlement::{SettlementId, SettlementRegistry};
 use openfiat_storage::mem::MemoryStore;
@@ -51,7 +52,13 @@ fn identity(seed: u8) -> (PeerId, PublicKey) {
 fn seeded_settlements(settlement_id: &SettlementId) -> Rc<SettlementRegistry<MemoryStore>> {
     let buyer = keypair(BUYER_SEED);
     let seller = keypair(SELLER_SEED);
-    let registry = Rc::new(SettlementRegistry::new(MemoryStore::new()));
+    let registry = Rc::new(SettlementRegistry::new(
+        MemoryStore::new(),
+        Rc::new(ReservationRegistry::new(
+            MemoryStore::new(),
+            Rc::new(AdvertisementRegistry::new(MemoryStore::new())),
+        )),
+    ));
     registry
         .apply_initiate(SignedSettlementInitiate::sign(
             SettlementInitiate {

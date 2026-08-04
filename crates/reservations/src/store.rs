@@ -165,10 +165,21 @@ impl<S: KvStore> ReservationRegistry<S> {
     }
 
     /// §14: before escrow is locked cancellation is unrestricted; this
-    /// crate's scope ends at `EscrowLocked` itself, so any reservation
-    /// still in that state may still be cancelled here (post-payment
-    /// cancellation rules belong to OFS-2300 §19, once settlement takes
-    /// over).
+    /// crate's scope ends at `EscrowLocked` itself, so a reservation still
+    /// in that state may still be cancelled here.
+    ///
+    /// Not one a settlement has already taken over, though. OFS-2300 §19
+    /// owns cancellation from that point, and it is narrower — after "I
+    /// Paid" neither party may unilaterally unwind the trade — so a
+    /// reservation cancel accepted while a settlement was running would be
+    /// that rule defeated from the other side: the merchant's
+    /// advertisement gets its liquidity back while the settlement runs on
+    /// to `Completed` and the escrow releases. That is refused here,
+    /// inside the deterministic apply path every replica runs, rather than
+    /// at the RPC boundary — the gossiped cancel reaches
+    /// [`Self::apply_event`] without passing any node-local guard, so a
+    /// guard placed there would only make the originating node disagree
+    /// with everyone else.
     pub fn apply_cancel(&self, signed: SignedReservationCancel) -> Result<(), ReservationError> {
         let mut reservation = self
             .get(&signed.cancel.id)
@@ -180,6 +191,9 @@ impl<S: KvStore> ReservationRegistry<S> {
             json::to_bytes(&signed.cancel).map_err(|_| ReservationError::MalformedReservation)?;
         openfiat_crypto::verify(&reservation.requester_public_key, &bytes, &signed.signature)
             .map_err(|_| ReservationError::InvalidSignature)?;
+        if reservation.state == ReservationState::Settling {
+            return Err(ReservationError::SettlementInFlight);
+        }
         if reservation.state != ReservationState::EscrowLocked {
             return Err(ReservationError::InvalidReservationState);
         }
@@ -189,6 +203,90 @@ impl<S: KvStore> ReservationRegistry<S> {
             .release_liquidity(&reservation.advertisement_id, reservation.amount);
         reservation.state = ReservationState::Cancelled;
         reservation.updated_at = signed.cancel.timestamp;
+        self.put(&reservation);
+        Ok(())
+    }
+
+    /// OFS-2300 §5a: a settlement has been raised against this
+    /// reservation, so the liquidity behind it is committed to a live
+    /// trade rather than merely held.
+    ///
+    /// Called by `openfiat-settlement`'s own apply path, from inside the
+    /// same deterministic function every replica runs when it applies
+    /// `SettlementInitiated`, so the two records move together on every
+    /// node or on none.
+    ///
+    /// Deliberately tolerant of a reservation this node does not hold, or
+    /// holds in some other state: a node whose expiry sweep fired a minute
+    /// before its neighbour's has an `Expired` reservation the rest of the
+    /// network still has locked (see [`Self::expire_stale`] on that
+    /// window), and refusing the settlement there would strand a live
+    /// trade on that node forever. The settlement is authoritative about
+    /// itself; this only records what the reservation is being used for.
+    pub fn settlement_started(&self, id: &ReservationId) -> Result<(), ReservationError> {
+        self.transition(
+            id,
+            &[ReservationState::EscrowLocked],
+            ReservationState::Settling,
+        )
+    }
+
+    /// OFS-2300 §5a: the settlement concluded with the escrow moving —
+    /// approved by the merchant, or awarded to the buyer by arbitration.
+    ///
+    /// Terminal, and the liquidity is *not* returned: the asset was sold.
+    pub fn settlement_completed(&self, id: &ReservationId) -> Result<(), ReservationError> {
+        self.transition(id, &[ReservationState::Settling], ReservationState::Settled)
+    }
+
+    /// OFS-2300 §5a: the settlement ended without a transfer — cancelled
+    /// before payment, rejected by the merchant, or returned to the
+    /// merchant by arbitration.
+    ///
+    /// Back to `EscrowLocked` rather than straight to `Cancelled`, so that
+    /// the liquidity comes back through the paths that already exist and
+    /// exactly once: the taker may still cancel (§14), and if they walk
+    /// away instead, [`Self::expire_stale`] returns it on the first sweep
+    /// after the validation window — which, for a settlement that ran its
+    /// course, has usually passed already. A reservation still inside its
+    /// window is genuinely live again, and a second settlement against it
+    /// is legitimate.
+    ///
+    /// Legal from `Settled` as well as from `Settling`, for the one case
+    /// that reaches it: a settlement approved and *then* disputed, where
+    /// arbitration returned the escrow to the merchant. The transfer that
+    /// `Settled` recorded was undone on chain, so the reservation is
+    /// honestly locked liquidity again.
+    pub fn settlement_abandoned(&self, id: &ReservationId) -> Result<(), ReservationError> {
+        self.transition(
+            id,
+            &[ReservationState::Settling, ReservationState::Settled],
+            ReservationState::EscrowLocked,
+        )
+    }
+
+    /// The shared body of the three settlement-driven transitions above:
+    /// move `id` to `to`, but only from one of the states `from` names,
+    /// touching nothing else.
+    ///
+    /// No liquidity moves here by construction. Every one of these
+    /// transitions is a statement about *who is holding* the reservation's
+    /// liquidity, never about returning it — the two paths that return it
+    /// ([`Self::apply_cancel`] and [`Self::expire_stale`]) both start from
+    /// `EscrowLocked`, which is what keeps "released exactly once" a
+    /// property of two functions rather than of five.
+    fn transition(
+        &self,
+        id: &ReservationId,
+        from: &[ReservationState],
+        to: ReservationState,
+    ) -> Result<(), ReservationError> {
+        let mut reservation = self.get(id).ok_or(ReservationError::ReservationNotFound)?;
+        if !from.contains(&reservation.state) {
+            return Err(ReservationError::InvalidReservationState);
+        }
+        reservation.state = to;
+        reservation.updated_at = Timestamp::now();
         self.put(&reservation);
         Ok(())
     }
@@ -218,6 +316,18 @@ impl<S: KvStore> ReservationRegistry<S> {
     /// reservation out of `EscrowLocked`, and the other is refused
     /// (`apply_cancel` requires that state, this loop skips anything not
     /// in it), so the liquidity is returned exactly once on every node.
+    ///
+    /// A reservation a settlement has taken over (`Settling`) is skipped
+    /// for the same reason [`Self::apply_cancel`] refuses it: expiring it
+    /// would credit the merchant's advertisement with liquidity committed
+    /// to a live trade, and the payment and merchant-review windows are
+    /// thirty minutes each against a thirty-minute validation window, so
+    /// an ordinary trade that goes to the merchant for review outlives its
+    /// reservation's deadline as a matter of course. The sweep used to
+    /// unwind those routinely. Nothing is stranded by skipping them:
+    /// [`Self::settlement_abandoned`] puts a reservation whose settlement
+    /// ended without a transfer back into `EscrowLocked`, and the next
+    /// sweep — at most [`protocol::SWEEP_INTERVAL`] later — expires it.
     ///
     /// A reservation is only marked `Expired` if its liquidity actually
     /// came back. Expiring one whose `release_liquidity` failed would
@@ -566,6 +676,179 @@ mod tests {
             reservations
                 .apply_request(SignedReservationRequest::sign(req, &buyer))
                 .is_ok()
+        );
+    }
+
+    /// The taker's half of OFS-2300 §5a, and the reason it exists.
+    ///
+    /// A settlement and the reservation it was raised against are two
+    /// separate records. While nothing linked them, a taker could
+    /// initiate a settlement, declare payment, and still cancel the
+    /// reservation — handing the merchant's advertisement back liquidity
+    /// that was committed to a trade running on toward escrow release.
+    /// `sendReservationCancel` made that a request anyone could send.
+    #[test]
+    fn a_reservation_a_settlement_is_running_against_cannot_be_cancelled() {
+        let (advertisements, reservations, _merchant, ad_id) = setup();
+        let buyer = Keypair::generate();
+        let id = reservations
+            .apply_request(SignedReservationRequest::sign(
+                request(&buyer, "res-live", &ad_id, 2_000_000),
+                &buyer,
+            ))
+            .unwrap();
+        reservations
+            .settlement_started(&id)
+            .expect("a settlement may be raised against a locked reservation");
+
+        let cancel = ReservationCancel {
+            id: id.clone(),
+            requester: peer_id_from_public_key(&buyer.public_key()).unwrap(),
+            timestamp: Timestamp::now(),
+        };
+        assert_eq!(
+            reservations.apply_cancel(SignedReservationCancel::sign(cancel, &buyer)),
+            Err(ReservationError::SettlementInFlight),
+            "the reservation's owner cannot unwind a trade that has started"
+        );
+        assert_eq!(
+            reservations.get(&id).unwrap().state,
+            ReservationState::Settling
+        );
+        assert_eq!(
+            advertisements.get(&ad_id).unwrap().available_liquidity,
+            Amount::new(8_000_000, 6),
+            "a refused cancel must not have credited the advertisement"
+        );
+    }
+
+    /// The sweep's half of the same thing, and the one that fired on its
+    /// own: the payment window and the merchant-review window are thirty
+    /// minutes each against a thirty-minute validation window, so a trade
+    /// that reaches a merchant for review routinely outlives its
+    /// reservation's deadline. Every one of those used to be unwound.
+    #[test]
+    fn the_expiry_sweep_leaves_a_reservation_a_settlement_is_running_against() {
+        let (advertisements, reservations, _merchant, ad_id) = setup();
+        let buyer = Keypair::generate();
+        let mut req = request(&buyer, "res-settling", &ad_id, 2_000_000);
+        req.timestamp = Timestamp::from_millis(0);
+        let id = reservations
+            .apply_request(SignedReservationRequest::sign(req, &buyer))
+            .unwrap();
+        reservations.settlement_started(&id).unwrap();
+
+        assert_eq!(
+            reservations.expire_stale(Duration::from_secs(60)),
+            ExpirySweep::default(),
+            "a reservation with a live settlement is neither expired nor deferred"
+        );
+        assert_eq!(
+            reservations.get(&id).unwrap().state,
+            ReservationState::Settling
+        );
+        assert_eq!(
+            advertisements.get(&ad_id).unwrap().available_liquidity,
+            Amount::new(8_000_000, 6)
+        );
+    }
+
+    /// Nothing is stranded by that. A settlement that ends without a
+    /// transfer gives the reservation back, and the very next sweep
+    /// returns the liquidity — so "released exactly once" still holds,
+    /// just later and only when the trade is genuinely over.
+    #[test]
+    fn a_settlement_that_ends_without_a_transfer_gives_the_reservation_back() {
+        let (advertisements, reservations, _merchant, ad_id) = setup();
+        let buyer = Keypair::generate();
+        let mut req = request(&buyer, "res-abandoned", &ad_id, 2_000_000);
+        req.timestamp = Timestamp::from_millis(0);
+        let id = reservations
+            .apply_request(SignedReservationRequest::sign(req, &buyer))
+            .unwrap();
+        reservations.settlement_started(&id).unwrap();
+        reservations.settlement_abandoned(&id).unwrap();
+
+        assert_eq!(
+            reservations.get(&id).unwrap().state,
+            ReservationState::EscrowLocked
+        );
+        assert_eq!(
+            reservations.expire_stale(Duration::from_secs(60)),
+            ExpirySweep {
+                expired: 1,
+                deferred: 0
+            }
+        );
+        assert_eq!(
+            advertisements.get(&ad_id).unwrap().available_liquidity,
+            Amount::new(10_000_000, 6),
+            "the merchant gets their liquidity back once the trade is actually over"
+        );
+    }
+
+    /// The opposite conclusion, and the accounting error that hid behind
+    /// the missing state: a reservation whose settlement *did* transfer
+    /// must never return liquidity, because the asset was sold. It used
+    /// to sit in `EscrowLocked` after the trade completed, and the sweep
+    /// duly credited the advertisement with inventory the merchant no
+    /// longer had.
+    #[test]
+    fn a_settled_reservation_never_gives_the_liquidity_back() {
+        let (advertisements, reservations, _merchant, ad_id) = setup();
+        let buyer = Keypair::generate();
+        let mut req = request(&buyer, "res-settled", &ad_id, 2_000_000);
+        req.timestamp = Timestamp::from_millis(0);
+        let id = reservations
+            .apply_request(SignedReservationRequest::sign(req, &buyer))
+            .unwrap();
+        reservations.settlement_started(&id).unwrap();
+        reservations.settlement_completed(&id).unwrap();
+
+        assert_eq!(
+            reservations.expire_stale(Duration::from_secs(60)),
+            ExpirySweep::default()
+        );
+        let cancel = ReservationCancel {
+            id: id.clone(),
+            requester: peer_id_from_public_key(&buyer.public_key()).unwrap(),
+            timestamp: Timestamp::now(),
+        };
+        assert_eq!(
+            reservations.apply_cancel(SignedReservationCancel::sign(cancel, &buyer)),
+            Err(ReservationError::InvalidReservationState),
+        );
+        assert_eq!(
+            advertisements.get(&ad_id).unwrap().available_liquidity,
+            Amount::new(8_000_000, 6),
+            "the asset was sold; crediting it back would invent inventory"
+        );
+    }
+
+    /// A node whose sweep fired a minute before its neighbour's holds an
+    /// `Expired` reservation the rest of the network still has locked.
+    /// Refusing the settlement there would strand a live trade on that
+    /// node alone, so the transition declines and the settlement is
+    /// accepted regardless — see `SettlementRegistry::apply_initiate`.
+    #[test]
+    fn starting_a_settlement_against_a_reservation_that_already_expired_changes_nothing() {
+        let (_advertisements, reservations, _merchant, ad_id) = setup();
+        let buyer = Keypair::generate();
+        let mut req = request(&buyer, "res-raced", &ad_id, 2_000_000);
+        req.timestamp = Timestamp::from_millis(0);
+        let id = reservations
+            .apply_request(SignedReservationRequest::sign(req, &buyer))
+            .unwrap();
+        reservations.expire_stale(Duration::from_secs(60));
+
+        assert_eq!(
+            reservations.settlement_started(&id),
+            Err(ReservationError::InvalidReservationState)
+        );
+        assert_eq!(
+            reservations.get(&id).unwrap().state,
+            ReservationState::Expired,
+            "an expired reservation is not resurrected by a settlement arriving late"
         );
     }
 

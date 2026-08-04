@@ -35,7 +35,10 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
         MemoryStore::new(),
         Rc::clone(&advertisements),
     ));
-    let settlements = Rc::new(SettlementRegistry::new(MemoryStore::new()));
+    let settlements = Rc::new(SettlementRegistry::new(
+        MemoryStore::new(),
+        Rc::clone(&reservations),
+    ));
     let disputes = Rc::new(DisputeRegistry::new(
         MemoryStore::new(),
         Rc::clone(&settlements),
@@ -241,12 +244,20 @@ fn a_merchant_profile_reflects_completed_trades_and_a_lost_dispute() {
 
     let profile = reputation.profile(&merchant_id);
     assert_eq!(profile.trades_started, 3);
-    assert_eq!(profile.trades_completed, 2);
+    // Three, not two. The chain released the escrow to the buyer, so the
+    // third trade did complete — it simply completed against this
+    // merchant rather than for them. Before the dispute had any effect on
+    // the settlement (OFS-2300 §5a) it sat in `Disputed`'s place at
+    // `PaymentSubmitted` forever, counted as neither completed nor
+    // cancelled, and the merchant's success rate quietly improved every
+    // time they lost a case. What the loss costs them is `disputes_lost`
+    // below, which is the counter that exists to say so.
+    assert_eq!(profile.trades_completed, 3);
     assert_eq!(profile.disputes_involved, 1);
     assert_eq!(profile.disputes_lost, 1);
-    assert_eq!(profile.total_volume, vec![Amount::new(5_000_000, 6)]);
-    assert_eq!(profile.trade_success_rate(), Some(2.0 / 3.0));
-    assert_eq!(profile.dispute_rate(), Some(0.5));
+    assert_eq!(profile.total_volume, vec![Amount::new(6_000_000, 6)]);
+    assert_eq!(profile.trade_success_rate(), Some(1.0));
+    assert_eq!(profile.dispute_rate(), Some(1.0 / 3.0));
     assert_eq!(profile.tier(), MerchantTier::Explorer);
 
     // A buyer whose reservation goes stale shows up as a missed
@@ -285,7 +296,10 @@ fn availability_and_payment_accuracy_come_from_signed_settlement_events() {
         MemoryStore::new(),
         Rc::clone(&advertisements),
     ));
-    let settlements = Rc::new(SettlementRegistry::new(MemoryStore::new()));
+    let settlements = Rc::new(SettlementRegistry::new(
+        MemoryStore::new(),
+        Rc::clone(&reservations),
+    ));
     let disputes = Rc::new(DisputeRegistry::new(
         MemoryStore::new(),
         Rc::clone(&settlements),

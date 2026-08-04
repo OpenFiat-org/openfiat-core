@@ -20,6 +20,17 @@ pub enum ReservationError {
     /// §18: a cancel/extend was attempted on a reservation no longer in a
     /// live state.
     InvalidReservationState,
+    /// A cancel was attempted on a reservation a settlement is already
+    /// running against (OFS-2300 §5a).
+    ///
+    /// Distinct from [`Self::InvalidReservationState`] in Rust and
+    /// deliberately *not* distinct on the wire — both answer
+    /// `INVALID_RESERVATION_STATE`, because "you cannot cancel this now"
+    /// is the same fact to a client either way, and OFS-8000 has no code
+    /// for the finer distinction. The variant exists so this crate's own
+    /// callers and tests can tell "already cancelled" from "the trade has
+    /// started", which are opposite situations behind one code.
+    SettlementInFlight,
     /// The price the requester signed is not one this advertisement's
     /// terms produce.
     ///
@@ -50,7 +61,9 @@ impl ReservationError {
             Self::InvalidAmount => ErrorCode::InvalidRequest,
             Self::PriceDisagreement => ErrorCode::PriceDisagreement,
             Self::InsufficientLiquidity => ErrorCode::InsufficientAvailableLiquidity,
-            Self::InvalidReservationState => ErrorCode::InvalidReservationState,
+            Self::InvalidReservationState | Self::SettlementInFlight => {
+                ErrorCode::InvalidReservationState
+            }
             Self::TimestampTooFarAhead => ErrorCode::InvalidParameter,
         }
     }

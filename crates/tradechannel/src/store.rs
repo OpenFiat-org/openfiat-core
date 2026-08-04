@@ -330,13 +330,14 @@ mod tests {
     use crate::events::{TradeChannelEntryPost, TradeChannelKeyGrant};
     use crate::key::{ChannelKey, open_entry, seal_entry};
     use crate::record::EntryKind;
+    use openfiat_advertisements::AdvertisementRegistry;
     use openfiat_crypto::{Keypair, seal};
     use openfiat_disputes::DisputeId;
     use openfiat_disputes::events::{
         ArbitratorJoin, DisputeOpen, SignedArbitratorJoin, SignedDisputeOpen,
     };
     use openfiat_network::identity::peer_id_from_public_key;
-    use openfiat_reservations::ReservationId;
+    use openfiat_reservations::{ReservationId, ReservationRegistry};
     use openfiat_settlement::events::{SettlementInitiate, SignedSettlementInitiate};
     use openfiat_storage::mem::MemoryStore;
     use openfiat_types::{Amount, Timestamp};
@@ -350,9 +351,23 @@ mod tests {
         settlement_id: SettlementId,
     }
 
+    /// The reservation index a settlement registry requires (OFS-2300
+    /// §5a). Nothing in this crate's tests creates a reservation — the
+    /// subject here is who may write to a channel — so the
+    /// reservation-side transitions find nothing and change nothing.
+    fn empty_reservations() -> Rc<ReservationRegistry<MemoryStore>> {
+        Rc::new(ReservationRegistry::new(
+            MemoryStore::new(),
+            Rc::new(AdvertisementRegistry::new(MemoryStore::new())),
+        ))
+    }
+
     impl Fixture {
         fn new() -> Self {
-            let settlements = Rc::new(SettlementRegistry::new(MemoryStore::new()));
+            let settlements = Rc::new(SettlementRegistry::new(
+                MemoryStore::new(),
+                empty_reservations(),
+            ));
             let disputes = Rc::new(DisputeRegistry::new(
                 MemoryStore::new(),
                 Rc::clone(&settlements),

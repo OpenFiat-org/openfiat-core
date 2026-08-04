@@ -8,17 +8,19 @@
 //! not just the one that happened to originate the approval.
 
 use futures::future::select_all;
+use openfiat_advertisements::AdvertisementRegistry;
 use openfiat_crypto::Keypair;
 use openfiat_gossip::EventStore;
 use openfiat_gossip::channel::Subscription;
 use openfiat_network::identity::{peer_id, to_libp2p_keypair};
 use openfiat_network::{Multiaddr, Node};
-use openfiat_reservations::ReservationId;
+use openfiat_reservations::{ReservationId, ReservationRegistry};
 use openfiat_settlement::{SettlementService, SettlementState};
 use openfiat_storage::mem::MemoryStore;
 use openfiat_types::{Amount, PeerId, PublicKey};
 use std::future::Future;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::time::Duration;
 
 fn make_service(seed: u8) -> SettlementService<MemoryStore> {
@@ -27,7 +29,14 @@ fn make_service(seed: u8) -> SettlementService<MemoryStore> {
     let event_store = EventStore::new(MemoryStore::new());
     let gossip =
         openfiat_gossip::GossipService::new(node, event_store, keypair, vec![], Subscription::All);
-    SettlementService::new(gossip, MemoryStore::new())
+    SettlementService::new(
+        gossip,
+        MemoryStore::new(),
+        Rc::new(ReservationRegistry::new(
+            MemoryStore::new(),
+            Rc::new(AdvertisementRegistry::new(MemoryStore::new())),
+        )),
+    )
 }
 
 fn identity(seed: u8) -> (PeerId, PublicKey) {
