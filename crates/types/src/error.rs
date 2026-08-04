@@ -155,6 +155,28 @@ error_registry! {
         // could neither tell the two apart nor learn to stop asking.
         SettlementNotFound = 5008, "SETTLEMENT_NOT_FOUND", false;
         InvalidSettlementState = 5009, "INVALID_SETTLEMENT_STATE", false;
+        // "A settlement with this id is already on this node", which is
+        // the one thing `SettlementAlreadyCompleted` (5005) does not say.
+        // That is where a duplicate id used to land, and it is a
+        // different statement about the trade: 5005 says the settlement
+        // finished, while a rejected id says only that the id is taken —
+        // by a settlement that may be sitting at `AwaitingPayment`, or
+        // belong to two other people entirely.
+        //
+        // The path is the ordinary one. A client whose connection drops
+        // mid-`sendSettlementInitiate` re-sends it, and was told its
+        // trade had completed; a client that believes 5005 stops waiting
+        // for a payment it should still be expecting.
+        //
+        // Its own code rather than the generic `ResourceAlreadyExists`
+        // (7) because settlement has a range of its own. The generic is
+        // the right answer for the domains OFS-8000 allocated no range to
+        // — sessions, registry, risk, snapshot, content all use it and
+        // say so — and the wrong one here, where every neighbouring
+        // domain that does have a range names its own
+        // (`ReservationAlreadyExists` 4001, `IdentityAlreadyExists` 2002,
+        // `DisputeAlreadyOpen` 6001, `DuplicateAdvertisement` 3004).
+        SettlementAlreadyExists = 5010, "SETTLEMENT_ALREADY_EXISTS", false;
     }
     range "Disputes (6000-6999)" {
         DisputeNotFound = 6000, "DISPUTE_NOT_FOUND", false;

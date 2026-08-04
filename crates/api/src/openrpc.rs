@@ -412,6 +412,27 @@ fn description_for(method: &str) -> Option<&'static str> {
              which is the same asymmetry that used to make a merchant pay a filing fee to \
              say no.",
         ),
+        "sendSettlementInitiate" => Some(
+            "The buyer raises a settlement against a reservation, opening the trade at \
+             `AwaitingPayment`. \
+             Send a base64 `SignedSettlementInitiate`: `{initiate: {id, reservation_id, buyer, \
+             buyer_public_key, seller, seller_public_key, amount, timestamp}, signature}`, \
+             signed over the canonical JSON of `initiate` under the buyer's key. `buyer` must \
+             be the peer id derived from `buyer_public_key`; a mismatch is refused before the \
+             signature is checked. \
+             `id` is yours to choose and yours to keep unique. An id this node already holds \
+             returns `SETTLEMENT_ALREADY_EXISTS` (5010) and changes nothing — the stored \
+             settlement is not overwritten, inspected, or advanced. \
+             That code used to be `SETTLEMENT_ALREADY_COMPLETED` (5005), which said something \
+             the node had not checked and usually was not true. Re-sending an initiate after a \
+             dropped connection or a timeout is the ordinary way to reach it, and the answer \
+             \"your trade completed\" tells a buyer to stop waiting for a settlement that may \
+             be sitting at `AwaitingPayment` expecting their payment — or that may belong to \
+             two other people, since an id collision says nothing about who holds it. Read \
+             5010 as \"pick another id, or call `getSettlement` to see what this one is\", not \
+             as an outcome for your trade. \
+             Neither code is retryable: the same id will not become free.",
+        ),
         "sendSettlementRejected" => Some(
             "The merchant's \"I cannot find this payment\" — the counterpart to \
              `sendSettlementApproved`, and the alternative to opening a dispute over it. \
@@ -655,7 +676,7 @@ pub fn build_document() -> Value {
         "info": {
             "title": "OpenFiat Node API",
             "version": openfiat_rpc::version(),
-            "description": "Solana-style JSON-RPC 2.0 surface over every OpenFiat domain: advertisements, reservations, settlement, trade, disputes, identity, reputation, governance, service providers, notifications, oracles, risk, snapshots, sessions, and the Solana chain bridge. POST to /rpc with {\"jsonrpc\":\"2.0\",\"id\":...,\"method\":...,\"params\":{...}}.",
+            "description": "Solana-style JSON-RPC 2.0 surface over every OpenFiat domain: advertisements, reservations, settlement, trade, disputes, identity, reputation, governance, service providers, notifications, oracles, risk, snapshots, sessions, and the Solana chain bridge. POST to /rpc with {\"jsonrpc\":\"2.0\",\"id\":...,\"method\":...,\"params\":{...}}. Every domain failure comes back as JSON-RPC code -32000 with OFS-8000's own identity in `error.data`: {\"ofsErrorCode\": 4004, \"ofsErrorName\": \"INSUFFICIENT_AVAILABLE_LIQUIDITY\", \"ofsRetryable\": true}. Switch on `ofsErrorCode` — it is the authoritative identity, and `ofsErrorName` is a label for humans. `ofsRetryable` is this node reporting OFS-8000 §16's judgement for that code, so a client does not have to maintain its own copy of the table: false means the same request sent again reaches the same outcome.",
         },
         "servers": [{ "name": "this node", "url": "/rpc" }],
         "methods": methods,
@@ -871,6 +892,49 @@ mod tests {
                 .is_some_and(|d| d.contains("hashing")),
             "the fallback is only trustless if the caller is told to check"
         );
+    }
+
+    /// The one method whose failure is easy to act on wrongly.
+    ///
+    /// A duplicate settlement id answered with
+    /// `SETTLEMENT_ALREADY_COMPLETED` for as long as the method existed,
+    /// and a client re-sending an initiate after a dropped connection —
+    /// the ordinary way to reach it — was told its trade had finished.
+    /// The description has to name the code the node actually returns,
+    /// or an integrator writes the handler against the old one.
+    #[test]
+    fn the_initiate_names_the_code_a_duplicate_id_really_returns() {
+        let document = build_document();
+        let description = document["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "sendSettlementInitiate")
+            .expect("sendSettlementInitiate is dispatchable")["description"]
+            .as_str()
+            .expect("and documented")
+            .to_string();
+        assert!(
+            description.contains("SETTLEMENT_ALREADY_EXISTS"),
+            "the description must name the code a duplicate id returns"
+        );
+        assert!(
+            description.contains("5010"),
+            "and its number, which is what a client switches on"
+        );
+    }
+
+    /// `ofsRetryable` is only useful if a client knows to read it, and
+    /// this document is where an integrator looks first.
+    #[test]
+    fn the_document_describes_the_error_data_a_client_switches_on() {
+        let info = build_document()["info"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for field in ["ofsErrorCode", "ofsErrorName", "ofsRetryable"] {
+            assert!(info.contains(field), "{field} is emitted but undocumented");
+        }
     }
 
     #[test]
