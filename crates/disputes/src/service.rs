@@ -135,7 +135,11 @@ impl<S: KvStore + 'static> DisputeService<S> {
             party: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&agree).map_err(|_| DisputeError::MalformedDispute)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::MUTUAL_SETTLEMENT_AGREE,
+            &agree,
+        )
+        .map_err(|_| DisputeError::MalformedDispute)?;
         let signed = SignedMutualSettlementAgree {
             signature: self.gossip.sign(&bytes),
             agree,

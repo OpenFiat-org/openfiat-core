@@ -155,8 +155,11 @@ pub struct SignedMutualSettlementAgree {
 
 impl SignedMutualSettlementAgree {
     pub fn sign(agree: MutualSettlementAgree, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&agree)
-            .expect("MutualSettlementAgree always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::MUTUAL_SETTLEMENT_AGREE,
+            &agree,
+        )
+        .expect("MutualSettlementAgree always serializes");
         Self {
             signature: keypair.sign(&bytes),
             agree,

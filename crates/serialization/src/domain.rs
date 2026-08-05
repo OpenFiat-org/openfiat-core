@@ -44,11 +44,36 @@ use crate::json::{self, EncodeError};
 
 /// Domain tags. One per signed payload type — never share a tag between two
 /// types, since sharing one recreates exactly the collision this prevents.
+///
+/// # Which types are here, and which are not
+///
+/// These are the signed payloads that are constructed and verified entirely
+/// **inside this workspace** — by the node or the in-tree CLI, never by an SDK
+/// or the app. For those, the signing preimage is a private implementation
+/// detail this crate controls, so tagging them is a self-contained change that
+/// cannot desynchronise from an outside signer.
+///
+/// The larger set of *client-signed* wire types — everything the SDKs
+/// (`openfiat-sdks`) or the app sign, which is most of the marketplace — is
+/// deliberately **absent**. Their preimage is a cross-repo contract: the Rust
+/// SDK, the TypeScript SDK, and the app each reconstruct it independently, and
+/// changing it here without changing it there in the same release would make
+/// every client-submitted event of that type fail verification. Rolling domain
+/// separation across those is a coordinated protocol change with a version
+/// bump, tracked separately — not something to do one repo at a time.
+///
+/// The structural guard in `tests/signed_payload_shapes.rs` protects the
+/// untagged types in the meantime: it fails the build the moment any two
+/// signed payloads share a field shape, which is the only condition under
+/// which a missing tag becomes exploitable.
 pub mod tag {
     pub const CLAIM_VERIFY: &str = "openfiat/identity/ClaimVerify/v1";
     pub const CLAIM_REVOKE: &str = "openfiat/identity/ClaimRevoke/v1";
     pub const PROPOSAL_WITHDRAW: &str = "openfiat/governance/ProposalWithdraw/v1";
     pub const PROPOSAL_ACTIVATE: &str = "openfiat/governance/ProposalActivate/v1";
+    pub const MUTUAL_SETTLEMENT_AGREE: &str = "openfiat/disputes/MutualSettlementAgree/v1";
+    pub const PAYMENT_METHOD_DEFINE: &str = "openfiat/taxonomy/PaymentMethodDefine/v1";
+    pub const FEE_SETTLEMENT: &str = "openfiat/registry/FeeSettlement/v1";
 }
 
 /// The bytes to sign for `payload` under `tag`.

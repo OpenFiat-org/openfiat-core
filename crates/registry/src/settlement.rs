@@ -338,8 +338,11 @@ pub struct SignedFeeSettlement {
 
 impl SignedFeeSettlement {
     pub fn sign(settlement: FeeSettlement, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&settlement)
-            .expect("FeeSettlement always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::FEE_SETTLEMENT,
+            &settlement,
+        )
+        .expect("FeeSettlement always serializes");
         Self {
             signature: keypair.sign(&bytes),
             settlement,
@@ -355,8 +358,11 @@ impl SignedFeeSettlement {
         if expected != self.settlement.payer {
             return Err(FeeSettlementError::UnauthorizedPayer);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.settlement)
-            .map_err(|_| FeeSettlementError::InvalidSignature)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::FEE_SETTLEMENT,
+            &self.settlement,
+        )
+        .map_err(|_| FeeSettlementError::InvalidSignature)?;
         verify(&self.settlement.payer_public_key, &bytes, &self.signature)
             .map_err(|_| FeeSettlementError::InvalidSignature)
     }

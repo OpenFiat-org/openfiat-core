@@ -49,3 +49,10 @@ repository = "https://github.com/OpenFiat-org/openfiat-core"
 [profile.release]
 lto = true
 codegen-units = 1
+# Matches the on-chain programs workspace, which sets this deliberately.
+# Money arithmetic in this workspace is written with `checked_*`, so this
+# changes no current behaviour — it is the floor that makes a *future*
+# unchecked path abort in release rather than wrap silently, the way debug
+# already would. A wrapped balance is a fund-accounting bug that does not
+# announce itself; an abort does.
+overflow-checks = true

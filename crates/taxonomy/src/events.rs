@@ -30,8 +30,11 @@ pub struct SignedPaymentMethodDefine {
 
 impl SignedPaymentMethodDefine {
     pub fn sign(method: MerchantPaymentMethod, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&method)
-            .expect("a MerchantPaymentMethod always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PAYMENT_METHOD_DEFINE,
+            &method,
+        )
+        .expect("a MerchantPaymentMethod always serializes");
         Self {
             signature: keypair.sign(&bytes),
             method,
@@ -51,8 +54,11 @@ impl SignedPaymentMethodDefine {
         if expected != self.method.merchant {
             return Err(TaxonomyError::InvalidSignature);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.method)
-            .map_err(|_| TaxonomyError::MalformedDefinition)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PAYMENT_METHOD_DEFINE,
+            &self.method,
+        )
+        .map_err(|_| TaxonomyError::MalformedDefinition)?;
         verify(&self.method.merchant_public_key, &bytes, &self.signature)
             .map_err(|_| TaxonomyError::InvalidSignature)
     }

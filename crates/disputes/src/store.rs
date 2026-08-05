@@ -245,7 +245,11 @@ impl<S: KvStore> DisputeRegistry<S> {
             return Err(DisputeError::InvalidStateTransition);
         }
 
-        let bytes = json::to_bytes(&signed.agree).map_err(|_| DisputeError::MalformedDispute)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::MUTUAL_SETTLEMENT_AGREE,
+            &signed.agree,
+        )
+        .map_err(|_| DisputeError::MalformedDispute)?;
         if signed.agree.party == dispute.buyer {
             verify(&dispute.buyer_public_key, &bytes, &signed.signature)
                 .map_err(|_| DisputeError::InvalidSignature)?;
