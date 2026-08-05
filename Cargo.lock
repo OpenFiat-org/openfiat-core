@@ -1175,7 +1175,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.119",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3343,7 +3343,7 @@ dependencies = [
  "serde_json",
  "solana-client",
  "solana-commitment-config",
- "solana-hash 3.1.0",
+ "solana-hash 4.6.0",
  "solana-pubkey 4.3.0",
  "solana-signature",
  "solana-transaction",
@@ -3740,7 +3740,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "solana-hash 3.1.0",
+ "solana-hash 4.6.0",
  "solana-keypair",
  "solana-message",
  "solana-signer",
