@@ -83,7 +83,11 @@ impl<S: KvStore + 'static> IdentityService<S> {
             wallet: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&verify).map_err(|_| IdentityError::MalformedClaim)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::CLAIM_VERIFY,
+            &verify,
+        )
+        .map_err(|_| IdentityError::MalformedClaim)?;
         let signed = SignedClaimVerify {
             signature: self.gossip.sign(&bytes),
             verify,
@@ -97,7 +101,11 @@ impl<S: KvStore + 'static> IdentityService<S> {
             wallet: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&revoke).map_err(|_| IdentityError::MalformedClaim)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::CLAIM_REVOKE,
+            &revoke,
+        )
+        .map_err(|_| IdentityError::MalformedClaim)?;
         let signed = SignedClaimRevoke {
             signature: self.gossip.sign(&bytes),
             revoke,

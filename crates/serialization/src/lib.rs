@@ -6,6 +6,7 @@
 //! HTTP/RPC boundary where cross-language and human readability matter
 //! more than size.
 
+pub mod domain;
 pub mod json;
 pub mod wire;
 

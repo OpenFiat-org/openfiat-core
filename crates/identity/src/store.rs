@@ -7,7 +7,6 @@ use crate::events::{SignedClaimPublish, SignedClaimRevoke, SignedClaimVerify};
 use crate::protocol;
 use crate::record::{Claim, ClaimId, VerificationStatus};
 use openfiat_crypto::verify;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventEnvelope, PeerId};
@@ -110,7 +109,11 @@ impl<S: KvStore> IdentityRegistry<S> {
         if claim.wallet != signed.verify.wallet {
             return Err(IdentityError::Unauthorized);
         }
-        let bytes = json::to_bytes(&signed.verify).map_err(|_| IdentityError::MalformedClaim)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::CLAIM_VERIFY,
+            &signed.verify,
+        )
+        .map_err(|_| IdentityError::MalformedClaim)?;
         verify(&claim.wallet_public_key, &bytes, &signed.signature)
             .map_err(|_| IdentityError::InvalidSignature)?;
         if claim.revoked {
@@ -131,7 +134,11 @@ impl<S: KvStore> IdentityRegistry<S> {
         if claim.wallet != signed.revoke.wallet {
             return Err(IdentityError::Unauthorized);
         }
-        let bytes = json::to_bytes(&signed.revoke).map_err(|_| IdentityError::MalformedClaim)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::CLAIM_REVOKE,
+            &signed.revoke,
+        )
+        .map_err(|_| IdentityError::MalformedClaim)?;
         verify(&claim.wallet_public_key, &bytes, &signed.signature)
             .map_err(|_| IdentityError::InvalidSignature)?;
         if claim.revoked {
@@ -546,5 +553,74 @@ mod tests {
             .unwrap();
         let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
         assert_eq!(registry.encryption_key(&wallet, Timestamp::now()), None);
+    }
+
+    /// Regression guard for cross-type signature confusion between
+    /// `ClaimVerify` and `ClaimRevoke`.
+    ///
+    /// Both are signed as bare `serde_json` bytes of the inner struct, and
+    /// both structs are `{claim_id, wallet, timestamp}` — identical field
+    /// names and types. So the signed bytes are byte-for-byte identical for
+    /// the same values, and a signature made to *verify* a claim is a valid
+    /// signature to *revoke* it. `apply_verify` and `apply_revoke` also share
+    /// the same preconditions (claim exists, wallet matches, `!revoked`), so
+    /// there is no state that admits one and rejects the other.
+    ///
+    /// A `SignedClaimVerify` is gossiped in the clear, so any observer could
+    /// lift the signature and permanently revoke the claim it verified —
+    /// revocation being one-way, that was unrecoverable. Closed by signing a
+    /// domain-separated preimage (`openfiat_serialization::domain`), so the
+    /// two statements no longer share bytes. This test is what stops the
+    /// separation being dropped again.
+    #[test]
+    fn a_verify_signature_is_not_accepted_as_a_revocation() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let victim = Keypair::generate();
+        let id = registry
+            .apply_publish(SignedClaimPublish::sign(
+                publish_claim(&victim, "claim-1", false),
+                &victim,
+            ))
+            .unwrap();
+        let wallet = peer_id_from_public_key(&victim.public_key()).unwrap();
+        let timestamp = Timestamp::now();
+
+        // The victim signs a verification, and only a verification.
+        let signed_verify = SignedClaimVerify::sign(
+            ClaimVerify {
+                claim_id: id.clone(),
+                wallet: wallet.clone(),
+                timestamp,
+            },
+            &victim,
+        );
+        registry.apply_verify(signed_verify.clone()).unwrap();
+        assert_eq!(
+            registry.get(&id).unwrap().verification_status,
+            VerificationStatus::Verified
+        );
+
+        // An attacker who never held the victim's key re-wraps the *same*
+        // signature over the *same* bytes as a revocation.
+        let forged = SignedClaimRevoke {
+            revoke: ClaimRevoke {
+                claim_id: id.clone(),
+                wallet,
+                timestamp,
+            },
+            signature: signed_verify.signature,
+        };
+
+        assert!(
+            matches!(
+                registry.apply_revoke(forged),
+                Err(IdentityError::InvalidSignature)
+            ),
+            "a signature made to verify a claim must not also revoke it"
+        );
+        assert!(
+            !registry.get(&id).unwrap().revoked,
+            "the claim must survive a signature its owner never made for that purpose"
+        );
     }
 }

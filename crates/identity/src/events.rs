@@ -68,8 +68,11 @@ pub struct SignedClaimVerify {
 
 impl SignedClaimVerify {
     pub fn sign(verify: ClaimVerify, keypair: &Keypair) -> Self {
-        let bytes =
-            openfiat_serialization::json::to_bytes(&verify).expect("ClaimVerify always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::CLAIM_VERIFY,
+            &verify,
+        )
+        .expect("ClaimVerify always serializes");
         Self {
             signature: keypair.sign(&bytes),
             verify,
@@ -92,8 +95,11 @@ pub struct SignedClaimRevoke {
 
 impl SignedClaimRevoke {
     pub fn sign(revoke: ClaimRevoke, keypair: &Keypair) -> Self {
-        let bytes =
-            openfiat_serialization::json::to_bytes(&revoke).expect("ClaimRevoke always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::CLAIM_REVOKE,
+            &revoke,
+        )
+        .expect("ClaimRevoke always serializes");
         Self {
             signature: keypair.sign(&bytes),
             revoke,

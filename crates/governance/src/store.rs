@@ -9,7 +9,6 @@ use crate::onchain::{ChainAgreement, ProposalChainView};
 use crate::protocol;
 use crate::record::{CastVote, Proposal, ProposalId, ProposalStatus};
 use openfiat_crypto::verify;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventEnvelope, Timestamp};
@@ -139,8 +138,11 @@ impl<S: KvStore> GovernanceRegistry<S> {
         if proposal.author != signed.withdraw.author {
             return Err(GovernanceError::Unauthorized);
         }
-        let bytes =
-            json::to_bytes(&signed.withdraw).map_err(|_| GovernanceError::MalformedProposal)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PROPOSAL_WITHDRAW,
+            &signed.withdraw,
+        )
+        .map_err(|_| GovernanceError::MalformedProposal)?;
         verify(&proposal.author_public_key, &bytes, &signed.signature)
             .map_err(|_| GovernanceError::InvalidSignature)?;
         if proposal.status != ProposalStatus::Voting {
@@ -161,8 +163,11 @@ impl<S: KvStore> GovernanceRegistry<S> {
         if proposal.author != signed.activate.author {
             return Err(GovernanceError::Unauthorized);
         }
-        let bytes =
-            json::to_bytes(&signed.activate).map_err(|_| GovernanceError::MalformedProposal)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PROPOSAL_ACTIVATE,
+            &signed.activate,
+        )
+        .map_err(|_| GovernanceError::MalformedProposal)?;
         verify(&proposal.author_public_key, &bytes, &signed.signature)
             .map_err(|_| GovernanceError::InvalidSignature)?;
         if proposal.status != ProposalStatus::Accepted {

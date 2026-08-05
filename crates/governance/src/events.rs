@@ -129,8 +129,11 @@ pub struct SignedProposalWithdraw {
 
 impl SignedProposalWithdraw {
     pub fn sign(withdraw: ProposalWithdraw, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&withdraw)
-            .expect("ProposalWithdraw always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PROPOSAL_WITHDRAW,
+            &withdraw,
+        )
+        .expect("ProposalWithdraw always serializes");
         Self {
             signature: keypair.sign(&bytes),
             withdraw,
@@ -153,8 +156,11 @@ pub struct SignedProposalActivate {
 
 impl SignedProposalActivate {
     pub fn sign(activate: ProposalActivate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&activate)
-            .expect("ProposalActivate always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PROPOSAL_ACTIVATE,
+            &activate,
+        )
+        .expect("ProposalActivate always serializes");
         Self {
             signature: keypair.sign(&bytes),
             activate,
