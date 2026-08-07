@@ -86,20 +86,55 @@ jobs:
             [[ "$code" == "200" ]]
           }
 
+          # Publish one crate, sleeping through crates.io's new-crate rate
+          # limit (HTTP 429) rather than failing on it. Publishing 22 brand-new
+          # crate names trips that limit after the first few; the server tells
+          # us exactly when to retry, so we wait until then and try the same
+          # crate again.
+          #
+          # --no-verify: the crates form an interlocking workspace (their
+          # dev-dependencies point at siblings, some of them node-internal
+          # crates never published here), so a local verify build would try to
+          # resolve dependencies that do not exist on crates.io. The workspace
+          # is already built and tested in ci.yml; crates.io still validates
+          # every normal dependency server-side on upload.
+          publish_one() {
+            local crate="$1" out after target now wait attempt
+            for attempt in $(seq 1 40); do
+              if out="$(cargo publish -p "$crate" --no-verify 2>&1)"; then
+                echo "$out"
+                return 0
+              fi
+              echo "$out"
+              # A version already uploaded (e.g. index lag vs. our skip check)
+              # is success, not failure.
+              if grep -qiE "already (exists|uploaded)" <<<"$out"; then
+                return 0
+              fi
+              if grep -qi "429 Too Many Requests" <<<"$out"; then
+                after="$(grep -oiP 'try again after \K.*?GMT' <<<"$out" | head -1)"
+                now="$(date -u +%s)"
+                target="$(date -u -d "$after" +%s 2>/dev/null || echo 0)"
+                wait=$(( target - now + 20 ))
+                [[ "$wait" -lt 30 ]] && wait=300
+                echo ">> rate limited; sleeping ${wait}s (until ${after:-unknown}) then retrying $crate"
+                sleep "$wait"
+                continue
+              fi
+              echo ">> $crate failed for a non-rate-limit reason" >&2
+              return 1
+            done
+            echo ">> gave up on $crate after $attempt attempts" >&2
+            return 1
+          }
+
           for crate in "${crates[@]}"; do
             if on_crates_io "$crate" "$version"; then
               echo "== $crate@$version already on crates.io, skipping"
               continue
             fi
             echo "== publishing $crate@$version"
-            # --no-verify: the crates form an interlocking workspace (their
-            # dev-dependencies point at siblings, some of them node-internal
-            # crates never published here), so a local verify build would try
-            # to resolve dependencies that do not exist on crates.io. The
-            # workspace is already built and tested in ci.yml; crates.io still
-            # validates every normal dependency server-side on upload.
-            cargo publish -p "$crate" --no-verify
-
+            publish_one "$crate"
             # Wait for the index to catch up before the next crate, which may
             # depend on this one. cargo publish already blocks on this, but a
             # crates.io read confirms it rather than trusting the timeout.
