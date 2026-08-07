@@ -1212,18 +1212,20 @@ describe("presale", () => {
       const attacker = Keypair.generate();
       await airdrop(attacker.publicKey);
       await expectAnchorError(
-        program.methods
-          .sweepProceeds(new BN(nonce), usdcUnit(1))
-          .accountsPartial({
-            admin: attacker.publicKey,
-            saleConfig,
-            usdcVault,
-            treasury,
-            usdcMint,
-            tokenProgram: TOKEN_2022_PROGRAM_ID,
-          })
-          .signers([attacker])
-          .rpc({ commitment: "confirmed" }),
+        withBlockhashRetry(() =>
+          program.methods
+            .sweepProceeds(new BN(nonce), usdcUnit(1))
+            .accountsPartial({
+              admin: attacker.publicKey,
+              saleConfig,
+              usdcVault,
+              treasury,
+              usdcMint,
+              tokenProgram: TOKEN_2022_PROGRAM_ID,
+            })
+            .signers([attacker])
+            .rpc({ commitment: "confirmed" }),
+        ),
         "Unauthorized",
       );
     });
