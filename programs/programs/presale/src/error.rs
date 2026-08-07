@@ -58,4 +58,6 @@ pub enum ErrorCode {
     WalletBanned,
     #[msg("soft_cap must be zero: this sale has no refund path, so a non-zero soft cap is unsupported")]
     SoftCapNotSupported,
+    #[msg("Nothing to claim: your full OPEN entitlement has already been claimed")]
+    NothingToClaim,
 }

@@ -47,18 +47,19 @@ pub struct Claim<'info> {
 }
 
 pub fn handle_claim(ctx: Context<Claim>, _sale_nonce: u64) -> Result<()> {
-    require!(
-        ctx.accounts.sale_config.state == SaleState::Finalized,
-        ErrorCode::SaleNotFinalized
-    );
-    require!(
-        !ctx.accounts.contribution.claimed,
-        ErrorCode::AlreadyClaimed
-    );
+    // No finalize gate: OPEN is claimable while the sale is Active or
+    // Finalized. Soundness rests on the oversell invariant — total
+    // entitlements are capped at hard_cap and presale_vault holds exactly
+    // that much OPEN — plus the monotonic high-water mark below.
+    let contribution = &ctx.accounts.contribution;
+    let unclaimed = contribution
+        .open_entitlement
+        .checked_sub(contribution.claimed_open)
+        .ok_or(ErrorCode::Overflow)?;
+    require!(unclaimed > 0, ErrorCode::NothingToClaim);
 
     let bump = ctx.bumps.presale_vault_authority;
     let signer_seeds: &[&[u8]] = &[PRESALE_VAULT_SEED, &[bump]];
-    let amount = ctx.accounts.contribution.open_entitlement;
     let open_decimals = ctx.accounts.sale_config.open_decimals;
 
     transfer_checked(
@@ -72,10 +73,10 @@ pub fn handle_claim(ctx: Context<Claim>, _sale_nonce: u64) -> Result<()> {
             },
             &[signer_seeds],
         ),
-        amount,
+        unclaimed,
         open_decimals,
     )?;
 
-    ctx.accounts.contribution.claimed = true;
+    ctx.accounts.contribution.claimed_open = ctx.accounts.contribution.open_entitlement;
     Ok(())
 }

@@ -112,7 +112,9 @@ pub struct Contribution {
     /// OPEN base units this wallet is entitled to claim (1:1 with amount_usdc
     /// at the mint's decimals — OFS-4100 §3 confirms no presale vesting).
     pub open_entitlement: u64,
-    pub claimed: bool,
-    pub refunded: bool,
+    /// OPEN base units already claimed. Monotonic high-water mark: a claim
+    /// pays `open_entitlement - claimed_open`, so a buyer who contributes
+    /// again after claiming can claim only the newly-accrued delta.
+    pub claimed_open: u64,
     pub bump: u8,
 }

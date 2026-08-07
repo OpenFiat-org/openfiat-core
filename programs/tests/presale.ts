@@ -891,25 +891,30 @@ describe("presale", () => {
       );
     });
 
-    it("rejects claim before the sale is finalized", async () => {
+    it("lets the buyer claim OPEN while the sale is still active (no finalize gate)", async () => {
       const contribution = contributionPda(saleConfig, buyer.publicKey);
-      await expectAnchorError(
-        program.methods
-          .claim(new BN(nonce))
-          .accountsPartial({
-            buyer: buyer.publicKey,
-            saleConfig,
-            openMint,
-            presaleVaultAuthority,
-            presaleVault,
-            contribution,
-            buyerOpen,
-            tokenProgram: TOKEN_2022_PROGRAM_ID,
-          })
-          .signers([buyer])
-          .rpc({ commitment: "confirmed" }),
-        "SaleNotFinalized",
+      await program.methods
+        .claim(new BN(nonce))
+        .accountsPartial({
+          buyer: buyer.publicKey,
+          saleConfig,
+          openMint,
+          presaleVaultAuthority,
+          presaleVault,
+          contribution,
+          buyerOpen,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+        })
+        .signers([buyer])
+        .rpc({ commitment: "confirmed" });
+
+      const openAcc = await getAccount(
+        connection,
+        buyerOpen,
+        "confirmed",
+        TOKEN_2022_PROGRAM_ID,
       );
+      expect(openAcc.amount.toString()).to.equal(openUnit(80).toString());
     });
 
     it("finalizes the sale and sweeps USDC to the treasury", async () => {
@@ -956,33 +961,7 @@ describe("presale", () => {
       );
     });
 
-    it("lets the buyer claim their OPEN entitlement", async () => {
-      const contribution = contributionPda(saleConfig, buyer.publicKey);
-      await program.methods
-        .claim(new BN(nonce))
-        .accountsPartial({
-          buyer: buyer.publicKey,
-          saleConfig,
-          openMint,
-          presaleVaultAuthority,
-          presaleVault,
-          contribution,
-          buyerOpen,
-          tokenProgram: TOKEN_2022_PROGRAM_ID,
-        })
-        .signers([buyer])
-        .rpc({ commitment: "confirmed" });
-
-      const openAcc = await getAccount(
-        connection,
-        buyerOpen,
-        "confirmed",
-        TOKEN_2022_PROGRAM_ID,
-      );
-      expect(openAcc.amount.toString()).to.equal(openUnit(80).toString());
-    });
-
-    it("rejects a second claim on the same contribution", async () => {
+    it("rejects a claim once the finalized sale's entitlement is already fully claimed", async () => {
       const contribution = contributionPda(saleConfig, buyer.publicKey);
       await expectAnchorError(
         program.methods
@@ -999,9 +978,133 @@ describe("presale", () => {
           })
           .signers([buyer])
           .rpc({ commitment: "confirmed" }),
-        "AlreadyClaimed",
+        "NothingToClaim",
       );
     });
 
+  });
+
+  describe("claim (anytime)", () => {
+    it("delivers OPEN during the live sale and pays only the newly-accrued delta on re-claim", async () => {
+      const nonce = 600;
+      const treasury = await ata(usdcMint, Keypair.generate().publicKey);
+      const now = Math.floor(Date.now() / 1000);
+      const { saleConfig, usdcVault } = await initSale(
+        nonce,
+        {
+          hardCap: usdcUnit(1_000_000),
+          softCap: new BN(0),
+          minContribution: usdcUnit(1),
+          maxContribution: usdcUnit(1_000_000),
+          maxSlippageBps: 100,
+          // -30s (not -5s): the suite's own on-chain clock can lag this
+          // process's wall clock (see onchainNow's doc comment above), so a
+          // wider buffer keeps the sale reliably Active by the time the
+          // contribute/claim calls below land.
+          startTime: new BN(now - 30),
+          endTime: new BN(now + 3600),
+          stablecoinWhitelist: [],
+        },
+        treasury,
+        mockJupiter.programId,
+      );
+
+      const buyer = Keypair.generate();
+      await airdrop(buyer.publicKey);
+      const buyerUsdc = await ata(usdcMint, buyer.publicKey);
+      const buyerOpen = await ata(openMint, buyer.publicKey);
+      await mintTo9or6(usdcMint, buyerUsdc, usdcUnit(1_000));
+
+      const contribution = contributionPda(saleConfig, buyer.publicKey);
+
+      // First contribution + immediate claim while Active.
+      await program.methods
+        .contributeUsdc(new BN(nonce), usdcUnit(60))
+        .accountsPartial({
+          buyer: buyer.publicKey,
+          saleConfig,
+          buyerUsdc,
+          usdcVault,
+          usdcMint,
+          contribution,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([buyer])
+        .rpc({ commitment: "confirmed" });
+
+      await program.methods
+        .claim(new BN(nonce))
+        .accountsPartial({
+          buyer: buyer.publicKey,
+          saleConfig,
+          openMint,
+          presaleVaultAuthority,
+          presaleVault,
+          contribution,
+          buyerOpen,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+        })
+        .signers([buyer])
+        .rpc({ commitment: "confirmed" });
+
+      expect(
+        (await getAccount(connection, buyerOpen, "confirmed", TOKEN_2022_PROGRAM_ID)).amount.toString(),
+      ).to.equal(openUnit(60).toString());
+
+      // Re-claim with nothing new accrued -> NothingToClaim.
+      await expectAnchorError(
+        program.methods
+          .claim(new BN(nonce))
+          .accountsPartial({
+            buyer: buyer.publicKey,
+            saleConfig,
+            openMint,
+            presaleVaultAuthority,
+            presaleVault,
+            contribution,
+            buyerOpen,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([buyer])
+          .rpc({ commitment: "confirmed" }),
+        "NothingToClaim",
+      );
+
+      // Contribute more, then claim only the delta (40 more OPEN, total 100).
+      await program.methods
+        .contributeUsdc(new BN(nonce), usdcUnit(40))
+        .accountsPartial({
+          buyer: buyer.publicKey,
+          saleConfig,
+          buyerUsdc,
+          usdcVault,
+          usdcMint,
+          contribution,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([buyer])
+        .rpc({ commitment: "confirmed" });
+
+      await program.methods
+        .claim(new BN(nonce))
+        .accountsPartial({
+          buyer: buyer.publicKey,
+          saleConfig,
+          openMint,
+          presaleVaultAuthority,
+          presaleVault,
+          contribution,
+          buyerOpen,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+        })
+        .signers([buyer])
+        .rpc({ commitment: "confirmed" });
+
+      expect(
+        (await getAccount(connection, buyerOpen, "confirmed", TOKEN_2022_PROGRAM_ID)).amount.toString(),
+      ).to.equal(openUnit(100).toString());
+    });
   });
 });
