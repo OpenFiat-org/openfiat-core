@@ -46,38 +46,29 @@ pub fn handle_finalize_sale(ctx: Context<FinalizeSale>, sale_nonce: u64) -> Resu
         ErrorCode::SaleNotEnded
     );
 
-    let soft_cap_met = sale_config.total_raised >= sale_config.soft_cap;
     let bump = sale_config.bump;
     let usdc_decimals = sale_config.usdc_decimals;
     let nonce_bytes = sale_nonce.to_le_bytes();
     let signer_seeds: &[&[u8]] = &[SALE_CONFIG_SEED, &nonce_bytes, &[bump]];
 
-    if soft_cap_met {
-        let amount = ctx.accounts.usdc_vault.amount;
-        if amount > 0 {
-            transfer_checked(
-                CpiContext::new_with_signer(
-                    ctx.accounts.token_program.key(),
-                    TransferChecked {
-                        from: ctx.accounts.usdc_vault.to_account_info(),
-                        mint: ctx.accounts.usdc_mint.to_account_info(),
-                        to: ctx.accounts.treasury.to_account_info(),
-                        authority: ctx.accounts.sale_config.to_account_info(),
-                    },
-                    &[signer_seeds],
-                ),
-                amount,
-                usdc_decimals,
-            )?;
-        }
+    let amount = ctx.accounts.usdc_vault.amount;
+    if amount > 0 {
+        transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.key(),
+                TransferChecked {
+                    from: ctx.accounts.usdc_vault.to_account_info(),
+                    mint: ctx.accounts.usdc_mint.to_account_info(),
+                    to: ctx.accounts.treasury.to_account_info(),
+                    authority: ctx.accounts.sale_config.to_account_info(),
+                },
+                &[signer_seeds],
+            ),
+            amount,
+            usdc_decimals,
+        )?;
     }
 
-    let sale_config = &mut ctx.accounts.sale_config;
-    sale_config.state = if soft_cap_met {
-        SaleState::Finalized
-    } else {
-        SaleState::SoftCapMissed
-    };
-
+    ctx.accounts.sale_config.state = SaleState::Finalized;
     Ok(())
 }

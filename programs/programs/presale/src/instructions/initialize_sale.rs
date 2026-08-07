@@ -104,6 +104,7 @@ pub fn handle_initialize_sale(
         params.hard_cap > params.soft_cap,
         ErrorCode::HardCapNotGreaterThanSoftCap
     );
+    require!(params.soft_cap == 0, ErrorCode::SoftCapNotSupported);
     require!(
         params.min_contribution > 0 && params.min_contribution <= params.max_contribution,
         ErrorCode::InvalidContributionBounds

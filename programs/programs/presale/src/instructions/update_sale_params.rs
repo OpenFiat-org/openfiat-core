@@ -6,9 +6,9 @@ use crate::{constants::*, error::ErrorCode, state::*};
 /// per-wallet min/max, slippage tolerance, end_time) — everything except
 /// the mint, vaults, swap program, start_time and stablecoin whitelist,
 /// which stay fixed once initialized. Only callable while the sale is
-/// still `Active`: once finalized or resolved to `SoftCapMissed`, changing
-/// these numbers could make already-recorded contributions or claims
-/// inconsistent with the terms buyers contributed under.
+/// still `Active`: once finalized, changing these numbers could make
+/// already-recorded contributions or claims inconsistent with the terms
+/// buyers contributed under.
 #[derive(Accounts)]
 #[instruction(sale_nonce: u64)]
 pub struct UpdateSaleParams<'info> {
@@ -48,6 +48,7 @@ pub fn handle_update_sale_params(
         params.hard_cap > params.soft_cap,
         ErrorCode::HardCapNotGreaterThanSoftCap
     );
+    require!(params.soft_cap == 0, ErrorCode::SoftCapNotSupported);
     require!(
         params.min_contribution > 0 && params.min_contribution <= params.max_contribution,
         ErrorCode::InvalidContributionBounds

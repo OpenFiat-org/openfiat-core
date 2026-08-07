@@ -4,14 +4,13 @@ use crate::constants::MAX_STABLECOINS;
 
 /// Lifecycle state of the presale (OFS-4200 §3).
 ///
-/// `Active -> Finalized` (hard cap reached, or end_time passed with soft cap
-/// met) or `Active -> SoftCapMissed` (end_time passed, soft cap unmet) are
-/// the only two transitions out of `Active`; both are terminal.
+/// `Active -> Finalized` is the only transition out of `Active` and is
+/// terminal. There is no refund path (soft_cap is forced to 0 at
+/// initialization), so there is no `SoftCapMissed` state.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]
 pub enum SaleState {
     Active,
     Finalized,
-    SoftCapMissed,
 }
 
 /// Singleton sale configuration + running state (OFS-4200 §3, OFS-4100 §3).
@@ -34,7 +33,7 @@ pub struct SaleConfig {
     pub presale_vault: Pubkey,
     /// USDC escrow token account (owned by this `SaleConfig` PDA itself)
     /// that holds contributions until `finalize_sale` sweeps them to
-    /// `treasury`, or `refund` returns them if the soft cap is missed.
+    /// `treasury`.
     pub usdc_vault: Pubkey,
     /// Destination for collected USDC once the sale finalizes successfully.
     pub treasury: Pubkey,
@@ -56,11 +55,12 @@ pub struct SaleConfig {
     /// entitlements accrue 1:1 against contributions, so a larger cap would
     /// let the sale sell OPEN the vault cannot deliver.
     pub hard_cap: u64,
-    /// USDC base units. **Zero on a spec-conforming sale**: OFS-4100 §3
-    /// confirms there is no soft cap and no refund condition derived from
-    /// one, and zero is how "no minimum to raise" is expressed here —
-    /// `finalize_sale` then always resolves to `Finalized`, never
-    /// `SoftCapMissed`, which is the intended behaviour and not an oversight.
+    /// USDC base units. **Always zero**: OFS-4100 §3 confirms there is no
+    /// soft cap and no refund condition derived from one, and
+    /// `initialize_sale`/`update_sale_params` both reject a non-zero value
+    /// with `ErrorCode::SoftCapNotSupported`. Zero is how "no minimum to
+    /// raise" is expressed here — `finalize_sale` always resolves to
+    /// `Finalized`.
     pub soft_cap: u64,
     /// USDC base units, applies to a wallet's first contribution only.
     pub min_contribution: u64,

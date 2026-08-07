@@ -14,7 +14,7 @@ declare_id!("75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7");
 /// `openfiat-presale` — the OPEN token presale program (OFS-4200 §3,
 /// OFS-4100 §3). Phase 3: full sale lifecycle — initialize, contribute
 /// (direct USDC or SOL/stablecoin via atomic Jupiter CPI swap), finalize,
-/// claim, refund.
+/// claim. There is no refund path (soft_cap is forced to 0).
 #[program]
 pub mod presale {
     use super::*;
@@ -55,10 +55,6 @@ pub mod presale {
 
     pub fn claim(ctx: Context<Claim>, sale_nonce: u64) -> Result<()> {
         crate::instructions::claim::handle_claim(ctx, sale_nonce)
-    }
-
-    pub fn refund(ctx: Context<Refund>, sale_nonce: u64) -> Result<()> {
-        crate::instructions::refund::handle_refund(ctx, sale_nonce)
     }
 
     pub fn update_sale_params(

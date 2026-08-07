@@ -56,4 +56,6 @@ pub enum ErrorCode {
     // old number.
     #[msg("This wallet is on the governance ban list (OFS-7100 §12)")]
     WalletBanned,
+    #[msg("soft_cap must be zero: this sale has no refund path, so a non-zero soft cap is unsupported")]
+    SoftCapNotSupported,
 }

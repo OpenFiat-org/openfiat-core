@@ -250,7 +250,7 @@ describe("presale", () => {
         100,
         {
           hardCap: usdcUnit(1_000_000),
-          softCap: usdcUnit(1),
+          softCap: new BN(0),
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(1_000_000),
           maxSlippageBps: 100,
@@ -265,6 +265,29 @@ describe("presale", () => {
       expect(account.admin.toBase58()).to.equal(admin.publicKey.toBase58());
       expect(account.state).to.deep.equal({ active: {} });
       expect(account.totalRaised.toNumber()).to.equal(0);
+    });
+
+    it("rejects a sale with a non-zero soft cap", async () => {
+      const treasury = await ata(usdcMint, admin.publicKey);
+      const now = Math.floor(Date.now() / 1000);
+      await expectAnchorError(
+        initSale(
+          101,
+          {
+            hardCap: usdcUnit(1_000_000),
+            softCap: usdcUnit(1),
+            minContribution: usdcUnit(1),
+            maxContribution: usdcUnit(1_000_000),
+            maxSlippageBps: 100,
+            startTime: new BN(now - 60),
+            endTime: new BN(now + 3600),
+            stablecoinWhitelist: [],
+          },
+          treasury,
+          mockJupiter.programId,
+        ),
+        "SoftCapNotSupported",
+      );
     });
   });
 
@@ -282,7 +305,7 @@ describe("presale", () => {
         nonce,
         {
           hardCap: usdcUnit(150),
-          softCap: usdcUnit(1),
+          softCap: new BN(0),
           minContribution: usdcUnit(50),
           maxContribution: usdcUnit(100),
           maxSlippageBps: 100,
@@ -457,7 +480,7 @@ describe("presale", () => {
         nonce,
         {
           hardCap: usdcUnit(1_000),
-          softCap: usdcUnit(10),
+          softCap: new BN(0),
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(500),
           maxSlippageBps: 100,
@@ -478,7 +501,7 @@ describe("presale", () => {
           program.methods
             .updateSaleParams(new BN(nonce), {
               hardCap: usdcUnit(2_000),
-              softCap: usdcUnit(10),
+              softCap: new BN(0),
               minContribution: usdcUnit(1),
               maxContribution: usdcUnit(1_000),
               maxSlippageBps: 100,
@@ -497,7 +520,7 @@ describe("presale", () => {
         program.methods
           .updateSaleParams(new BN(nonce), {
             hardCap: usdcUnit(30_000_000),
-            softCap: usdcUnit(5_000_000),
+            softCap: new BN(0),
             minContribution: usdcUnit(1),
             maxContribution: usdcUnit(1_000_000),
             maxSlippageBps: 100,
@@ -516,11 +539,15 @@ describe("presale", () => {
       );
     });
 
-    it("rejects a hard cap that isn't greater than the soft cap", async () => {
+    // A hard-cap-<=-soft-cap case is no longer reachable: soft_cap is
+    // pinned to 0, so any positive hard_cap already satisfies
+    // `hard_cap > soft_cap`. What's reachable instead is a non-zero
+    // soft_cap, which this now tests.
+    it("rejects a non-zero soft cap", async () => {
       await expectAnchorError(
         program.methods
           .updateSaleParams(new BN(nonce), {
-            hardCap: usdcUnit(5),
+            hardCap: usdcUnit(1_000),
             softCap: usdcUnit(10),
             minContribution: usdcUnit(1),
             maxContribution: usdcUnit(1_000),
@@ -529,7 +556,7 @@ describe("presale", () => {
           })
           .accountsPartial({ admin: admin.publicKey, saleConfig })
           .rpc({ commitment: "confirmed" }),
-        "HardCapNotGreaterThanSoftCap",
+        "SoftCapNotSupported",
       );
     });
   });
@@ -543,7 +570,7 @@ describe("presale", () => {
         nonce,
         {
           hardCap: usdcUnit(1_000),
-          softCap: usdcUnit(1),
+          softCap: new BN(0),
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(1_000),
           maxSlippageBps: 100,
@@ -587,7 +614,7 @@ describe("presale", () => {
         nonce,
         {
           hardCap: usdcUnit(1_000),
-          softCap: usdcUnit(1),
+          softCap: new BN(0),
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(1_000),
           maxSlippageBps: 100,
@@ -641,7 +668,7 @@ describe("presale", () => {
         nonce,
         {
           hardCap: usdcUnit(1_000),
-          softCap: usdcUnit(1),
+          softCap: new BN(0),
           minContribution: usdcUnit(10),
           maxContribution: usdcUnit(500),
           maxSlippageBps: 100, // 1%
@@ -788,7 +815,7 @@ describe("presale", () => {
     });
   });
 
-  describe("finalize_sale + claim (soft cap met)", () => {
+  describe("finalize_sale + claim", () => {
     const nonce = 500;
     let saleConfig: PublicKey;
     let usdcVault: PublicKey;
@@ -808,7 +835,7 @@ describe("presale", () => {
         nonce,
         {
           hardCap: usdcUnit(1_000),
-          softCap: usdcUnit(50),
+          softCap: new BN(0),
           minContribution: usdcUnit(10),
           maxContribution: usdcUnit(1_000),
           maxSlippageBps: 100,
@@ -832,7 +859,7 @@ describe("presale", () => {
 
       const contribution = contributionPda(saleConfig, buyer.publicKey);
       await program.methods
-        .contributeUsdc(new BN(nonce), usdcUnit(80)) // clears the 50 USDC soft cap
+        .contributeUsdc(new BN(nonce), usdcUnit(80))
         .accountsPartial({
           buyer: buyer.publicKey,
           saleConfig,
@@ -885,7 +912,7 @@ describe("presale", () => {
       );
     });
 
-    it("finalizes the sale (soft cap met) and sweeps USDC to the treasury", async () => {
+    it("finalizes the sale and sweeps USDC to the treasury", async () => {
       await waitForOnchainTime(saleEndsAt);
 
       await program.methods
@@ -976,157 +1003,5 @@ describe("presale", () => {
       );
     });
 
-    it("rejects refund on a sale that finalized successfully (not soft-cap-missed)", async () => {
-      const contribution = contributionPda(saleConfig, buyer.publicKey);
-      await expectAnchorError(
-        program.methods
-          .refund(new BN(nonce))
-          .accountsPartial({
-            buyer: buyer.publicKey,
-            saleConfig,
-            usdcVault,
-            usdcMint,
-            contribution,
-            buyerUsdc,
-            tokenProgram: TOKEN_2022_PROGRAM_ID,
-          })
-          .signers([buyer])
-          .rpc({ commitment: "confirmed" }),
-        "SaleNotRefundable",
-      );
-    });
-  });
-
-  describe("finalize_sale + refund (soft cap missed)", () => {
-    const nonce = 600;
-    let saleConfig: PublicKey;
-    let usdcVault: PublicKey;
-    let treasury: PublicKey;
-    let buyer: Keypair;
-    let buyerUsdc: PublicKey;
-
-    before(async () => {
-      treasury = await ata(usdcMint, Keypair.generate().publicKey);
-      const now = Math.floor(Date.now() / 1000);
-      const saleEndsAt = (await onchainNow()) + 12;
-      ({ saleConfig, usdcVault } = await initSale(
-        nonce,
-        {
-          hardCap: usdcUnit(1_000),
-          softCap: usdcUnit(500), // far above what we'll actually raise
-          minContribution: usdcUnit(10),
-          maxContribution: usdcUnit(1_000),
-          maxSlippageBps: 100,
-          startTime: new BN(now - 60),
-          // See the soft-cap-met block above: on-chain clock, wider window.
-          endTime: new BN(saleEndsAt),
-          stablecoinWhitelist: [],
-        },
-        treasury,
-        mockJupiter.programId,
-      ));
-
-      buyer = Keypair.generate();
-      await airdrop(buyer.publicKey);
-      buyerUsdc = await ata(usdcMint, buyer.publicKey);
-      await mintTo9or6(usdcMint, buyerUsdc, usdcUnit(1_000));
-
-      const contribution = contributionPda(saleConfig, buyer.publicKey);
-      await program.methods
-        .contributeUsdc(new BN(nonce), usdcUnit(40)) // well under the 500 USDC soft cap
-        .accountsPartial({
-          buyer: buyer.publicKey,
-          saleConfig,
-          buyerUsdc,
-          usdcVault,
-          usdcMint,
-          contribution,
-          tokenProgram: TOKEN_2022_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .signers([buyer])
-        .rpc({ commitment: "confirmed" });
-
-      await waitForOnchainTime(saleEndsAt);
-      await program.methods
-        .finalizeSale(new BN(nonce))
-        .accountsPartial({
-          admin: admin.publicKey,
-          saleConfig,
-          usdcVault,
-          treasury,
-          usdcMint,
-          tokenProgram: TOKEN_2022_PROGRAM_ID,
-        })
-        .rpc({ commitment: "confirmed" });
-    });
-
-    it("resolves to SoftCapMissed rather than Finalized", async () => {
-      const config = await program.account.saleConfig.fetch(saleConfig);
-      expect(config.state).to.deep.equal({ softCapMissed: {} });
-    });
-
-    it("does not sweep any USDC to the treasury", async () => {
-      const treasuryAcc = await getAccount(
-        connection,
-        treasury,
-        "confirmed",
-        TOKEN_2022_PROGRAM_ID,
-      );
-      expect(treasuryAcc.amount.toString()).to.equal("0");
-    });
-
-    it("refunds the buyer's USDC in full", async () => {
-      const before = await getAccount(
-        connection,
-        buyerUsdc,
-        "confirmed",
-        TOKEN_2022_PROGRAM_ID,
-      );
-      const contribution = contributionPda(saleConfig, buyer.publicKey);
-      await program.methods
-        .refund(new BN(nonce))
-        .accountsPartial({
-          buyer: buyer.publicKey,
-          saleConfig,
-          usdcVault,
-          usdcMint,
-          contribution,
-          buyerUsdc,
-          tokenProgram: TOKEN_2022_PROGRAM_ID,
-        })
-        .signers([buyer])
-        .rpc({ commitment: "confirmed" });
-
-      const after = await getAccount(
-        connection,
-        buyerUsdc,
-        "confirmed",
-        TOKEN_2022_PROGRAM_ID,
-      );
-      expect((after.amount - before.amount).toString()).to.equal(
-        usdcUnit(40).toString(),
-      );
-    });
-
-    it("rejects a second refund on the same contribution", async () => {
-      const contribution = contributionPda(saleConfig, buyer.publicKey);
-      await expectAnchorError(
-        program.methods
-          .refund(new BN(nonce))
-          .accountsPartial({
-            buyer: buyer.publicKey,
-            saleConfig,
-            usdcVault,
-            usdcMint,
-            contribution,
-            buyerUsdc,
-            tokenProgram: TOKEN_2022_PROGRAM_ID,
-          })
-          .signers([buyer])
-          .rpc({ commitment: "confirmed" }),
-        "AlreadyRefunded",
-      );
-    });
   });
 });

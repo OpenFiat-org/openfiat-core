@@ -10,7 +10,7 @@ pub const SALE_CONFIG_SEED: &[u8] = b"sale_config";
 pub const PRESALE_VAULT_SEED: &[u8] = b"presale_vault";
 
 /// PDA seed for the USDC escrow vault that holds contributions until
-/// `finalize_sale` sweeps them to the treasury (or `refund` returns them).
+/// `finalize_sale` sweeps them to the treasury.
 #[constant]
 pub const SALE_USDC_VAULT_SEED: &[u8] = b"sale_usdc_vault";
 
