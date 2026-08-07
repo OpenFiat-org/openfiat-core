@@ -1107,4 +1107,201 @@ describe("presale", () => {
       ).to.equal(openUnit(100).toString());
     });
   });
+
+  describe("sweep_proceeds", () => {
+    it("lets the admin sweep USDC to the fixed treasury while the sale is live, and claims still pay", async () => {
+      const nonce = 700;
+      const treasury = await ata(usdcMint, Keypair.generate().publicKey);
+      const now = Math.floor(Date.now() / 1000);
+      const { saleConfig, usdcVault } = await initSale(
+        nonce,
+        {
+          hardCap: usdcUnit(1_000_000),
+          softCap: new BN(0),
+          minContribution: usdcUnit(1),
+          maxContribution: usdcUnit(1_000_000),
+          maxSlippageBps: 100,
+          startTime: new BN(now - 30),
+          endTime: new BN(now + 3600),
+          stablecoinWhitelist: [],
+        },
+        treasury,
+        mockJupiter.programId,
+      );
+
+      const buyer = Keypair.generate();
+      await airdrop(buyer.publicKey);
+      const buyerUsdc = await ata(usdcMint, buyer.publicKey);
+      const buyerOpen = await ata(openMint, buyer.publicKey);
+      await mintTo9or6(usdcMint, buyerUsdc, usdcUnit(1_000));
+
+      const contribution = contributionPda(saleConfig, buyer.publicKey);
+      await program.methods
+        .contributeUsdc(new BN(nonce), usdcUnit(200))
+        .accountsPartial({
+          buyer: buyer.publicKey,
+          saleConfig,
+          buyerUsdc,
+          usdcVault,
+          usdcMint,
+          contribution,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([buyer])
+        .rpc({ commitment: "confirmed" });
+
+      // Admin sweeps 150 USDC of the 200 raised.
+      await program.methods
+        .sweepProceeds(new BN(nonce), usdcUnit(150))
+        .accountsPartial({
+          admin: admin.publicKey,
+          saleConfig,
+          usdcVault,
+          treasury,
+          usdcMint,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+        })
+        .rpc({ commitment: "confirmed" });
+
+      expect(
+        (await getAccount(connection, treasury, "confirmed", TOKEN_2022_PROGRAM_ID)).amount.toString(),
+      ).to.equal(usdcUnit(150).toString());
+
+      // The buyer can still claim their full 200 OPEN — claims survive sweeps.
+      await program.methods
+        .claim(new BN(nonce))
+        .accountsPartial({
+          buyer: buyer.publicKey,
+          saleConfig,
+          openMint,
+          presaleVaultAuthority,
+          presaleVault,
+          contribution,
+          buyerOpen,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+        })
+        .signers([buyer])
+        .rpc({ commitment: "confirmed" });
+
+      expect(
+        (await getAccount(connection, buyerOpen, "confirmed", TOKEN_2022_PROGRAM_ID)).amount.toString(),
+      ).to.equal(openUnit(200).toString());
+    });
+
+    it("rejects a sweep from a non-admin signer", async () => {
+      const nonce = 701;
+      const treasury = await ata(usdcMint, Keypair.generate().publicKey);
+      const now = Math.floor(Date.now() / 1000);
+      const { saleConfig, usdcVault } = await initSale(
+        nonce,
+        {
+          hardCap: usdcUnit(1_000),
+          softCap: new BN(0),
+          minContribution: usdcUnit(1),
+          maxContribution: usdcUnit(1_000),
+          maxSlippageBps: 100,
+          startTime: new BN(now - 30),
+          endTime: new BN(now + 3600),
+          stablecoinWhitelist: [],
+        },
+        treasury,
+        mockJupiter.programId,
+      );
+
+      const attacker = Keypair.generate();
+      await airdrop(attacker.publicKey);
+      await expectAnchorError(
+        program.methods
+          .sweepProceeds(new BN(nonce), usdcUnit(1))
+          .accountsPartial({
+            admin: attacker.publicKey,
+            saleConfig,
+            usdcVault,
+            treasury,
+            usdcMint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .signers([attacker])
+          .rpc({ commitment: "confirmed" }),
+        "Unauthorized",
+      );
+    });
+
+    it("rejects a sweep whose destination is not sale_config.treasury", async () => {
+      const nonce = 702;
+      const treasury = await ata(usdcMint, Keypair.generate().publicKey);
+      const now = Math.floor(Date.now() / 1000);
+      const { saleConfig, usdcVault } = await initSale(
+        nonce,
+        {
+          hardCap: usdcUnit(1_000),
+          softCap: new BN(0),
+          minContribution: usdcUnit(1),
+          maxContribution: usdcUnit(1_000),
+          maxSlippageBps: 100,
+          startTime: new BN(now - 30),
+          endTime: new BN(now + 3600),
+          stablecoinWhitelist: [],
+        },
+        treasury,
+        mockJupiter.programId,
+      );
+
+      const evil = await ata(usdcMint, Keypair.generate().publicKey);
+      // Anchor raises a constraint error (an address-mismatch on the
+      // `constraint = sale_config.treasury == treasury.key()` check) when
+      // the destination isn't sale_config.treasury.
+      await expectAnchorError(
+        program.methods
+          .sweepProceeds(new BN(nonce), usdcUnit(1))
+          .accountsPartial({
+            admin: admin.publicKey,
+            saleConfig,
+            usdcVault,
+            treasury: evil,
+            usdcMint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .rpc({ commitment: "confirmed" }),
+        "ConstraintRaw",
+      );
+    });
+
+    it("rejects a sweep larger than the vault balance", async () => {
+      const nonce = 703;
+      const treasury = await ata(usdcMint, Keypair.generate().publicKey);
+      const now = Math.floor(Date.now() / 1000);
+      const { saleConfig, usdcVault } = await initSale(
+        nonce,
+        {
+          hardCap: usdcUnit(1_000),
+          softCap: new BN(0),
+          minContribution: usdcUnit(1),
+          maxContribution: usdcUnit(1_000),
+          maxSlippageBps: 100,
+          startTime: new BN(now - 30),
+          endTime: new BN(now + 3600),
+          stablecoinWhitelist: [],
+        },
+        treasury,
+        mockJupiter.programId,
+      );
+
+      await expectAnchorError(
+        program.methods
+          .sweepProceeds(new BN(nonce), usdcUnit(1))
+          .accountsPartial({
+            admin: admin.publicKey,
+            saleConfig,
+            usdcVault,
+            treasury,
+            usdcMint,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .rpc({ commitment: "confirmed" }),
+        "InvalidSweepAmount",
+      );
+    });
+  });
 });

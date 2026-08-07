@@ -60,4 +60,6 @@ pub enum ErrorCode {
     SoftCapNotSupported,
     #[msg("Nothing to claim: your full OPEN entitlement has already been claimed")]
     NothingToClaim,
+    #[msg("sweep amount must be greater than zero and at most the vault balance")]
+    InvalidSweepAmount,
 }
