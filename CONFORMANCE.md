@@ -140,8 +140,8 @@ proves the composition:
 
 The proofs above are all off-chain-protocol-only (a real gossip cluster,
 but no real Solana state). The on-chain programs (`programs/` —
-escrow/staking/governance, OFS-4200) have two further layers of proof,
-neither duplicated in this repository:
+escrow/staking/governance/presale, OFS-4200) have two further layers of
+proof, neither duplicated in this repository:
 
 - **Program-level**: each program's own `anchor test` suite (`programs/tests/`)
   against a real `solana-test-validator` — full vault/stake/proposal
@@ -164,3 +164,17 @@ neither duplicated in this repository:
     investigation in that file's own doc comment) — the underlying
     mechanism it exercises is proven correct by the passing dispute test
     above.
+
+- **Presale, claim-anytime + sweep, on devnet**: the `presale` program lets
+  a buyer `claim` their OPEN while the sale is still Active (no finalize
+  gate) and lets the admin `sweep_proceeds` USDC to the fixed treasury
+  mid-sale; there is no refund path (`soft_cap` is forced to 0). This is
+  covered program-level by `programs/tests/presale.ts` (25 cases, incl. the
+  `claimed_open` high-water mark and all four sweep authorizations) and
+  proven end-to-end against real devnet state by
+  `programs/scripts/prove-devnet-presale-claim-sweep.ts`: a fresh-nonce sale
+  running contribute → claim-while-Active → second-contribute → delta-claim
+  → `sweep_proceeds`, asserting on-chain balances at each step. The
+  transaction signatures (and the in-place program-upgrade tx) are recorded
+  under `devnet_presale_claim_anytime_sweep_proof` in
+  `programs/devnet-addresses.json`.

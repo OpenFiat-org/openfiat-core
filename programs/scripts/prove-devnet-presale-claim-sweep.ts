@@ -66,9 +66,12 @@ function assertEq(actual: string, expected: string, label: string) {
 }
 
 async function main() {
-  const rpcUrl = clusterApiUrl("devnet");
+  // Source the RPC target from the environment (defaulting to devnet) and
+  // guard on that same value — so a misconfigured ANCHOR_PROVIDER_URL is
+  // actually caught, rather than a hardcoded literal that can never fail.
+  const rpcUrl = process.env.ANCHOR_PROVIDER_URL || clusterApiUrl("devnet");
   if (!rpcUrl.includes("devnet")) {
-    throw new Error("Refusing to run: RPC URL is not devnet. This script is devnet-only.");
+    throw new Error(`Refusing to run: RPC URL ${rpcUrl} is not devnet. This script is devnet-only.`);
   }
   const connection = new Connection(rpcUrl, "confirmed");
 
@@ -253,6 +256,34 @@ async function main() {
     .rpc({ commitment: "confirmed" });
   assertEq(await usdcBalance(treasury), usdc(50).toString(), "treasury received 50 after sweep");
   assertEq(await usdcBalance(usdcVault), usdc(50).toString(), "usdc_vault reduced to 50 after sweep");
+
+  // Claims survive sweeps: re-read the buyer's OPEN AFTER the sweep landed to
+  // prove on-chain (not by inference) that sweeping USDC left their claimed
+  // OPEN untouched — sweep_proceeds only moves USDC out of usdc_vault, never
+  // OPEN out of presale_vault.
+  assertEq(await openBalance(), open(100).toString(), "buyer OPEN unchanged after the sweep (claims survive sweeps)");
+
+  // Log the ProceedsSwept event emitted by sweep_proceeds.
+  const sweepTx = await connection.getTransaction(sigs.sweep, {
+    commitment: "confirmed",
+    maxSupportedTransactionVersion: 0,
+  });
+  for (const line of (sweepTx?.meta?.logMessages || [])) {
+    if (!line.startsWith("Program data:")) continue;
+    try {
+      const ev = (program as any).coder.events.decode(line.split("Program data: ")[1]);
+      if (ev) {
+        console.log(`  event ${ev.name}:`, {
+          sale_config: ev.data.saleConfig?.toBase58?.() ?? String(ev.data.saleConfig),
+          treasury: ev.data.treasury?.toBase58?.() ?? String(ev.data.treasury),
+          amount: ev.data.amount?.toString?.() ?? String(ev.data.amount),
+          vault_remaining: ev.data.vaultRemaining?.toString?.() ?? String(ev.data.vaultRemaining),
+        });
+      }
+    } catch {
+      /* not an anchor event line */
+    }
+  }
 
   console.log("\nAll assertions passed. Signatures:");
   for (const [k, v] of Object.entries(sigs)) console.log(`  ${k}: ${v}`);

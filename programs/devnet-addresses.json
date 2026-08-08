@@ -324,18 +324,18 @@
     "upgradedInSlot": 482057709,
     "upgradeTx": "3w2hgmKfZN21XJsHtRzjpoGubSqgYcE4aujyXexfXh7HRP5BSgUjy5brD7qHNuoKuHhA2jemS5dz3hko4nYPDCYK",
     "provenAt": "2026-08-08",
-    "saleNonce": 1786178763,
-    "saleConfig": "65U3b7CKHDZovcxQHJ38kHTBtbNw7SkkvL42NVq3afgH",
-    "testUsdcMint": "2R1EtWQj8x7zvRzYvnhNeLsB76JZaAQbd3dsHbUnBtsZ",
+    "saleNonce": 1786179431,
+    "saleConfig": "CV8WDnq9BXRjkxQYfqWQhyVTp8F2DMdcyC1w19RRMhqQ",
+    "testUsdcMint": "EfhiJwvBbuZ4ozt1VB7vyczPusaPiMpbTh6cA6knHfkp",
     "script": "scripts/prove-devnet-presale-claim-sweep.ts",
-    "note": "Proves claim-anytime + sweep_proceeds end to end on devnet under a fresh sale_nonce (soft_cap=0). Buyer contributed 60 USDC and claimed 60 OPEN WHILE ACTIVE (no finalize gate); contributed 40 more and a second claim paid only the 40-OPEN delta (claimed_open high-water mark); admin then swept 50 of the 100 USDC in usdc_vault to the fixed treasury while the sale ran, vault 100->50 while the buyer keeps their full 100 OPEN (claims never touch usdc_vault). Program upgraded IN PLACE at 75rJ9. NOTE: an earlier deploy accidentally created a separate program at 97NKN because target/deploy/presale-keypair.json no longer matches declare_id(75rJ9); that junk program was closed (2.4 SOL reclaimed) before the correct in-place upgrade tx above.",
+    "note": "Proves claim-anytime + sweep_proceeds end to end on devnet under a fresh sale_nonce (soft_cap=0). Buyer contributed 60 USDC and claimed 60 OPEN WHILE ACTIVE (no finalize gate); contributed 40 more and a second claim paid only the 40-OPEN delta (claimed_open high-water mark); admin then swept 50 of the 100 USDC in usdc_vault to the fixed treasury while the sale ran, vault 100->50, and a re-read of the buyer OPEN balance AFTER the sweep confirms it is still 100 (claims survive sweeps, proven on-chain post-sweep); the ProceedsSwept event decodes to amount=50000000, vault_remaining=50000000. Program upgraded IN PLACE at 75rJ9. NOTE: an earlier deploy accidentally created a separate program at 97NKN because target/deploy/presale-keypair.json no longer matches declare_id(75rJ9); that junk program was closed (2.4 SOL reclaimed) before the correct in-place upgrade tx above.",
     "proofTx": {
-      "initialize": "5y8sSvGqo3V1tc1ZYVbcSuMqKetgGmQBzi1juPjfb3HqrBnndgYUVxXvx88RWkubudDVthm1AgKWDntFuiLAo3NW",
-      "contribute60": "rHqR7dHQgutHvqNNHd6pQsNAc5aHrHMghvDNEnKmZ11fLYq53KkBk73D1yXJPb8J3VFPCkcWDothj9Sy64n7fyZ",
-      "claimWhileActive60": "3hiikFhPcWNonBfwDPkzxbFvvCWNuqdxfT2ReE1oE8qVk7A5gy8JGuqkxk6Dbfj7ukU8c9iC8AaU1k2DohyrGABP",
-      "contribute40": "4L1f8DD5WsWhPYiSUiCToCTd6BxKinmbdZU51E5ZpwSpRakyGgGm37yp7CfKsKP6VQaBckhbh78AYGcgugu5xbEq",
-      "claimDelta40": "2rhAKXDoebDaGxwkwtNqkx8HJ9igpfofUtiS9MPfJ4mBf4Rfo7i5GWM6CXvAgpvLSAyMxU7qDzTmN1cPJQYFUFwb",
-      "sweep50": "2TR3qy9iSrFr3QT5xmr78T7oJfu615HAdQQSYgT7JW82NqyPtCM1eHiGUo7YdzNfURaxLbb49duig9aJwn4Rs6XW"
+      "initialize": "2yT7cdEXupuCQesjeRPYLnUnDbybX9qFUDyod9oHDsa61rHGj5hGjdSbYNqM7uYk76ChZEdA5nmb7aV72Uf7aEtW",
+      "contribute60": "4iQq8ZwotZCLU7ux7gHGZdUWEh59b6EJSsk9wjnGcZdP77T2BwVAFdzhv9zKn3hM2WcS3ChmSyFMRabPZ9FnHHWn",
+      "claimWhileActive60": "2b81FawPMTzbPxaQzw5Kc1HDWvvs8TCmEmhywP1NAPCPQFfr1AawXL5Hti2xv7dWKS1xvXpnrUby8BHeg5QpahBp",
+      "contribute40": "5KDEqSq2HQHpH3hrxKiojjeh6g8t6gZ8LhiEyPqAufqabPq1yFLmdzK8UxZyhtpkLcfuJfe2YxKCRyasy2jFJE63",
+      "claimDelta40": "3XSZHkPKN3q1mmYfA2uwQhhpZhAsj6dcPHkvitFWBhvVw647tWhNWk7AHWdAkUTNRgGvbybHgbd7FgNrZkJ8mHJz",
+      "sweep50": "2Lr98ByyVWcWDUwaiGcq1vz1gGqshHUS2pvBDrhpRe6evUMrFuRMThVn2hfSHS2dDdba2xaXvZqkz8coLr2GdNmq"
     }
   }
 }
