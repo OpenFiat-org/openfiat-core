@@ -124,7 +124,10 @@ async function main() {
     await program.methods
       .initializeSale(new BN(SALE_NONCE), {
         hardCap: usdcUnit(1_000),
-        softCap: usdcUnit(10),
+        // soft_cap is forced to 0 by the program (no refund path — see the
+        // claim-anytime/sweep_proceeds change); a non-zero value is rejected
+        // with SoftCapNotSupported.
+        softCap: new BN(0),
         minContribution: usdcUnit(1),
         maxContribution: usdcUnit(500),
         maxSlippageBps: 100,
@@ -160,7 +163,7 @@ async function main() {
     usdcVault: usdcVault.toBase58(),
     treasury: treasury.address.toBase58(),
     hardCapUsdc: 1_000,
-    softCapUsdc: 10,
+    softCapUsdc: 0,
     minContributionUsdc: 1,
     maxContributionUsdc: 500,
     opensAt: new Date((Math.floor(Date.now() / 1000) - 60) * 1000).toISOString(),
