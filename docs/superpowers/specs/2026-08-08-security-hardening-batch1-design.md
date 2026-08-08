@@ -24,10 +24,13 @@ anyone can vote against it.
 
 **Fix:** add a floor.
 - New constant in `programs/programs/governance/src/constants.rs`:
-  `MIN_VOTING_PERIOD_SECS: i64 = 259_200` (3 days). **[PROPOSED — NEEDS
-  SIGN-OFF]** — a governance floor long enough that token holders can react;
-  pick the final value against the OFS-4000 governance spec before mainnet.
-  Recorded as a named protocol parameter, not an implementation detail.
+  `MIN_VOTING_PERIOD_SECS: i64 = 86_400` (24 hours). **[DEVNET VALUE]** — set
+  to 24h so governance-cycle tests don't have to wait days. It carries a loud
+  comment: **MUST be raised to `604_800` (7 days) before mainnet** — it is a
+  compile-time constant, so the mainnet program build must bump it and this is
+  a hard pre-mainnet gate (tracked in the mainnet launch register /
+  deploy-mechanics lane). Recorded as a named protocol parameter, not an
+  implementation detail.
 - In `create_proposal.rs`, replace the `> 0` check with
   `require!(voting_period_secs >= MIN_VOTING_PERIOD_SECS, ErrorCode::VotingPeriodTooShort)`
   (append `VotingPeriodTooShort` to the governance `ErrorCode` enum — check the
