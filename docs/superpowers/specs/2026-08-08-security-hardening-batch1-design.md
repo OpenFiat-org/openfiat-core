@@ -24,13 +24,19 @@ anyone can vote against it.
 
 **Fix:** add a floor.
 - New constant in `programs/programs/governance/src/constants.rs`:
-  `MIN_VOTING_PERIOD_SECS: i64 = 86_400` (24 hours). **[DEVNET VALUE]** — set
-  to 24h so governance-cycle tests don't have to wait days. It carries a loud
-  comment: **MUST be raised to `604_800` (7 days) before mainnet** — it is a
-  compile-time constant, so the mainnet program build must bump it and this is
-  a hard pre-mainnet gate (tracked in the mainnet launch register /
-  deploy-mechanics lane). Recorded as a named protocol parameter, not an
-  implementation detail.
+  `MIN_VOTING_PERIOD_SECS: i64 = 30` (30 seconds). **[DEVNET VALUE]** — the
+  governance test harness closes voting windows with REAL wall-clock sleeps
+  against a live `solana-test-validator` (no chain-time warp), and existing
+  fixtures use 6–25s periods, so the floor must stay small enough to test
+  without multi-minute (or multi-day) waits. 30s is just above the existing
+  fixture periods. It carries a loud comment: **MUST be raised to `604_800`
+  (7 days) before mainnet** — it is a compile-time constant, so the mainnet
+  program build must bump it, and this is a hard pre-mainnet gate (tracked in
+  the mainnet launch register / deploy-mechanics lane). The real security is
+  the mainnet value; the devnet value only proves the reject-below-floor
+  mechanism. Existing short-period fixtures (`governance-cycle.ts`'s shared
+  `VOTING_PERIOD_SECS` default, `governance.ts` real-sleep tests, and
+  `ban-list.ts:567`'s explicit period) are bumped to ≥30s.
 - In `create_proposal.rs`, replace the `> 0` check with
   `require!(voting_period_secs >= MIN_VOTING_PERIOD_SECS, ErrorCode::VotingPeriodTooShort)`
   (append `VotingPeriodTooShort` to the governance `ErrorCode` enum — check the
