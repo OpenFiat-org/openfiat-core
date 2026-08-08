@@ -61,6 +61,9 @@ describe("governance", () => {
   const THRESHOLD_UPGRADE_BPS = 6600; // 66%
   const QUORUM_UPGRADE_BPS = 2000; // 20%
   const DEPOSIT_AMOUNT = unit(5000);
+  // Mirrors governance::constants::MIN_VOTING_PERIOD_SECS (F-04). [DEVNET
+  // VALUE] 30s — see that constant's doc comment for the pre-mainnet gate.
+  const MIN_VOTING_PERIOD_SECS = 30;
 
   async function airdrop(pubkey: PublicKey, sol = 10) {
     const sig = await connection.requestAirdrop(pubkey, sol * 1_000_000_000);
@@ -284,7 +287,7 @@ describe("governance", () => {
     const { proposal, proposer, events } = await createFundedProposal(
       1,
       CATEGORY_PARAMETER,
-      3
+      MIN_VOTING_PERIOD_SECS
     );
     const account = await program.account.proposal.fetch(proposal);
     expect(account.state).to.deep.equal({ voting: {} });
@@ -321,6 +324,36 @@ describe("governance", () => {
     );
   });
 
+  // F-04: a proposer left free to pick `voting_period_secs` could set a
+  // one-second window and rush a proposal past anyone who might vote
+  // against it. `create_proposal` now floors it at
+  // `MIN_VOTING_PERIOD_SECS` — [DEVNET VALUE] 30s here, 604_800 (7 days)
+  // before mainnet.
+  it("rejects voting_period_secs below MIN_VOTING_PERIOD_SECS", async () => {
+    await expectAnchorError(
+      () =>
+        createFundedProposal(
+          9101,
+          CATEGORY_PARAMETER,
+          MIN_VOTING_PERIOD_SECS - 1
+        ),
+      "VotingPeriodTooShort"
+    );
+  });
+
+  it("accepts voting_period_secs exactly at MIN_VOTING_PERIOD_SECS", async () => {
+    const { proposal } = await createFundedProposal(
+      9102,
+      CATEGORY_PARAMETER,
+      MIN_VOTING_PERIOD_SECS
+    );
+    const account = await program.account.proposal.fetch(proposal);
+    expect(account.state).to.deep.equal({ voting: {} });
+    expect(
+      account.votingEndsAt.sub(account.createdAt).toString()
+    ).to.equal(MIN_VOTING_PERIOD_SECS.toString());
+  });
+
   it("fixes what a proposal may do at creation, in its own immutable account", async () => {
     // A proposal that could have its action attached or changed after
     // voting opened would let a proposer collect votes on one thing and
@@ -332,7 +365,7 @@ describe("governance", () => {
     const { proposal, events } = await createFundedProposal(
       11,
       CATEGORY_STANDARDS,
-      3,
+      MIN_VOTING_PERIOD_SECS,
       { listWallet: { wallet, reason: { sanctions: {} }, evidenceHash: evidence } }
     );
 
@@ -361,7 +394,7 @@ describe("governance", () => {
     // second time is the only way to try, and the address is taken.
     let failed = false;
     try {
-      await createFundedProposal(11, CATEGORY_STANDARDS, 3, ACTION_NONE);
+      await createFundedProposal(11, CATEGORY_STANDARDS, MIN_VOTING_PERIOD_SECS, ACTION_NONE);
     } catch {
       failed = true;
     }
@@ -382,7 +415,7 @@ describe("governance", () => {
     const { proposer, proposal } = await createFundedProposal(
       2,
       CATEGORY_PARAMETER,
-      25
+      MIN_VOTING_PERIOD_SECS
     );
 
     const forVoter = await setUpVoter(forVoterStake);
@@ -471,7 +504,7 @@ describe("governance", () => {
       "VotingStillOpen"
     );
 
-    await new Promise((r) => setTimeout(r, 27000));
+    await new Promise((r) => setTimeout(r, 32000));
 
     const tallySignature = await withBlockhashRetry(() =>
       program.methods
@@ -577,7 +610,7 @@ describe("governance", () => {
     const { proposer, proposal } = await createFundedProposal(
       3,
       CATEGORY_TREASURY,
-      20
+      MIN_VOTING_PERIOD_SECS
     );
 
     // A single small voter, far below the 10%-of-total-supply quorum.
@@ -597,7 +630,7 @@ describe("governance", () => {
         .rpc({ commitment: "confirmed" })
     );
 
-    await new Promise((r) => setTimeout(r, 22000));
+    await new Promise((r) => setTimeout(r, 32000));
 
     await withBlockhashRetry(() =>
       program.methods
@@ -1054,7 +1087,7 @@ describe("governance", () => {
       const { proposer, proposal } = await createFundedProposal(
         id,
         CATEGORY_PARAMETER,
-        3
+        MIN_VOTING_PERIOD_SECS
       );
       const account = await program.account.proposal.fetch(proposal);
       await sleepUntilChainTime(account.votingEndsAt.toNumber() + 1);

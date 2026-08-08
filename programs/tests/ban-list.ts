@@ -564,7 +564,7 @@ describe("ban list (OFS-7100 §12)", () => {
         governance,
         CATEGORY_STANDARDS,
         listAction(wallet, REASON_SCAM, [...crypto.randomBytes(32)]),
-        3
+        30
       );
       await expectAnchorError(
         () =>

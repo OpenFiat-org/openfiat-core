@@ -58,4 +58,6 @@ pub enum ErrorCode {
     NotTheProposer,
     #[msg("An off-chain link must be a real digest, not all zeroes")]
     EmptyOffchainIdHash,
+    #[msg("voting_period_secs is below the minimum voting period (MIN_VOTING_PERIOD_SECS)")]
+    VotingPeriodTooShort,
 }

@@ -99,7 +99,10 @@ pub fn handle_create_proposal(
         ErrorCode::WalletBanned
     );
 
-    require!(voting_period_secs > 0, ErrorCode::InvalidVoteLock);
+    require!(
+        voting_period_secs >= crate::constants::MIN_VOTING_PERIOD_SECS,
+        ErrorCode::VotingPeriodTooShort
+    );
 
     // A ban-list action fixes its own category, so the bar it has to
     // clear is not the proposer's to choose. `Standards` is where

@@ -111,3 +111,12 @@ pub const ALLENHARK_SECONDARY_HOLDER: Pubkey =
 /// in this program's IDL for SDK consumers.
 #[constant]
 pub const BAN_SEED: &[u8] = openfiat_programs_shared::BAN_SEED;
+
+/// Minimum on-chain voting window for a governance proposal (OFS-4000).
+///
+/// [DEVNET VALUE] 30 seconds, so governance-cycle tests wait seconds, not
+/// days. MUST be raised to 604_800 (7 days) before mainnet — this is a
+/// compile-time constant, so the mainnet program build has to bump it.
+/// Tracked as a hard pre-mainnet gate (mainnet launch register).
+#[constant]
+pub const MIN_VOTING_PERIOD_SECS: i64 = 30;

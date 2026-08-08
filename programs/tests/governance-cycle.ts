@@ -44,10 +44,12 @@ export const CATEGORY_STANDARDS = { standards: {} };
 export const ACTION_NONE = { none: {} };
 export const REASON_SANCTIONS = { sanctions: {} };
 
-/** Long enough that creating the proposal and casting the quorum vote
+/** Mirrors governance::constants::MIN_VOTING_PERIOD_SECS (F-04's [DEVNET
+ *  VALUE] floor) — the shortest window `create_proposal` now accepts.
+ *  Long enough that creating the proposal and casting the quorum vote
  *  both land inside it on a local validator, short enough that a suite
  *  is not dominated by waiting. */
-export const VOTING_PERIOD_SECS = 6;
+export const VOTING_PERIOD_SECS = 30;
 
 const ROLE_NODE_OPERATOR = { nodeOperator: {} };
 const ROLE_NODE_OPERATOR_BYTE = 2;
