@@ -494,6 +494,22 @@ describe("escrow", () => {
       const tradeEscrowTokenVault = tradeEscrowTokenVaultPda(reservationId);
       const buyerAta = await ata(mint, buyer.publicKey);
 
+      // The four treasuries are the shared singleton `feeConfig`'s, not
+      // per-test accounts, so any other spec's own release_escrow (e.g.
+      // ban-list.ts's F-03 finishing-path test) also lands fee splits
+      // here. Snapshot before, assert the delta below, rather than an
+      // absolute total that only holds if this is the first release ever
+      // to touch these treasuries.
+      const devBefore = await getAccount(connection, devTreasury, "confirmed", TOKEN_2022_PROGRAM_ID);
+      const ecosystemBefore = await getAccount(connection, ecosystemTreasury, "confirmed", TOKEN_2022_PROGRAM_ID);
+      const infraBefore = await getAccount(connection, infraTreasury, "confirmed", TOKEN_2022_PROGRAM_ID);
+      const emergencyBefore = await getAccount(connection, emergencyReserve, "confirmed", TOKEN_2022_PROGRAM_ID);
+      const collectedBefore =
+        BigInt(devBefore.amount) +
+        BigInt(ecosystemBefore.amount) +
+        BigInt(infraBefore.amount) +
+        BigInt(emergencyBefore.amount);
+
       await withBlockhashRetry(() =>
         program.methods
         .approveSettlement()
@@ -537,12 +553,12 @@ describe("escrow", () => {
       const ecosystemAccount = await getAccount(connection, ecosystemTreasury, "confirmed", TOKEN_2022_PROGRAM_ID);
       const infraAccount = await getAccount(connection, infraTreasury, "confirmed", TOKEN_2022_PROGRAM_ID);
       const emergencyAccount = await getAccount(connection, emergencyReserve, "confirmed", TOKEN_2022_PROGRAM_ID);
-      const collected =
+      const collectedAfter =
         BigInt(devAccount.amount) +
         BigInt(ecosystemAccount.amount) +
         BigInt(infraAccount.amount) +
         BigInt(emergencyAccount.amount);
-      expect(collected.toString()).to.equal(feeBaseUnits.toString());
+      expect((collectedAfter - collectedBefore).toString()).to.equal(feeBaseUnits.toString());
 
       const vault = await program.account.liquidityVault.fetch(liquidityVault);
       expect(vault.pendingSettlement.toString()).to.equal("0");
