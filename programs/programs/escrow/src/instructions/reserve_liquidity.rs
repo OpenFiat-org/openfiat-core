@@ -19,6 +19,17 @@ use crate::{constants::*, error::ErrorCode, state::*};
 pub struct ReserveLiquidity<'info> {
     pub merchant: Signer<'info>,
 
+    /// CHECK: OFS-7100 §12 ban gate, enforced by proof of non-existence —
+    /// banned iff this canonical PDA is occupied; unchecked/uninitialized on
+    /// purpose. seeds/seeds::program force the one canonical ban address for
+    /// `merchant`, so a banned caller cannot substitute an empty account.
+    #[account(
+        seeds = [openfiat_programs_shared::BAN_SEED, merchant.key().as_ref()],
+        bump,
+        seeds::program = openfiat_programs_shared::GOVERNANCE_PROGRAM_ID,
+    )]
+    pub ban_record: UncheckedAccount<'info>,
+
     #[account(
         mut,
         seeds = [LIQUIDITY_VAULT_SEED, merchant.key().as_ref(), liquidity_vault.mint.as_ref()],
@@ -43,6 +54,11 @@ pub struct ReserveLiquidity<'info> {
 }
 
 pub fn handle_reserve_liquidity(ctx: Context<ReserveLiquidity>, amount: u64) -> Result<()> {
+    require!(
+        !openfiat_programs_shared::wallet_is_banned(&ctx.accounts.ban_record),
+        ErrorCode::WalletBanned
+    );
+
     require!(
         ctx.accounts
             .fee_config

@@ -28,6 +28,7 @@ import {
 } from "@solana/web3.js";
 import { expect } from "chai";
 import {
+  getSharedArbitrationPool,
   getSharedFeeConfig,
   getSharedMint,
   getSharedOpenMint,
@@ -783,6 +784,270 @@ describe("ban list (OFS-7100 §12)", () => {
       } catch (err: any) {
         expect(String(err)).to.match(/already in use/i);
       }
+    });
+  });
+
+  describe("F-03: banned wallets cannot start new escrow engagements", () => {
+    // Only three escrow instructions start new exposure —
+    // `reserve_liquidity`, `create_trade_escrow`, `open_dispute_case` —
+    // and those are the only ones gated. Everything that finishes an
+    // engagement already in flight (`release_escrow`, dispute voting,
+    // claims, `withdraw_liquidity`, ...) stays reachable on purpose: a
+    // ban must not strand a counterparty's money mid-trade.
+    let openMint: PublicKey;
+    let arbitrationPool: PublicKey;
+    let escrowFeeConfig: PublicKey;
+
+    function tradeEscrowPda(reservationId: number) {
+      return PublicKey.findProgramAddressSync(
+        [Buffer.from("trade_escrow"), new BN(reservationId).toArrayLike(Buffer, "le", 8)],
+        escrow.programId
+      )[0];
+    }
+    function tradeEscrowTokenVaultPda(reservationId: number) {
+      return PublicKey.findProgramAddressSync(
+        [Buffer.from("trade_escrow_tokens"), new BN(reservationId).toArrayLike(Buffer, "le", 8)],
+        escrow.programId
+      )[0];
+    }
+    function disputeCasePda(reservationId: number) {
+      return PublicKey.findProgramAddressSync(
+        [Buffer.from("dispute_case"), new BN(reservationId).toArrayLike(Buffer, "le", 8)],
+        escrow.programId
+      )[0];
+    }
+    function openVaultPda(merchant: PublicKey) {
+      return PublicKey.findProgramAddressSync(
+        [Buffer.from("liquidity_vault"), merchant.toBuffer(), openMint.toBuffer()],
+        escrow.programId
+      )[0];
+    }
+    function openTokenVaultPda(merchant: PublicKey) {
+      return PublicKey.findProgramAddressSync(
+        [Buffer.from("liquidity_vault_tokens"), merchant.toBuffer(), openMint.toBuffer()],
+        escrow.programId
+      )[0];
+    }
+
+    function reserveLiquidity(merchant: Keypair, amount: BN) {
+      return escrow.methods
+        .reserveLiquidity(amount)
+        .accountsPartial({
+          merchant: merchant.publicKey,
+          liquidityVault: liquidityVaultPda(merchant.publicKey),
+        })
+        .signers([merchant]);
+    }
+
+    function createTradeEscrow(
+      merchant: Keypair,
+      buyer: PublicKey,
+      reservationId: number,
+      amount: BN
+    ) {
+      return escrow.methods
+        .createTradeEscrow(new BN(reservationId), amount, new BN(1800))
+        .accountsPartial({
+          merchant: merchant.publicKey,
+          buyer,
+          mint,
+          liquidityVault: liquidityVaultPda(merchant.publicKey),
+          tradeEscrow: tradeEscrowPda(reservationId),
+          tokenVault: tradeEscrowTokenVaultPda(reservationId),
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+        })
+        .signers([merchant]);
+    }
+
+    function fundTradeEscrow(merchant: Keypair, reservationId: number) {
+      return escrow.methods
+        .fundTradeEscrow()
+        .accountsPartial({
+          merchant: merchant.publicKey,
+          mint,
+          liquidityVault: liquidityVaultPda(merchant.publicKey),
+          liquidityTokenVault: liquidityTokenVaultPda(merchant.publicKey),
+          tradeEscrow: tradeEscrowPda(reservationId),
+          tradeEscrowTokenVault: tradeEscrowTokenVaultPda(reservationId),
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+        })
+        .signers([merchant]);
+    }
+
+    // Every dispute case needs a merchant OPEN vault, whether or not the
+    // fixture's (zero) dispute-filing fee ever draws on it —
+    // `open_dispute_case` reads it unconditionally.
+    function createOpenVault(merchant: Keypair) {
+      return escrow.methods
+        .createLiquidityVault()
+        .accountsPartial({
+          merchant: merchant.publicKey,
+          mint: openMint,
+          liquidityVault: openVaultPda(merchant.publicKey),
+          tokenVault: openTokenVaultPda(merchant.publicKey),
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT_PUBKEY,
+        })
+        .signers([merchant]);
+    }
+
+    async function fundedMerchant(reserveAmount: BN): Promise<{
+      merchant: Keypair;
+      from: PublicKey;
+    }> {
+      const { merchant, from } = await setUpMerchant();
+      await withBlockhashRetry(() =>
+        depositLiquidity(merchant, from, unit(1000)).rpc({ commitment: "confirmed" })
+      );
+      await withBlockhashRetry(() =>
+        reserveLiquidity(merchant, reserveAmount).rpc({ commitment: "confirmed" })
+      );
+      return { merchant, from };
+    }
+
+    before(async () => {
+      openMint = await getSharedOpenMint();
+      arbitrationPool = await getSharedArbitrationPool(escrow);
+      escrowFeeConfig = (await getSharedFeeConfig(escrow)).feeConfig;
+    });
+
+    it("refuses a banned merchant's reserve_liquidity, and lets an unbanned one through", async () => {
+      const { merchant, from } = await setUpMerchant();
+      await withBlockhashRetry(() =>
+        depositLiquidity(merchant, from, unit(1000)).rpc({ commitment: "confirmed" })
+      );
+      await listWallet(merchant.publicKey);
+
+      await expectAnchorError(
+        () => reserveLiquidity(merchant, unit(100)).rpc({ commitment: "confirmed" }),
+        "WalletBanned"
+      );
+
+      // The control: an otherwise-identical, unbanned merchant succeeds,
+      // so the rejection above is the ban gate and not a broken fixture.
+      const { merchant: control } = await fundedMerchant(unit(100));
+      const vault = await escrow.account.liquidityVault.fetch(
+        liquidityVaultPda(control.publicKey)
+      );
+      expect(vault.reserved.toString()).to.equal(unit(100).toString());
+    });
+
+    it("refuses a banned merchant's create_trade_escrow", async () => {
+      const { merchant } = await fundedMerchant(unit(100));
+      await listWallet(merchant.publicKey);
+
+      const buyer = Keypair.generate();
+      await expectAnchorError(
+        () =>
+          createTradeEscrow(merchant, buyer.publicKey, 900_001, unit(100)).rpc({
+            commitment: "confirmed",
+          }),
+        "WalletBanned"
+      );
+    });
+
+    it("refuses a banned trade party's open_dispute_case", async () => {
+      const { merchant } = await fundedMerchant(unit(100));
+      const buyer = Keypair.generate();
+      await airdrop(buyer.publicKey);
+
+      const reservationId = 900_002;
+      await withBlockhashRetry(() =>
+        createTradeEscrow(merchant, buyer.publicKey, reservationId, unit(100)).rpc({
+          commitment: "confirmed",
+        })
+      );
+      await withBlockhashRetry(() =>
+        fundTradeEscrow(merchant, reservationId).rpc({ commitment: "confirmed" })
+      );
+      await withBlockhashRetry(() =>
+        createOpenVault(merchant).rpc({ commitment: "confirmed" })
+      );
+
+      // The buyer, not the merchant, is the banned party here — proving
+      // the gate applies to whichever trade party signs, not just sellers.
+      await listWallet(buyer.publicKey);
+
+      await expectAnchorError(
+        () =>
+          escrow.methods
+            .openDisputeCase(new BN(60), new BN(60)) // protocol minimum window
+            .accountsPartial({
+              signer: buyer.publicKey,
+              payer: admin.publicKey,
+              tradeEscrow: tradeEscrowPda(reservationId),
+              disputeCase: disputeCasePda(reservationId),
+              feeConfig: escrowFeeConfig,
+              depositMint: openMint,
+              merchantOpenVault: openVaultPda(merchant.publicKey),
+              merchantOpenTokenVault: openTokenVaultPda(merchant.publicKey),
+              arbitrationPool,
+              tokenProgram: TOKEN_2022_PROGRAM_ID,
+              systemProgram: SystemProgram.programId,
+            })
+            .signers([buyer])
+            .rpc({ commitment: "confirmed" }),
+        "WalletBanned"
+      );
+    });
+
+    it("does not gate release_escrow: a merchant banned after the trade escrow exists can still finish it", async () => {
+      const { merchant } = await fundedMerchant(unit(100));
+      const buyer = Keypair.generate();
+      await airdrop(buyer.publicKey);
+
+      const reservationId = 900_003;
+      await withBlockhashRetry(() =>
+        createTradeEscrow(merchant, buyer.publicKey, reservationId, unit(100)).rpc({
+          commitment: "confirmed",
+        })
+      );
+      await withBlockhashRetry(() =>
+        fundTradeEscrow(merchant, reservationId).rpc({ commitment: "confirmed" })
+      );
+
+      const tradeEscrow = tradeEscrowPda(reservationId);
+      const tradeEscrowTokenVault = tradeEscrowTokenVaultPda(reservationId);
+
+      // Banned only now, after the escrow already exists and is funded.
+      // A gate that fired here would strand the buyer's already-committed
+      // trade for no reason connected to the buyer's own conduct.
+      await listWallet(merchant.publicKey);
+
+      await withBlockhashRetry(() =>
+        escrow.methods
+          .approveSettlement()
+          .accountsPartial({ merchant: merchant.publicKey, tradeEscrow })
+          .signers([merchant])
+          .rpc({ commitment: "confirmed" })
+      );
+
+      const feeCfg = await getSharedFeeConfig(escrow);
+      const buyerAta = await ata(mint, buyer.publicKey);
+      await withBlockhashRetry(() =>
+        escrow.methods
+          .releaseEscrow()
+          .accountsPartial({
+            mint,
+            liquidityVault: liquidityVaultPda(merchant.publicKey),
+            tradeEscrow,
+            tradeEscrowTokenVault,
+            buyerTokenAccount: buyerAta,
+            feeConfig: feeCfg.feeConfig,
+            devTreasury: feeCfg.devTreasury,
+            ecosystemTreasury: feeCfg.ecosystemTreasury,
+            infraTreasury: feeCfg.infraTreasury,
+            emergencyReserve: feeCfg.emergencyReserve,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+          })
+          .rpc({ commitment: "confirmed" })
+      );
+
+      const escrowAccount = await escrow.account.tradeEscrowVault.fetch(tradeEscrow);
+      expect(escrowAccount.state).to.deep.equal({ released: {} });
     });
   });
 });

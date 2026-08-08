@@ -84,6 +84,17 @@ pub struct OpenDisputeCase<'info> {
     #[account(constraint = signer.key() == trade_escrow.buyer || signer.key() == trade_escrow.seller @ ErrorCode::NotAPartyToThisTrade)]
     pub signer: Signer<'info>,
 
+    /// CHECK: OFS-7100 §12 ban gate, enforced by proof of non-existence —
+    /// banned iff this canonical PDA is occupied; unchecked/uninitialized on
+    /// purpose. seeds/seeds::program force the one canonical ban address for
+    /// `signer`, so a banned caller cannot substitute an empty account.
+    #[account(
+        seeds = [openfiat_programs_shared::BAN_SEED, signer.key().as_ref()],
+        bump,
+        seeds::program = openfiat_programs_shared::GOVERNANCE_PROGRAM_ID,
+    )]
+    pub ban_record: UncheckedAccount<'info>,
+
     #[account(mut)]
     pub payer: Signer<'info>,
 
@@ -174,6 +185,11 @@ pub fn handle_open_dispute_case(
     commit_window_secs: i64,
     reveal_window_secs: i64,
 ) -> Result<()> {
+    require!(
+        !openfiat_programs_shared::wallet_is_banned(&ctx.accounts.ban_record),
+        ErrorCode::WalletBanned
+    );
+
     // The opener is a party to the trade and picks both windows, so
     // neither may be arbitrary. Too short locks honest arbitrators out of
     // a case the opener is already prepared for; too long parks the other
