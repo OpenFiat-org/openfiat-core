@@ -114,7 +114,9 @@ async fn a_published_claim_replicates_and_converges_through_verify_and_revoke() 
     drive_until(&mut all, |services| {
         services
             .iter()
-            .all(|s| s.get(&claim_id).unwrap().verification_status == VerificationStatus::Verified)
+            .all(|s| {
+                s.get(&claim_id).unwrap().verification_status == VerificationStatus::SelfAttested
+            })
     })
     .await;
 

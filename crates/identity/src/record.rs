@@ -4,7 +4,7 @@
 //! account-ownership proof) needs a real verification-provider
 //! integration (SMS/email gateways, Phase 6c territory) this crate
 //! doesn't have yet. This crate defines the claim lifecycle and signed
-//! events; whether a contact claim is actually `Verified` at publish
+//! events; whether a contact claim is actually `SelfAttested` at publish
 //! time is the caller's responsibility (the wallet application already
 //! ran the OTP flow externally) — the same "off-chain step deferred,
 //! on-chain/off-protocol integration comes later" pattern used by
@@ -126,10 +126,22 @@ impl ClaimType {
     }
 }
 
+/// A claim's verification status.
+///
+/// `SelfAttested` means the claiming wallet signed the claim itself — it is
+/// NOT third-party verification, and a consumer must not treat it as such.
+/// It is named `SelfAttested` (not `Verified`) precisely so a counterparty
+/// cannot mistake a self-signed claim for an externally attested one.
+///
+/// A future `Verified` variant will require a signature from a distinct
+/// verifier authority (not the claimant). It is deliberately NOT added yet:
+/// there is no verifier-authority design or key on devnet, and an
+/// unreachable `Verified` would reintroduce exactly the ambiguity this
+/// rename removes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum VerificationStatus {
     Unverified,
-    Verified,
+    SelfAttested,
 }
 
 /// §7/§11: claims are immutable after publication; an update publishes a

@@ -87,7 +87,7 @@ impl<S: KvStore> IdentityRegistry<S> {
             claim_type: publish.claim_type,
             value: publish.value,
             verification_status: if publish.verified {
-                VerificationStatus::Verified
+                VerificationStatus::SelfAttested
             } else {
                 VerificationStatus::Unverified
             },
@@ -120,7 +120,7 @@ impl<S: KvStore> IdentityRegistry<S> {
             return Err(IdentityError::InvalidClaimState);
         }
 
-        claim.verification_status = VerificationStatus::Verified;
+        claim.verification_status = VerificationStatus::SelfAttested;
         claim.updated_at = signed.verify.timestamp;
         self.put(&claim);
         Ok(())
@@ -238,7 +238,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             registry.get(&id).unwrap().verification_status,
-            VerificationStatus::Verified
+            VerificationStatus::SelfAttested
         );
     }
 
@@ -597,7 +597,7 @@ mod tests {
         registry.apply_verify(signed_verify.clone()).unwrap();
         assert_eq!(
             registry.get(&id).unwrap().verification_status,
-            VerificationStatus::Verified
+            VerificationStatus::SelfAttested
         );
 
         // An attacker who never held the victim's key re-wraps the *same*
