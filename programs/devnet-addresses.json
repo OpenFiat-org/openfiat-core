@@ -337,5 +337,27 @@
       "claimDelta40": "3XSZHkPKN3q1mmYfA2uwQhhpZhAsj6dcPHkvitFWBhvVw647tWhNWk7AHWdAkUTNRgGvbybHgbd7FgNrZkJ8mHJz",
       "sweep50": "2Lr98ByyVWcWDUwaiGcq1vz1gGqshHUS2pvBDrhpRe6evUMrFuRMThVn2hfSHS2dDdba2xaXvZqkz8coLr2GdNmq"
     }
+  },
+  "devnet_authority_multisig": {
+    "note": "Sub-project 2 part B: the BPF upgrade authority of all four programs (presale, escrow, staking, governance) was migrated from the single EA8Ty keypair to a 3-of-5 Squads v4 multisig on devnet. Proven end to end by scripts/multisig/02-migrate-authorities.ts: a 3-of-5 vote moved SOL from the vault, and escrow was voted from the vault back to EA8Ty (proving the vault wields BPFLoaderUpgradeable SetAuthority and that recovery works) before all four were handed over. Reversible: we hold all five signer keys, so three of them can vote any authority back. The in-program admin/treasury fields (presale.admin/treasury, escrow.admin, staking.admin, governance.admin) are init-only and NOT migratable without a set_admin code change; on mainnet they are initialized directly to the vault. squadsProgram is Squads v4.",
+    "squadsProgram": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+    "multisig": "GWHgY9vAX3HDeSVMCDcGFxGJf5yMoKL3RBzY1EYHTaZv",
+    "vault": "FSKpdbqjxPnPhkH8pmRcxWHYxMCkuR6boiku9MArtkNh",
+    "threshold": "3-of-5",
+    "signers": [
+      "HpKdyBdNCfNFHfArUBY6cZf4YxZP1U9CytWwtDc5w4m3",
+      "CWKHdeYBwWjdXbKkwxKfs5vJ8aRNWBSHzkjb28s1uvTh",
+      "G87558rt5sccRh3Gpsi3LhVHygaUuA9xAaTdfxTT5JRt",
+      "FTM26NeHErUGfmYNvZR9ysDDSviFtAV9ceSrkoHhmUmK",
+      "DAuh2iM1ue8oCeFoj4PkunJ2qMQpesqHAQTuzRHRr5Q4"
+    ],
+    "signerCustody": "/root/openfiat-node-keys/multisig-signers/ (host 88.216.36.108) + repo keys/multisig-signers/ (gitignored)",
+    "migratedPrograms": [
+      "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7",
+      "HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP",
+      "HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx",
+      "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE"
+    ],
+    "migratedAt": "2026-08-09T11:35:21Z"
   }
 }

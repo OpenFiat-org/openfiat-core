@@ -1,0 +1,15 @@
+{
+  "cluster": "devnet",
+  "createKey": "BUZt6L2Qvmu4uPrQaKgYaktpbZ8iCVnN988nfog6Lx2r",
+  "multisigPda": "GWHgY9vAX3HDeSVMCDcGFxGJf5yMoKL3RBzY1EYHTaZv",
+  "vaultPda": "FSKpdbqjxPnPhkH8pmRcxWHYxMCkuR6boiku9MArtkNh",
+  "threshold": 3,
+  "members": [
+    "HpKdyBdNCfNFHfArUBY6cZf4YxZP1U9CytWwtDc5w4m3",
+    "CWKHdeYBwWjdXbKkwxKfs5vJ8aRNWBSHzkjb28s1uvTh",
+    "G87558rt5sccRh3Gpsi3LhVHygaUuA9xAaTdfxTT5JRt",
+    "FTM26NeHErUGfmYNvZR9ysDDSviFtAV9ceSrkoHhmUmK",
+    "DAuh2iM1ue8oCeFoj4PkunJ2qMQpesqHAQTuzRHRr5Q4"
+  ],
+  "createdAt": "2026-08-09T11:26:57.490Z"
+}
