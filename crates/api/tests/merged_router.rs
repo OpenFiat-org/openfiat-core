@@ -30,6 +30,14 @@ async fn the_merged_router_serves_both_rpc_and_documentation() {
                 .method("POST")
                 .uri("/rpc")
                 .header("content-type", "application/json")
+                // The /rpc route is now per-IP rate-limited (F-02); its key
+                // extractor reads ConnectInfo, which a bare oneshot() request
+                // doesn't carry unless we attach it (a real server supplies it
+                // via into_make_service_with_connect_info).
+                .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    40_000,
+                ))))
                 .body(axum::body::Body::from(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "getVersion", "params": {} }).to_string()))
                 .unwrap(),
         )
