@@ -50,9 +50,10 @@ pub struct SaleConfig {
     ///
     /// OFS-4100 §3 gives the presale no hard cap distinct from the Community
     /// Presale bucket itself, so the confirmed value is the full bucket:
-    /// 200,000,000 OPEN at the configured `open_per_usdc` rate (100, i.e. 1
-    /// USDC = 100 OPEN). It must never be set higher — `claim` pays out of a
-    /// vault holding exactly that much OPEN, and entitlements accrue against
+    /// 20,000,000,000 OPEN at the configured `open_per_usdc` rate (100, i.e.
+    /// 1 USDC = 100 OPEN — re-baselined 2026-08-09). It must never be set
+    /// higher — `claim` pays out of a vault holding exactly that much OPEN,
+    /// and entitlements accrue against
     /// contributions at that rate, so a larger cap would let the sale sell
     /// OPEN the vault cannot deliver.
     pub hard_cap: u64,

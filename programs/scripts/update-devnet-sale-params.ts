@@ -75,11 +75,16 @@ const USDC = (whole: bigint) => whole * 10n ** USDC_DECIMALS;
  * previously-valid contribution into a rejected one, so a devnet faucet
  * dispensing test USDC has to be able to reach 50 in a single grant.
  *
- * `hardCap` is the full Community Presale bucket (200,000,000 OPEN at
- * 1 OPEN = 1 USDC). It must not exceed the bucket: entitlements are minted
- * 1:1 against contributions and `claim` pays out of a vault holding exactly
- * 200,000,000 OPEN, so a higher cap would let the sale promise OPEN that the
- * vault cannot deliver.
+ * `hardCap` is the full Community Presale bucket, expressed in USDC: the
+ * bucket holds 20,000,000,000 OPEN (re-baselined 2026-08-09) and the
+ * configured `open_per_usdc` rate is 100 (1 USDC = 100 OPEN, i.e. $0.01),
+ * so 200,000,000 USDC of contributions exhausts it exactly — the USDC
+ * figure below is unchanged from the pre-rebaseline value because the
+ * bucket size and the rate both scaled by the same 100x. It must not
+ * exceed that: entitlements are minted at the configured rate against
+ * contributions and `claim` pays out of a vault holding exactly
+ * 20,000,000,000 OPEN, so a higher cap would let the sale promise OPEN
+ * that the vault cannot deliver.
  */
 const TARGET = {
   hardCap: USDC(200_000_000n),

@@ -138,10 +138,10 @@ solana program dump <PROGRAM_ID> /tmp/onchain.so --url devnet
 
 ## OPEN token genesis
 
-`scripts/genesis.ts` creates the fixed-supply Token-2022 mint (OFS-4100 §1),
-mints the full 1,000,000,000 OPEN supply once, distributes it across the 7
-allocation buckets (OFS-4100 §2), then permanently revokes both mint and
-freeze authority. `scripts/verify-genesis.ts` reads back on-chain state and
+`scripts/genesis.ts` creates the fixed-supply Token-2022 mint (OFS-4100 §1,
+re-baselined 2026-08-09), mints the full 100,000,000,000 OPEN supply once at
+6 decimals, distributes it across the 7 allocation buckets (OFS-4100 §2),
+then permanently revokes both mint and freeze authority. `scripts/verify-genesis.ts` reads back on-chain state and
 asserts every invariant (supply, decimals, revoked authorities, all 7 bucket
 accounts distinct, balances sum to total).
 

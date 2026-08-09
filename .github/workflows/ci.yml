@@ -45,6 +45,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features --workspace
 
+  tokenomics-literals:
+    name: stale tokenomics literals
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./scripts/check-stale-tokenomics-literals.sh
+
   deny:
     name: cargo deny
     runs-on: ubuntu-latest

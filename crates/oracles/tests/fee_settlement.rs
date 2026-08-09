@@ -28,7 +28,11 @@ use std::rc::Rc;
 
 const USDC: &str = "2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU";
 const OPEN: &str = "29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj";
-/// The OPEN mint is Token-2022 with nine decimals.
+/// Local, self-contained fixture decimals for this test file only — kept at
+/// nine so its many `Amount::new(_, 9)` assertions below stay internally
+/// consistent without a wide mechanical rewrite. This does **not** describe
+/// the live OPEN mint: OFS-4100 §1 moved OPEN to six decimals in the
+/// 2026-08-09 tokenomics re-baseline (see `openfiat_chain::mints::OPEN`).
 const OPEN_DECIMALS: u8 = 9;
 const PAYOUT: &str = "EA8TyQ58C3eavg3ThRFTMu1KLyV9e1v2oTQubSBQ9s5z";
 

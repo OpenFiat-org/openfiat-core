@@ -524,7 +524,12 @@ mod tests {
 
     const USDC: &str = "2bHPi5hA4zrmPAfrvLmEexg3KJjpTjNkUcxWnzUPeRRU";
     const OPEN: &str = "29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj";
-    /// OPEN is a Token-2022 mint with nine decimals.
+    /// Local, self-contained fixture decimals for this test module only —
+    /// kept at nine so its `Amount::new(_, 9)` assertions stay internally
+    /// consistent without a wide mechanical rewrite. This does **not**
+    /// describe the live OPEN mint: OFS-4100 §1 moved OPEN to six decimals
+    /// in the 2026-08-09 tokenomics re-baseline (see
+    /// `openfiat_chain::mints::OPEN`).
     const OPEN_DECIMALS: u8 = 9;
 
     /// A fee in USDC, the token a provider overwhelmingly declares.

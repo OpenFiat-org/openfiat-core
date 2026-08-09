@@ -710,9 +710,12 @@ mod tests {
         ledger.observe_content_served(&params, &minnow, Timestamp::from_millis(start));
 
         let el = HashMap::from([
-            // The entire 1,000,000,000 OPEN supply staked by one node —
-            // impossible in practice, and precisely why it is the right
-            // bound to prove the arithmetic against.
+            // An extreme, physically-impossible stake — far beyond what any
+            // node could realistically hold, at any OPEN total supply — and
+            // precisely why it is the right bound to prove the arithmetic
+            // against. (Not tied to the current 100,000,000,000 OPEN total
+            // supply; this literal was never meant to track it, see Task 1's
+            // 2026-08-09 re-baseline note.)
             (
                 whale.clone(),
                 Eligibility {
