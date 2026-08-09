@@ -17,6 +17,7 @@ pub mod notify;
 pub mod onchain_dispute;
 mod onchain_stake;
 pub mod provider_stake;
+mod rate_limit;
 pub mod server;
 pub mod state;
 

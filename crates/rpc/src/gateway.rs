@@ -242,6 +242,7 @@ mod tests {
                         .method("POST")
                         .uri("/rpc")
                         .header("content-type", "application/json")
+                        .extension(crate::server::test_peer([127, 0, 0, 1]))
                         .body(axum::body::Body::from(body.to_string()))
                         .unwrap(),
                 )

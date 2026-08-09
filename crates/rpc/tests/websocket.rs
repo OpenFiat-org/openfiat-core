@@ -26,7 +26,16 @@ async fn a_websocket_client_receives_a_notification_for_a_real_mutation() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        // `/ws` is behind the per-IP rate limiter (F-02), which keys on
+        // the real socket peer via `ConnectInfo` -- only populated when
+        // served through `into_make_service_with_connect_info`, matching
+        // how `openfiat-cli` serves this router for real.
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))

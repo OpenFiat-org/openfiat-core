@@ -773,6 +773,14 @@ async fn main() {
         .unwrap_or_else(|e| panic!("failed to bind {http_addr}: {e}"));
     tracing::info!(address = %http_addr, "JSON-RPC and HTTP API listening (try GET /health, GET /docs)");
 
+    // `openfiat_rpc::router`'s per-IP rate limiter (F-02) keys on the real
+    // socket peer address via `axum::extract::ConnectInfo`, which axum
+    // only populates when the server is served through
+    // `into_make_service_with_connect_info` rather than plain
+    // `into_make_service`. Without this, every request would fail that
+    // extractor and the limiter would 500 the entire JSON-RPC surface, not
+    // silently skip limiting it.
+
     // Deliberately no entrypoint here: at this point there isn't one to
     // print. `--gossip-bind-address` defaults to `0.0.0.0`, which tells a
     // socket "every interface" and tells a dialing peer nothing — an
@@ -780,10 +788,13 @@ async fn main() {
     // handed that string to a peer got an unexplained dial failure on the
     // far side. The real addresses are logged by `openfiat_rpc::actor` as
     // libp2p resolves them and as peers report what they observed.
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("openfiat-node HTTP server failed");
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .expect("openfiat-node HTTP server failed");
 }
 
 /// Resolves once this process is asked to stop — `systemctl stop` (SIGTERM)

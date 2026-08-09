@@ -41,9 +41,26 @@ pub fn router(
         rpc: rpc.clone(),
         metrics,
     };
+
+    // `/rpc` and `/ws` are the only routes a caller can hit for free but
+    // this node pays for — `/health`/`/metrics` are ops surfaces and the
+    // merged snapshot/gateway routes below are content-addressed and
+    // must stay reachable for monitoring and archival even while an
+    // abusive IP is being throttled. So the limiter is built into its own
+    // sub-router here, *before* `with_state` below unifies everything
+    // into `Router<()>` — `Router::layer` only wraps routes already
+    // registered on the value it's called on, so merging this
+    // already-layered sub-router in is what keeps the other routes
+    // un-throttled rather than a global `.layer()` catching everything.
+    // See `crate::rate_limit` for the limiter itself.
+    let rate_limited_rpc = crate::rate_limit::wrap(
+        Router::new()
+            .route("/rpc", post(handle_rpc))
+            .route("/ws", get(handle_ws)),
+    );
+
     Router::new()
-        .route("/rpc", post(handle_rpc))
-        .route("/ws", get(handle_ws))
+        .merge(rate_limited_rpc)
         .route("/health", get(handle_health))
         .route("/metrics", get(handle_metrics))
         .with_state(state)
@@ -59,6 +76,19 @@ pub fn router(
         // boundary here for CORS to protect — the same reasoning public
         // Solana RPC endpoints rely on to allow any origin.
         .layer(CorsLayer::permissive())
+}
+
+/// Builds a fake `ConnectInfo` extension for a test request against
+/// `/rpc` or `/ws`, standing in for what
+/// `into_make_service_with_connect_info` would insert from a real socket
+/// (see `rate_limit`'s doc for why that's what `PeerIpKeyExtractor` reads
+/// its key from). `port` only needs to vary when a test wants two
+/// requests to look like they came from genuinely different sockets on
+/// the same host; the limiter keys on IP alone, so it's otherwise
+/// irrelevant.
+#[cfg(test)]
+pub(crate) fn test_peer(ip: [u8; 4]) -> axum::extract::ConnectInfo<std::net::SocketAddr> {
+    axum::extract::ConnectInfo(std::net::SocketAddr::from((ip, 0)))
 }
 
 async fn handle_rpc(State(state): State<AppState>, body: axum::body::Bytes) -> Response {
@@ -264,6 +294,7 @@ mod tests {
                     .method("POST")
                     .uri("/rpc")
                     .header("content-type", "application/json")
+                    .extension(test_peer([127, 0, 0, 1]))
                     .body(axum::body::Body::from(request_body.to_string()))
                     .unwrap(),
             )
@@ -285,6 +316,7 @@ mod tests {
                     .method("POST")
                     .uri("/rpc")
                     .header("content-type", "application/json")
+                    .extension(test_peer([127, 0, 0, 1]))
                     .body(axum::body::Body::from(request_body.to_string()))
                     .unwrap(),
             )
@@ -309,6 +341,7 @@ mod tests {
                 axum::http::Request::builder()
                     .method("POST")
                     .uri("/rpc")
+                    .extension(test_peer([127, 0, 0, 1]))
                     .body(axum::body::Body::from(request_body.to_string()))
                     .unwrap(),
             )
@@ -327,5 +360,96 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("rpc_requests_total 1"));
+    }
+
+    /// A `getVersion` POST to `/rpc` from the given source IP: identical
+    /// every time except the `ConnectInfo` extension the rate-limit tests
+    /// below vary.
+    fn version_request(ip: [u8; 4]) -> axum::http::Request<axum::body::Body> {
+        let body =
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "getVersion", "params": {} });
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/rpc")
+            .header("content-type", "application/json")
+            .extension(test_peer(ip))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    /// The limiter's whole reason to exist: an IP that sends more than
+    /// `RPC_RATE_BURST` requests back-to-back gets `429` on the one past
+    /// the burst, not a queued or silently dropped response.
+    #[tokio::test]
+    async fn a_client_exceeding_the_burst_on_rpc_gets_429() {
+        let router = test_router();
+        let mut last_status = None;
+        for _ in 0..=crate::rate_limit::RPC_RATE_BURST {
+            let response = router
+                .clone()
+                .oneshot(version_request([203, 0, 113, 5]))
+                .await
+                .unwrap();
+            last_status = Some(response.status());
+        }
+        assert_eq!(
+            last_status,
+            Some(axum::http::StatusCode::TOO_MANY_REQUESTS),
+            "the request one past the burst must be rejected with 429"
+        );
+    }
+
+    /// `/health` is an ops surface built as its own un-layered sub-router
+    /// precisely so it's exempt from the JSON-RPC limiter -- see
+    /// `router`'s doc comment. Hammering it well past the burst a
+    /// JSON-RPC caller would be throttled at must never produce a 429.
+    #[tokio::test]
+    async fn health_is_never_throttled() {
+        let router = test_router();
+        for _ in 0..(crate::rate_limit::RPC_RATE_BURST * 2) {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/health")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+        }
+    }
+
+    /// Two IPs must not share a budget: driving one all the way into 429
+    /// must not cost the other a single token.
+    #[tokio::test]
+    async fn two_distinct_ips_have_independent_budgets() {
+        let router = test_router();
+        let mut last_status_for_a = None;
+        for _ in 0..=crate::rate_limit::RPC_RATE_BURST {
+            let response = router
+                .clone()
+                .oneshot(version_request([198, 51, 100, 10]))
+                .await
+                .unwrap();
+            last_status_for_a = Some(response.status());
+        }
+        assert_eq!(
+            last_status_for_a,
+            Some(axum::http::StatusCode::TOO_MANY_REQUESTS),
+            "sanity check: IP A must actually be throttled by this point"
+        );
+
+        let response_for_b = router
+            .clone()
+            .oneshot(version_request([198, 51, 100, 20]))
+            .await
+            .unwrap();
+        assert_eq!(
+            response_for_b.status(),
+            axum::http::StatusCode::OK,
+            "IP B must not be affected by IP A's exhausted budget"
+        );
     }
 }
