@@ -1908,8 +1908,11 @@ fn poll_snapshot_production<S: KvStore + 'static>(
     // than a silent drop at every peer.
     let metadata = produced.metadata.clone();
     let signature = {
-        let bytes = openfiat_serialization::json::to_bytes(&metadata)
-            .expect("SnapshotMetadata always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SNAPSHOT_ANNOUNCE,
+            &metadata,
+        )
+        .expect("SnapshotMetadata always serializes");
         state.gossip.borrow().sign(&bytes)
     };
     let signed = openfiat_snapshot::events::SignedSnapshotAnnounce {

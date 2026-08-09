@@ -343,8 +343,9 @@ fn description_for(method: &str) -> Option<&'static str> {
         "sendReservationCancel" => Some(
             "The taker's way out of a reservation, before the validation window runs out. \
              Send a base64 `SignedReservationCancel`: `{cancel: {id, requester, timestamp}, \
-             signature}`, where the signature is over the canonical JSON of `cancel` alone \
-             (not the envelope) under the requester's own key. \
+             signature}`, where the signature is over the domain-separated preimage of `cancel` \
+             (not the envelope) under the requester's own key: `len(tag):u32be ‖ tag ‖ \
+             json(cancel)`, with `tag = \"openfiat/reservations/ReservationCancel/v1\"`. \
              Only the requester may cancel, and both halves are checked against the stored \
              reservation rather than against anything in the payload: `requester` must equal \
              the reservation's own requester, and the signature must verify under the public \
@@ -388,8 +389,9 @@ fn description_for(method: &str) -> Option<&'static str> {
             "The buyer taking back \"I paid\" — the counterpart to `sendPaymentSubmitted`, and \
              the buyer-side mirror of `sendSettlementRejected`. \
              Send a base64 `SignedPaymentReversed`: `{action: {settlement_id, buyer, \
-             timestamp}, signature}`, signed over the canonical JSON of `action` under the \
-             buyer's key. \
+             timestamp}, signature}`, signed over the domain-separated preimage of `action` \
+             under the buyer's key: `len(tag):u32be ‖ tag ‖ json(action)`, with \
+             `tag = \"openfiat/settlement/PaymentReversed/v1\"`. \
              Legal only from `PaymentSubmitted` and only under the buyer on file, so it \
              cannot undo a decision already taken: once the merchant has approved or \
              rejected, the settlement has left `PaymentSubmitted` and this returns \
@@ -417,7 +419,9 @@ fn description_for(method: &str) -> Option<&'static str> {
              `AwaitingPayment`. \
              Send a base64 `SignedSettlementInitiate`: `{initiate: {id, reservation_id, buyer, \
              buyer_public_key, seller, seller_public_key, amount, timestamp}, signature}`, \
-             signed over the canonical JSON of `initiate` under the buyer's key. `buyer` must \
+             signed over the domain-separated preimage of `initiate` under the buyer's key: \
+             `len(tag):u32be ‖ tag ‖ json(initiate)`, with \
+             `tag = \"openfiat/settlement/SettlementInitiate/v1\"`. `buyer` must \
              be the peer id derived from `buyer_public_key`; a mismatch is refused before the \
              signature is checked. \
              `id` is yours to choose and yours to keep unique. An id this node already holds \
@@ -437,8 +441,10 @@ fn description_for(method: &str) -> Option<&'static str> {
             "The merchant's \"I cannot find this payment\" — the counterpart to \
              `sendSettlementApproved`, and the alternative to opening a dispute over it. \
              Send a base64 `SignedSettlementRejected`: `{action: {settlement_id, seller, \
-             reason, discrepancy, timestamp}, signature}`, signed over the canonical JSON of \
-             `action` under the seller's key. `reason` is free text for a human reading the \
+             reason, discrepancy, timestamp}, signature}`, signed over the domain-separated \
+             preimage of `action` under the seller's key: `len(tag):u32be ‖ tag ‖ json(action)`, \
+             with `tag = \"openfiat/settlement/SettlementRejected/v1\"`. `reason` is free text \
+             for a human reading the \
              trade; `discrepancy` is the machine-readable one and is what reputation counts \
              — one of `IncorrectAmount`, `WrongReference`, `DuplicatePayment`, \
              `IncorrectAccount`, `Other`. Both are required, and picking `Other` when a \
@@ -458,8 +464,9 @@ fn description_for(method: &str) -> Option<&'static str> {
         "sendSettlementCancelled" => Some(
             "Either party walks away from a settlement, before any payment is declared. \
              Send a base64 `SignedSettlementCancelled`: `{action: {settlement_id, canceller, \
-             timestamp}, signature}`, signed over the canonical JSON of `action` under the \
-             canceller's key. \
+             timestamp}, signature}`, signed over the domain-separated preimage of `action` \
+             under the canceller's key: `len(tag):u32be ‖ tag ‖ json(action)`, with \
+             `tag = \"openfiat/settlement/SettlementCancelled/v1\"`. \
              `canceller` must be the settlement's own buyer or seller; the node picks which \
              public key to verify against by matching that field against the stored record, \
              so a third party naming themselves canceller is refused before any signature is \
