@@ -62,23 +62,28 @@ pub const OPEN_DECIMALS_MULTIPLIER: u64 = 1_000_000;
 /// requirement above the floor with the position a participant actually
 /// takes, and the figure below is only where that scale starts.
 ///
-/// # Why the arbitrator floor could be lowered from 10,000
+/// # Why sortition is what makes a per-wallet floor safe at all
 ///
-/// It could not have been, until arbitrator sortition landed. The old
-/// 10,000 was doing a job no minimum can actually do: seats went to
-/// whoever called `commit_dispute_vote` first, so the only thing standing
-/// between an attacker and every seat on a case was the price of seven
-/// staked wallets. Dropping that to 500 would have made capture twenty
-/// times cheaper.
+/// A flat per-wallet minimum used to be the only thing standing between
+/// an attacker and every seat on a dispute: seats went to whoever called
+/// `commit_dispute_vote` first, so capture cost exactly as many staked
+/// wallets as there were seats to fill. Any floor low enough for an
+/// honest arbitrator to afford was also low enough to buy a majority
+/// outright — a floor could not simply track a USD target under that
+/// design, because the number doing the work of deterring capture and
+/// the number an ordinary arbitrator could afford were the same number.
 ///
-/// What makes 500 safe is that seat eligibility is now a per-case draw
-/// (`openfiat_programs_shared::sortition`, wired into
+/// What actually closes that hole is that seat eligibility is now a
+/// per-case draw (`openfiat_programs_shared::sortition`, wired into
 /// `escrow::commit_dispute_vote`): a wallet qualifies only if a hash of
 /// its stake account against the case seed falls under the threshold, so
 /// assembling a majority needs *many* aged, funded wallets rather than
-/// seven. The barrier moved from the size of one stake to the number of
-/// independent stakes, which is the thing a per-wallet minimum was never
-/// able to price.
+/// exactly the number of seats. The barrier moved from the size of one
+/// stake to the number of independent stakes, which is the thing a
+/// per-wallet minimum was never able to price — and it is what makes it
+/// safe for the floor below to instead track a USD target (currently
+/// 100,000 OPEN, $1,000 as of the 2026-08-09 re-baseline) rather than
+/// being tuned as a capture deterrent in its own right.
 ///
 /// These are the values a deployment should hold, not values this program
 /// writes on its own: `initialize_staking_config` and
@@ -113,12 +118,16 @@ pub const RECOMMENDED_UNBONDING_PERIOD_SECS_BY_ROLE: [i64; openfiat_programs_sha
 /// The slashing penalty OFS-4100 §4 signs off: **500 bps (5%)**,
 /// superseding the 10% the deployment was initialized with.
 ///
-/// Halving it is not leniency about the same offence — it is what keeps
-/// the penalty proportional now that the arbitrator floor is 500 OPEN.
-/// A percentage slash of a small floor is a small absolute penalty, and
-/// OFS-2400 §16 asks for a "partial, moderate stake slash" rather than a
-/// figure tuned to make a minimum-staked arbitrator's first mistake
-/// terminal. It also matters that
+/// Halving it is not leniency about the same offence — it keeps the
+/// penalty *proportional* to whatever the arbitrator floor happens to be,
+/// rather than a flat figure tuned against one particular floor value. At
+/// the re-baselined 100,000 OPEN floor, 5% is a real cost — 5,000 OPEN, a
+/// far larger absolute penalty than 5% of the old 500 OPEN floor ever was
+/// — but it is still partial, not liquidating: OFS-2400 §16 asks for a
+/// "partial, moderate stake slash" rather than a figure tuned to make a
+/// minimum-staked arbitrator's first mistake terminal, and a percentage
+/// bound delivers that at any floor size, small or large. It also matters
+/// that
 /// [`StakeAccount::effective_stake`](crate::state::StakeAccount::effective_stake)
 /// already zeroes the weight of anyone slashed below their role minimum:
 /// the real consequence of a slash is losing eligibility, and the

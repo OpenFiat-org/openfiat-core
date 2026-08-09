@@ -93,14 +93,26 @@ use std::time::Duration;
 const OPEN: u64 = 1_000_000; // 6 decimals
 
 /// The stake this node requires of a snapshot provider before it will
-/// import from it, floor.
+/// import from it — an independent, node-local defense-in-depth floor,
+/// not a mirror of governance's on-chain minimum. See this module's own
+/// "Where the number comes from" note for the full argument; the short
+/// version is that the effective requirement is `on-chain
+/// minimum.max(this)` ([`ProviderStakes::observe_requirement`]), so this
+/// constant is what still gates registration if the on-chain
+/// `StakingConfig` is ever misread, stale, or voted down — not the number
+/// a provider is actually expected to hold day to day, which normally
+/// tracks the on-chain figure instead.
 ///
-/// Ten thousand OPEN, against a deployed on-chain SnapshotProvider
-/// minimum of one thousand. The gap is the point and is not an oversight:
-/// see this module's own note on why the two numbers answer different
-/// questions. A provider clears this by holding ten thousand whatever
-/// governance sets the registration minimum to; governance raising its
-/// minimum above ten thousand raises this too, with no code change.
+/// Ten thousand OPEN. As of the 2026-08-09 tokenomics re-baseline, the
+/// on-chain SnapshotProvider minimum
+/// (`staking::constants::RECOMMENDED_MIN_STAKE_BY_ROLE`) is 100,000 OPEN —
+/// ten times *above* this floor, so in ordinary operation the on-chain
+/// figure is what governs (`max` picks it) and this constant sits idle.
+/// That gap is intentional, not an oversight the re-baseline left behind:
+/// this is a worst-case backstop sized independently of whatever
+/// governance's current USD target happens to be, and raising it to track
+/// the on-chain figure is a separate policy decision this constant does
+/// not make on its own.
 pub const MINIMUM_PROVIDER_STAKE: u64 = 10_000 * OPEN;
 
 /// How long a stake observation stands before this node stops treating it
