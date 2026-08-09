@@ -59,7 +59,7 @@ bs58 = "0.5"
 async-trait = "0.1.91"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 futures-util = { version = "0.3", default-features = false }
 # Only to build a real (if minimal) VersionedTransaction fixture for
 # poll_chain's confirmation-tracking test — ChainState's own validation
