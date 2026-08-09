@@ -13,7 +13,7 @@ pub use events::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP");
+declare_id!("CYdn27x69hQ8WBxBeWRGpr9c8B4dcKj8GvyBn6Sdma9s");
 
 /// `openfiat-escrow` — Liquidity Vault + Trade Escrow Vault custody
 /// (OFS-4200 §4). Phase 4: full vault lifecycle — create, deposit,

@@ -109,7 +109,7 @@ pub const BAN_SEED: &[u8] = b"ban";
 /// they ever diverged, every gate would derive a PDA under a program
 /// that never writes ban records, and the ban list would silently stop
 /// working everywhere at once.
-pub const GOVERNANCE_PROGRAM_ID: Pubkey = pubkey!("AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE");
+pub const GOVERNANCE_PROGRAM_ID: Pubkey = pubkey!("2k71DBDoxM4SUFYGbyMXFiTSUynPuY2CqFUsx3FuarXF");
 
 /// Whether `ban_record` proves its wallet is banned (OFS-7100 §12).
 ///

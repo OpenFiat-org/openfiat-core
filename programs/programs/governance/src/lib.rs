@@ -13,7 +13,7 @@ pub use events::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE");
+declare_id!("2k71DBDoxM4SUFYGbyMXFiTSUynPuY2CqFUsx3FuarXF");
 
 /// `openfiat-governance` — proposals, voting, parameter updates, and
 /// treasury spend authorization (OFS-4200 §6). Phase 5b. `cast_vote`

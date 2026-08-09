@@ -6,14 +6,14 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-presale = "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7"
+presale = "7KaEpDzZuqye1xqqp3RnvBJXnDxbU3W9zVrUr5vBS2fU"
 # Deterministic swap-aggregator test fixture (see programs/mock-jupiter) —
 # localnet/CI only, never deployed to devnet or referenced by production
 # SaleConfig.swap_program values.
 mock_jupiter = "8ysRdUzhhvm4jHJwbJqYF6ZuS2AqekfTJbxMUF1g3Ugn"
-escrow = "HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP"
-staking = "HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx"
-governance = "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE"
+escrow = "CYdn27x69hQ8WBxBeWRGpr9c8B4dcKj8GvyBn6Sdma9s"
+staking = "3MF1nAPiECRAGs36RpQTkLb8CvMZuhcgXv1hGZoXEiid"
+governance = "2k71DBDoxM4SUFYGbyMXFiTSUynPuY2CqFUsx3FuarXF"
 
 # Filled in once `anchor deploy --provider.cluster devnet` (or, as here,
 # `solana program deploy`) has actually run — same program IDs as localnet
@@ -22,10 +22,10 @@ governance = "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE"
 # Phase 8 (pulled forward from Phase 9's original schedule — see
 # devnet-addresses.json's own "devnet_programs" note).
 [programs.devnet]
-presale = "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7"
-escrow = "HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP"
-staking = "HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx"
-governance = "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE"
+presale = "7KaEpDzZuqye1xqqp3RnvBJXnDxbU3W9zVrUr5vBS2fU"
+escrow = "CYdn27x69hQ8WBxBeWRGpr9c8B4dcKj8GvyBn6Sdma9s"
+staking = "3MF1nAPiECRAGs36RpQTkLb8CvMZuhcgXv1hGZoXEiid"
+governance = "2k71DBDoxM4SUFYGbyMXFiTSUynPuY2CqFUsx3FuarXF"
 
 [provider]
 # Kept as "localnet" (not "devnet") so `anchor test` continues to spin up an

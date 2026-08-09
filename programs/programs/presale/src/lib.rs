@@ -9,7 +9,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7");
+declare_id!("7KaEpDzZuqye1xqqp3RnvBJXnDxbU3W9zVrUr5vBS2fU");
 
 /// `openfiat-presale` — the OPEN token presale program (OFS-4200 §3,
 /// OFS-4100 §3). Phase 3: full sale lifecycle — initialize, contribute

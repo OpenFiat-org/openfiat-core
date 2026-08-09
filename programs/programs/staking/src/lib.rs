@@ -13,7 +13,7 @@ pub use events::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx");
+declare_id!("3MF1nAPiECRAGs36RpQTkLb8CvMZuhcgXv1hGZoXEiid");
 
 /// `openfiat-staking` — per-role OPEN staking, unbonding, and slashing
 /// (OFS-4200 §5). Phase 5a. `get_effective_stake` is deliberately not a

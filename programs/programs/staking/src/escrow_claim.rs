@@ -45,7 +45,7 @@ use crate::error::ErrorCode;
 /// would derive an address under a program that writes no claims — so
 /// every merchant would read as debt-free and the backstop would silently
 /// stop existing.
-pub const ESCROW_PROGRAM_ID: Pubkey = pubkey!("HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP");
+pub const ESCROW_PROGRAM_ID: Pubkey = pubkey!("CYdn27x69hQ8WBxBeWRGpr9c8B4dcKj8GvyBn6Sdma9s");
 
 /// PDA seed for an `escrow::StakeRecoveryClaim`: `[SEED, merchant, mint]`.
 ///
