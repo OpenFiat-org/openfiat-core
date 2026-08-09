@@ -9,9 +9,28 @@ use crate::record::{Claim, ClaimId, VerificationStatus};
 use openfiat_crypto::verify;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
-use openfiat_types::{EventEnvelope, PeerId};
+use openfiat_types::{EventEnvelope, PeerId, Timestamp};
 
 const COLUMN_FAMILY: &str = "identity_claims";
+
+/// §13 anti-spam tuning parameter: the number of *live* claims one wallet
+/// may hold at once. Only claims that genuinely add to that count are
+/// gated by it — see `apply_publish`, which exempts SUPERSEDE (it replaces
+/// a claim rather than adding one). High enough that no legitimate wallet
+/// enrolling every claim type this crate knows, several times over, would
+/// ever approach it; low enough that one signer cannot grow the replicated
+/// index without bound.
+const MAX_CLAIMS_PER_WALLET: usize = 64;
+
+/// Retention window for dead claims (revoked, expired, or superseded)
+/// before `prune` reclaims them. Mirrors `GOSSIP_LOG_RETENTION`
+/// (`crates/rpc/src/actor.rs`) — the flat week every other prune sweep in
+/// this workspace uses, chosen there to sit comfortably above the 24h
+/// replay-protection window `docs/architecture.md` requires. §11 asks that
+/// a claim's history stay archived rather than mutated in place; this is
+/// how long "archived" lasts once a claim is no longer live, not how long
+/// it is kept from the moment it was published.
+const CLAIM_RETENTION: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
 
 pub struct IdentityRegistry<S> {
     store: S,
@@ -67,6 +86,23 @@ impl<S: KvStore> IdentityRegistry<S> {
         crate::current_encryption_key(&self.find_by_wallet(wallet), now)
     }
 
+    /// How many of `wallet`'s claims are live right now: not revoked, not
+    /// expired as of `now` (`Claim::is_valid`), and not superseded by
+    /// another of the wallet's claims. Mirrors the "in force" logic
+    /// `crate::current_encryption_key` applies per claim type, generalised
+    /// across all of them — this is the count the per-wallet cap bounds.
+    fn live_claim_count(&self, wallet: &PeerId, now: Timestamp) -> usize {
+        let claims = self.find_by_wallet(wallet);
+        let superseded: std::collections::HashSet<&ClaimId> = claims
+            .iter()
+            .filter_map(|claim| claim.supersedes.as_ref())
+            .collect();
+        claims
+            .iter()
+            .filter(|claim| claim.is_valid(now) && !superseded.contains(&claim.id))
+            .count()
+    }
+
     pub fn apply_publish(&self, signed: SignedClaimPublish) -> Result<ClaimId, IdentityError> {
         signed.verify()?;
         let id = signed.publish.id.clone();
@@ -78,6 +114,17 @@ impl<S: KvStore> IdentityRegistry<S> {
         // would have refused from its own user.
         if !signed.publish.claim_type.accepts(&signed.publish.value) {
             return Err(IdentityError::MalformedClaim);
+        }
+        // §13 anti-spam: only a genuinely new claim can push a wallet over
+        // its cap. A SUPERSEDE replaces the claim it names in the live
+        // count computed above — net-zero — so gating it here would
+        // eventually make key rotation itself impossible for a wallet
+        // sitting at the cap.
+        if signed.publish.supersedes.is_none()
+            && self.live_claim_count(&signed.publish.wallet, signed.publish.timestamp)
+                >= MAX_CLAIMS_PER_WALLET
+        {
+            return Err(IdentityError::TooManyClaims);
         }
         let publish = signed.publish;
         self.put(&Claim {
@@ -173,6 +220,46 @@ impl<S: KvStore> IdentityRegistry<S> {
             }
             _ => {}
         }
+    }
+
+    /// One prune sweep: reclaims claims that are dead — revoked, expired,
+    /// or superseded by another of the wallet's claims — and have been
+    /// dead for at least `CLAIM_RETENTION`. Bounds storage the way §11's
+    /// "archived, not deleted" mandate cannot by itself, and keeps
+    /// `live_claim_count` (and so the cap in `apply_publish`) counting a
+    /// set that does not grow forever.
+    ///
+    /// "Dead for at least `CLAIM_RETENTION`" is measured from
+    /// `Claim::updated_at`: a revoke sets it to the revocation time, and a
+    /// claim nobody has acted on since publication keeps its publish time
+    /// — so an expired-or-superseded claim nobody ever revoked ages out
+    /// starting from when it was published, same as `EventStore::prune_before`
+    /// measures every gossip event from its own timestamp.
+    ///
+    /// Returns the number of claims removed.
+    pub fn prune(&self, now: Timestamp) -> usize {
+        let claims = self.all();
+        let superseded: std::collections::HashSet<ClaimId> = claims
+            .iter()
+            .filter_map(|claim| claim.supersedes.clone())
+            .collect();
+        let cutoff_millis = now
+            .as_millis()
+            .saturating_sub(CLAIM_RETENTION.as_millis() as u64);
+        let mut dropped = 0;
+        for claim in &claims {
+            let dead = claim.revoked || !claim.is_valid(now) || superseded.contains(&claim.id);
+            if dead
+                && claim.updated_at.as_millis() <= cutoff_millis
+                && self
+                    .store
+                    .delete(COLUMN_FAMILY, claim.id.as_str().as_bytes())
+                    .is_ok()
+            {
+                dropped += 1;
+            }
+        }
+        dropped
     }
 }
 
@@ -621,6 +708,217 @@ mod tests {
         assert!(
             !registry.get(&id).unwrap().revoked,
             "the claim must survive a signature its owner never made for that purpose"
+        );
+    }
+
+    #[test]
+    fn the_cap_th_new_claim_succeeds_and_the_next_one_is_rejected() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        for i in 0..MAX_CLAIMS_PER_WALLET {
+            registry
+                .apply_publish(SignedClaimPublish::sign(
+                    publish_claim(&keypair, &format!("claim-{i}"), false),
+                    &keypair,
+                ))
+                .unwrap();
+        }
+        let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
+        assert_eq!(registry.find_by_wallet(&wallet).len(), MAX_CLAIMS_PER_WALLET);
+
+        let result = registry.apply_publish(SignedClaimPublish::sign(
+            publish_claim(&keypair, "claim-overflow", false),
+            &keypair,
+        ));
+        assert_eq!(result, Err(IdentityError::TooManyClaims));
+    }
+
+    #[test]
+    fn a_supersede_succeeds_even_at_the_cap() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        for i in 0..MAX_CLAIMS_PER_WALLET {
+            registry
+                .apply_publish(SignedClaimPublish::sign(
+                    publish_claim(&keypair, &format!("claim-{i}"), false),
+                    &keypair,
+                ))
+                .unwrap();
+        }
+
+        let mut supersede = publish_claim(&keypair, "claim-rotated", false);
+        supersede.supersedes = Some(ClaimId::new("claim-0"));
+        assert!(
+            registry
+                .apply_publish(SignedClaimPublish::sign(supersede, &keypair))
+                .is_ok(),
+            "a SUPERSEDE replaces a claim rather than adding one, so it must not be capped"
+        );
+
+        let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
+        assert_eq!(
+            registry.find_by_wallet(&wallet).len(),
+            MAX_CLAIMS_PER_WALLET + 1,
+            "the superseded claim stays archived (§11), it is not deleted"
+        );
+
+        // Still at the live cap: a further genuinely-new claim is rejected.
+        let result = registry.apply_publish(SignedClaimPublish::sign(
+            publish_claim(&keypair, "claim-overflow", false),
+            &keypair,
+        ));
+        assert_eq!(result, Err(IdentityError::TooManyClaims));
+    }
+
+    #[test]
+    fn a_different_wallets_cap_is_independent() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let a = Keypair::generate();
+        let b = Keypair::generate();
+        for i in 0..MAX_CLAIMS_PER_WALLET {
+            registry
+                .apply_publish(SignedClaimPublish::sign(
+                    publish_claim(&a, &format!("a-{i}"), false),
+                    &a,
+                ))
+                .unwrap();
+        }
+
+        // `a` is at the cap; `b`, who has published nothing, is unaffected.
+        assert!(
+            registry
+                .apply_publish(SignedClaimPublish::sign(publish_claim(&b, "b-1", false), &b))
+                .is_ok()
+        );
+
+        let overflow = registry.apply_publish(SignedClaimPublish::sign(
+            publish_claim(&a, "a-overflow", false),
+            &a,
+        ));
+        assert_eq!(overflow, Err(IdentityError::TooManyClaims));
+    }
+
+    #[test]
+    fn prune_reclaims_dead_claims_past_the_retention_window_but_keeps_live_ones() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
+
+        let old = Timestamp::from_millis(10_000_000_000);
+        let retention_ms = CLAIM_RETENTION.as_millis() as u64;
+        let past_retention = Timestamp::from_millis(old.as_millis() + retention_ms + 1);
+
+        // Revoked, and old enough to prune.
+        let mut revoked = publish_claim(&keypair, "revoked-1", false);
+        revoked.timestamp = old;
+        let revoked_id = registry
+            .apply_publish(SignedClaimPublish::sign(revoked, &keypair))
+            .unwrap();
+        registry
+            .apply_revoke(SignedClaimRevoke::sign(
+                ClaimRevoke {
+                    claim_id: revoked_id.clone(),
+                    wallet: wallet.clone(),
+                    timestamp: old,
+                },
+                &keypair,
+            ))
+            .unwrap();
+
+        // Expired, and old enough to prune (never touched again after publish).
+        let mut expired = publish_claim(&keypair, "expired-1", false);
+        expired.timestamp = old;
+        expired.expires_at = Some(Timestamp::from_millis(old.as_millis() + 1));
+        let expired_id = registry
+            .apply_publish(SignedClaimPublish::sign(expired, &keypair))
+            .unwrap();
+
+        // Superseded, and old enough to prune.
+        let mut superseded = publish_claim(&keypair, "superseded-1", false);
+        superseded.timestamp = old;
+        let superseded_id = registry
+            .apply_publish(SignedClaimPublish::sign(superseded, &keypair))
+            .unwrap();
+        let mut superseding = publish_claim(&keypair, "superseding-1", false);
+        superseding.timestamp = old;
+        superseding.supersedes = Some(superseded_id.clone());
+        let superseding_id = registry
+            .apply_publish(SignedClaimPublish::sign(superseding, &keypair))
+            .unwrap();
+
+        // A live claim: must survive.
+        let mut live = publish_claim(&keypair, "live-1", false);
+        live.timestamp = old;
+        let live_id = registry
+            .apply_publish(SignedClaimPublish::sign(live, &keypair))
+            .unwrap();
+
+        let dropped = registry.prune(past_retention);
+        assert_eq!(
+            dropped, 3,
+            "revoked, expired, and superseded claims are removed"
+        );
+
+        assert!(registry.get(&revoked_id).is_none());
+        assert!(registry.get(&expired_id).is_none());
+        assert!(registry.get(&superseded_id).is_none());
+        assert!(
+            registry.get(&superseding_id).is_some(),
+            "the claim that superseded another is itself live and must survive"
+        );
+        assert!(registry.get(&live_id).is_some());
+
+        // Pruning again removes nothing further.
+        assert_eq!(registry.prune(past_retention), 0);
+    }
+
+    #[test]
+    fn after_prune_a_wallet_at_the_cap_can_publish_again() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
+
+        let old = Timestamp::from_millis(10_000_000_000);
+        let retention_ms = CLAIM_RETENTION.as_millis() as u64;
+        let past_retention = Timestamp::from_millis(old.as_millis() + retention_ms + 1);
+
+        for i in 0..MAX_CLAIMS_PER_WALLET {
+            let mut claim = publish_claim(&keypair, &format!("cap-{i}"), false);
+            claim.timestamp = old;
+            registry
+                .apply_publish(SignedClaimPublish::sign(claim, &keypair))
+                .unwrap();
+        }
+
+        // At the cap: a genuinely-new claim is rejected.
+        let mut overflow = publish_claim(&keypair, "cap-overflow", false);
+        overflow.timestamp = old;
+        assert_eq!(
+            registry.apply_publish(SignedClaimPublish::sign(overflow, &keypair)),
+            Err(IdentityError::TooManyClaims)
+        );
+
+        // Revoke one of the cap's claims and let it age past retention.
+        registry
+            .apply_revoke(SignedClaimRevoke::sign(
+                ClaimRevoke {
+                    claim_id: ClaimId::new("cap-0"),
+                    wallet: wallet.clone(),
+                    timestamp: old,
+                },
+                &keypair,
+            ))
+            .unwrap();
+        assert_eq!(registry.prune(past_retention), 1);
+        assert!(registry.get(&ClaimId::new("cap-0")).is_none());
+
+        let mut refill = publish_claim(&keypair, "cap-refill", false);
+        refill.timestamp = past_retention;
+        assert!(
+            registry
+                .apply_publish(SignedClaimPublish::sign(refill, &keypair))
+                .is_ok(),
+            "revoking (and pruning) one of the cap's claims frees a slot"
         );
     }
 }

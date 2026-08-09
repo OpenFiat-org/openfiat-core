@@ -15,6 +15,10 @@ pub enum IdentityError {
     /// §19: an action attempted on a claim that no longer accepts it
     /// (e.g. verifying or revoking an already-revoked claim).
     InvalidClaimState,
+    /// §13 anti-spam: the publishing wallet already holds
+    /// `store::MAX_CLAIMS_PER_WALLET` live claims and this publish is not a
+    /// SUPERSEDE, so it would add rather than replace one.
+    TooManyClaims,
 }
 
 impl IdentityError {
@@ -26,6 +30,7 @@ impl IdentityError {
             Self::MalformedClaim => ErrorCode::DeserializationError,
             Self::ClaimNotFound => ErrorCode::IdentityNotFound,
             Self::InvalidClaimState => ErrorCode::InvalidIdentityClaim,
+            Self::TooManyClaims => ErrorCode::RateLimitExceeded,
         }
     }
 }
