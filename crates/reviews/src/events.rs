@@ -21,8 +21,11 @@ pub struct SignedReviewPublish {
 
 impl SignedReviewPublish {
     pub fn sign(review: Review, keypair: &Keypair) -> Self {
-        let bytes =
-            openfiat_serialization::json::to_bytes(&review).expect("a Review always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::REVIEW_PUBLISH,
+            &review,
+        )
+        .expect("a Review always serializes");
         Self {
             signature: keypair.sign(&bytes),
             review,
@@ -39,8 +42,11 @@ impl SignedReviewPublish {
         if expected != self.review.author {
             return Err(ReviewError::InvalidSignature);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.review)
-            .map_err(|_| ReviewError::MalformedReview)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::REVIEW_PUBLISH,
+            &self.review,
+        )
+        .map_err(|_| ReviewError::MalformedReview)?;
         verify(&self.review.author_public_key, &bytes, &self.signature)
             .map_err(|_| ReviewError::InvalidSignature)
     }

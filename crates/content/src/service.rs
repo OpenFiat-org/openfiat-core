@@ -8,7 +8,7 @@ use crate::record::{Attachment, AttachmentId, AttachmentSubject, MediaType};
 use crate::store::AttachmentRegistry;
 use openfiat_crypto::Cid;
 use openfiat_gossip::GossipService;
-use openfiat_serialization::{json, wire};
+use openfiat_serialization::wire;
 use openfiat_settlement::SettlementId;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, PeerId, Priority, Timestamp};
@@ -74,7 +74,11 @@ impl<S: KvStore + 'static> AttachmentService<S> {
         };
         attachment.validate()?;
 
-        let bytes = json::to_bytes(&attachment).map_err(|_| ContentError::MalformedAttachment)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ATTACHMENT_PUBLISH,
+            &attachment,
+        )
+        .map_err(|_| ContentError::MalformedAttachment)?;
         let signed = SignedAttachmentPublish {
             signature: self.gossip.sign(&bytes),
             attachment,

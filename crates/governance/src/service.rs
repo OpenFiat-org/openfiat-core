@@ -10,7 +10,6 @@ use crate::protocol;
 use crate::record::{Proposal, ProposalCategory, ProposalId, VoteChoice};
 use crate::store::{GovernanceRegistry, VotePreview};
 use openfiat_gossip::GossipService;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, Priority, Timestamp};
@@ -83,7 +82,11 @@ impl<S: KvStore + 'static> GovernanceService<S> {
             onchain_proposal_id,
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&create).map_err(|_| GovernanceError::MalformedProposal)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PROPOSAL_CREATE,
+            &create,
+        )
+        .map_err(|_| GovernanceError::MalformedProposal)?;
         let signed = SignedProposalCreate {
             signature: self.gossip.sign(&bytes),
             create,
@@ -112,7 +115,11 @@ impl<S: KvStore + 'static> GovernanceService<S> {
             stake_account: stake_account.into(),
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&vote).map_err(|_| GovernanceError::MalformedProposal)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::VOTE_CAST,
+            &vote,
+        )
+        .map_err(|_| GovernanceError::MalformedProposal)?;
         let signed = SignedVoteCast {
             signature: self.gossip.sign(&bytes),
             vote,
@@ -126,7 +133,16 @@ impl<S: KvStore + 'static> GovernanceService<S> {
             author: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&withdraw).map_err(|_| GovernanceError::MalformedProposal)?;
+        // `ProposalWithdraw` was already tagged before F-01 (see
+        // `openfiat_serialization::domain::tag::PROPOSAL_WITHDRAW`), but this
+        // direct-sign duplicate had been missed and was still signing plain
+        // JSON — bytes `apply_withdraw`'s domain-tagged verify would never
+        // accept. Fixed here using the existing tag, not a new one.
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PROPOSAL_WITHDRAW,
+            &withdraw,
+        )
+        .map_err(|_| GovernanceError::MalformedProposal)?;
         let signed = SignedProposalWithdraw {
             signature: self.gossip.sign(&bytes),
             withdraw,
@@ -140,7 +156,14 @@ impl<S: KvStore + 'static> GovernanceService<S> {
             author: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&activate).map_err(|_| GovernanceError::MalformedProposal)?;
+        // Same pre-existing bug as `withdraw_proposal` above: `ProposalActivate`
+        // was already tagged, but this direct-sign duplicate still signed
+        // plain JSON. Fixed with the existing tag.
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PROPOSAL_ACTIVATE,
+            &activate,
+        )
+        .map_err(|_| GovernanceError::MalformedProposal)?;
         let signed = SignedProposalActivate {
             signature: self.gossip.sign(&bytes),
             activate,

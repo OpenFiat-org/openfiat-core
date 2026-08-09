@@ -32,8 +32,11 @@ pub struct SignedClaimPublish {
 
 impl SignedClaimPublish {
     pub fn sign(publish: ClaimPublish, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&publish)
-            .expect("ClaimPublish always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::CLAIM_PUBLISH,
+            &publish,
+        )
+        .expect("ClaimPublish always serializes");
         Self {
             signature: keypair.sign(&bytes),
             publish,
@@ -46,8 +49,11 @@ impl SignedClaimPublish {
         if expected != self.publish.wallet {
             return Err(IdentityError::Unauthorized);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.publish)
-            .map_err(|_| IdentityError::MalformedClaim)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::CLAIM_PUBLISH,
+            &self.publish,
+        )
+        .map_err(|_| IdentityError::MalformedClaim)?;
         verify(&self.publish.wallet_public_key, &bytes, &self.signature)
             .map_err(|_| IdentityError::InvalidSignature)
     }

@@ -31,7 +31,7 @@ use crate::store::TradeChannelRegistry;
 use openfiat_crypto::{EncryptionPublicKey, seal};
 use openfiat_disputes::DisputeRegistry;
 use openfiat_gossip::GossipService;
-use openfiat_serialization::{json, wire};
+use openfiat_serialization::wire;
 use openfiat_settlement::{SettlementId, SettlementRegistry};
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, PeerId, Priority, PublicKey, Timestamp};
@@ -127,7 +127,11 @@ impl<S: KvStore + 'static> TradeChannelService<S> {
             sealed_key,
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&grant).map_err(|_| TradeChannelError::MalformedEntry)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::TRADE_CHANNEL_KEY_GRANT,
+            &grant,
+        )
+        .map_err(|_| TradeChannelError::MalformedEntry)?;
         let signed = SignedTradeChannelKeyGrant {
             signature: self.gossip.sign(&bytes),
             grant,
@@ -165,7 +169,11 @@ impl<S: KvStore + 'static> TradeChannelService<S> {
             payload,
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&post).map_err(|_| TradeChannelError::MalformedEntry)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::TRADE_CHANNEL_ENTRY_POST,
+            &post,
+        )
+        .map_err(|_| TradeChannelError::MalformedEntry)?;
         let signed = SignedTradeChannelEntryPost {
             signature: self.gossip.sign(&bytes),
             post,

@@ -18,7 +18,7 @@ use crate::protocol;
 use crate::record::{ChannelEntry, GrantRole, KeyGrant, TradeChannel};
 use openfiat_crypto::verify;
 use openfiat_disputes::DisputeRegistry;
-use openfiat_serialization::{json, wire};
+use openfiat_serialization::wire;
 use openfiat_settlement::{Settlement, SettlementId, SettlementRegistry};
 use openfiat_storage::KvStore;
 use openfiat_types::{EventEnvelope, PeerId, PublicKey};
@@ -154,7 +154,11 @@ impl<S: KvStore> TradeChannelRegistry<S> {
     ) -> Result<(), TradeChannelError> {
         let settlement = self.settlement(&signed.grant.settlement_id)?;
         let granter_key = party_key(&settlement, &signed.grant.granter)?;
-        let bytes = json::to_bytes(&signed.grant).map_err(|_| TradeChannelError::MalformedEntry)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::TRADE_CHANNEL_KEY_GRANT,
+            &signed.grant,
+        )
+        .map_err(|_| TradeChannelError::MalformedEntry)?;
         verify(&granter_key, &bytes, &signed.signature)
             .map_err(|_| TradeChannelError::InvalidSignature)?;
 
@@ -193,7 +197,11 @@ impl<S: KvStore> TradeChannelRegistry<S> {
     ) -> Result<(), TradeChannelError> {
         let settlement = self.settlement(&signed.post.settlement_id)?;
         let author_key = party_key(&settlement, &signed.post.author)?;
-        let bytes = json::to_bytes(&signed.post).map_err(|_| TradeChannelError::MalformedEntry)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::TRADE_CHANNEL_ENTRY_POST,
+            &signed.post,
+        )
+        .map_err(|_| TradeChannelError::MalformedEntry)?;
         verify(&author_key, &bytes, &signed.signature)
             .map_err(|_| TradeChannelError::InvalidSignature)?;
         if signed.post.payload.ciphertext.len() > MAX_ENTRY_CIPHERTEXT {

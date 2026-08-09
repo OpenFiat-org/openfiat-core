@@ -10,7 +10,6 @@ use crate::protocol;
 use crate::record::{Claim, ClaimId, ClaimType};
 use crate::store::IdentityRegistry;
 use openfiat_gossip::GossipService;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, PeerId, Priority, Timestamp};
@@ -68,7 +67,11 @@ impl<S: KvStore + 'static> IdentityService<S> {
             expires_at,
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&publish).map_err(|_| IdentityError::MalformedClaim)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::CLAIM_PUBLISH,
+            &publish,
+        )
+        .map_err(|_| IdentityError::MalformedClaim)?;
         let signed = SignedClaimPublish {
             signature: self.gossip.sign(&bytes),
             publish,

@@ -14,7 +14,6 @@ use crate::record::{
     ArbitratorCommitment, ArbitratorReveal, Dispute, DisputeId, DisputeStatus, Resolution,
 };
 use openfiat_crypto::verify;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_settlement::SettlementRegistry;
 use openfiat_storage::KvStore;
@@ -160,7 +159,11 @@ impl<S: KvStore> DisputeRegistry<S> {
             .arbitrator_key(&signed.commit.arbitrator)
             .copied()
             .ok_or(DisputeError::NotAnArbitrator)?;
-        let bytes = json::to_bytes(&signed.commit).map_err(|_| DisputeError::MalformedDispute)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::DISPUTE_VOTE_COMMIT,
+            &signed.commit,
+        )
+        .map_err(|_| DisputeError::MalformedDispute)?;
         verify(&arbitrator_key, &bytes, &signed.signature)
             .map_err(|_| DisputeError::InvalidSignature)?;
 
@@ -197,7 +200,11 @@ impl<S: KvStore> DisputeRegistry<S> {
             .arbitrator_key(&signed.reveal.arbitrator)
             .copied()
             .ok_or(DisputeError::NotAnArbitrator)?;
-        let bytes = json::to_bytes(&signed.reveal).map_err(|_| DisputeError::MalformedDispute)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::DISPUTE_VOTE_REVEAL,
+            &signed.reveal,
+        )
+        .map_err(|_| DisputeError::MalformedDispute)?;
         verify(&arbitrator_key, &bytes, &signed.signature)
             .map_err(|_| DisputeError::InvalidSignature)?;
 

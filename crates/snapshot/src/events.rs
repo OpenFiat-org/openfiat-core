@@ -54,8 +54,11 @@ pub struct SignedSnapshotAnnounce {
 
 impl SignedSnapshotAnnounce {
     pub fn sign(metadata: SnapshotMetadata, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&metadata)
-            .expect("SnapshotMetadata always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SNAPSHOT_ANNOUNCE,
+            &metadata,
+        )
+        .expect("SnapshotMetadata always serializes");
         Self {
             signature: keypair.sign(&bytes),
             metadata,
@@ -68,8 +71,11 @@ impl SignedSnapshotAnnounce {
         if expected != self.metadata.producer {
             return Err(SnapshotError::Unauthorized);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.metadata)
-            .map_err(|_| SnapshotError::MalformedRecord)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SNAPSHOT_ANNOUNCE,
+            &self.metadata,
+        )
+        .map_err(|_| SnapshotError::MalformedRecord)?;
         verify(&self.metadata.producer_public_key, &bytes, &self.signature)
             .map_err(|_| SnapshotError::InvalidSignature)
     }

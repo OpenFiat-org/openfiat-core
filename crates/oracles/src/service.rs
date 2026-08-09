@@ -10,7 +10,6 @@ use crate::record::{OracleCategory, OracleData, OracleId, OracleRecord};
 use crate::store::OracleIndex;
 use openfiat_gossip::GossipService;
 use openfiat_registry::Registry;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, Priority, Timestamp};
@@ -75,7 +74,11 @@ impl<S: KvStore + 'static> OracleService<S> {
             timestamp: now,
             expires_at: Timestamp::from_millis(now.as_millis() + ttl.as_millis() as u64),
         };
-        let bytes = json::to_bytes(&publish).map_err(|_| OracleError::MalformedRecord)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ORACLE_PUBLISH,
+            &publish,
+        )
+        .map_err(|_| OracleError::MalformedRecord)?;
         let signed = SignedOraclePublish {
             signature: self.gossip.sign(&bytes),
             publish,

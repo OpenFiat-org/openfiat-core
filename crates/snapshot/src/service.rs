@@ -11,7 +11,6 @@ use crate::record::{SnapshotId, SnapshotMetadata};
 use crate::store::SnapshotIndex;
 use openfiat_gossip::GossipService;
 use openfiat_registry::Registry;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, Priority};
@@ -109,7 +108,11 @@ impl<S: KvStore + 'static> SnapshotService<S> {
         &mut self,
         metadata: SnapshotMetadata,
     ) -> Result<SnapshotId, SnapshotError> {
-        let bytes = json::to_bytes(&metadata).map_err(|_| SnapshotError::MalformedRecord)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SNAPSHOT_ANNOUNCE,
+            &metadata,
+        )
+        .map_err(|_| SnapshotError::MalformedRecord)?;
         let signed = SignedSnapshotAnnounce {
             signature: self.gossip.sign(&bytes),
             metadata,

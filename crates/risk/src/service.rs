@@ -19,7 +19,6 @@ use crate::record::{
 use crate::store::RiskIndex;
 use openfiat_gossip::GossipService;
 use openfiat_registry::Registry;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventType, PeerId, Priority, Timestamp};
@@ -79,7 +78,11 @@ impl<S: KvStore + 'static> RiskService<S> {
             timestamp: Timestamp::now(),
             expires_at,
         };
-        let bytes = json::to_bytes(&publish).map_err(|_| RiskError::MalformedRecord)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::RISK_PUBLISH,
+            &publish,
+        )
+        .map_err(|_| RiskError::MalformedRecord)?;
         let signed = SignedRiskPublish {
             signature: self.gossip.sign(&bytes),
             publish,

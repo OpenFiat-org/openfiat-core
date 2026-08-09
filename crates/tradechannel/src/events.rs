@@ -38,8 +38,11 @@ pub struct SignedTradeChannelKeyGrant {
 
 impl SignedTradeChannelKeyGrant {
     pub fn sign(grant: TradeChannelKeyGrant, keypair: &openfiat_crypto::Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&grant)
-            .expect("TradeChannelKeyGrant always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::TRADE_CHANNEL_KEY_GRANT,
+            &grant,
+        )
+        .expect("TradeChannelKeyGrant always serializes");
         Self {
             signature: keypair.sign(&bytes),
             grant,
@@ -66,8 +69,11 @@ pub struct SignedTradeChannelEntryPost {
 
 impl SignedTradeChannelEntryPost {
     pub fn sign(post: TradeChannelEntryPost, keypair: &openfiat_crypto::Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&post)
-            .expect("TradeChannelEntryPost always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::TRADE_CHANNEL_ENTRY_POST,
+            &post,
+        )
+        .expect("TradeChannelEntryPost always serializes");
         Self {
             signature: keypair.sign(&bytes),
             post,
@@ -109,7 +115,11 @@ mod tests {
         let mut signed = SignedTradeChannelKeyGrant::sign(grant, &seller);
         signed.grant.sealed_key = seal(&attacker.public_key(), key.expose()).unwrap();
 
-        let bytes = openfiat_serialization::json::to_bytes(&signed.grant).unwrap();
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::TRADE_CHANNEL_KEY_GRANT,
+            &signed.grant,
+        )
+        .unwrap();
         assert!(verify(&seller.public_key(), &bytes, &signed.signature).is_err());
     }
 
@@ -137,7 +147,11 @@ mod tests {
         let mut signed = SignedTradeChannelEntryPost::sign(post, &seller);
         signed.post.payload = seal_entry(&key, &binding, b"account 9999999999999").unwrap();
 
-        let bytes = openfiat_serialization::json::to_bytes(&signed.post).unwrap();
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::TRADE_CHANNEL_ENTRY_POST,
+            &signed.post,
+        )
+        .unwrap();
         assert!(verify(&seller.public_key(), &bytes, &signed.signature).is_err());
     }
 }

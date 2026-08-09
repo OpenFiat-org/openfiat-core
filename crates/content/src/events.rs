@@ -18,8 +18,11 @@ pub struct SignedAttachmentPublish {
 
 impl SignedAttachmentPublish {
     pub fn sign(attachment: Attachment, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&attachment)
-            .expect("Attachment always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ATTACHMENT_PUBLISH,
+            &attachment,
+        )
+        .expect("Attachment always serializes");
         Self {
             signature: keypair.sign(&bytes),
             attachment,
@@ -42,8 +45,11 @@ impl SignedAttachmentPublish {
         if expected != self.attachment.author {
             return Err(ContentError::NotAParty);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.attachment)
-            .map_err(|_| ContentError::MalformedAttachment)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ATTACHMENT_PUBLISH,
+            &self.attachment,
+        )
+        .map_err(|_| ContentError::MalformedAttachment)?;
         verify(&self.attachment.author_public_key, &bytes, &self.signature)
             .map_err(|_| ContentError::InvalidSignature)
     }

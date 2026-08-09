@@ -11,7 +11,6 @@ use crate::protocol;
 use crate::record::{Dispute, DisputeId, Vote};
 use crate::store::DisputeRegistry;
 use openfiat_gossip::GossipService;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_settlement::{SettlementId, SettlementRegistry};
 use openfiat_storage::KvStore;
@@ -59,7 +58,11 @@ impl<S: KvStore + 'static> DisputeService<S> {
             reason: reason.into(),
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&open).expect("DisputeOpen always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::DISPUTE_OPEN,
+            &open,
+        )
+        .expect("DisputeOpen always serializes");
         let signed = SignedDisputeOpen {
             signature: self.gossip.sign(&bytes),
             open,
@@ -75,7 +78,11 @@ impl<S: KvStore + 'static> DisputeService<S> {
             arbitrator_public_key: self.gossip.public_key(),
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&join).map_err(|_| DisputeError::MalformedDispute)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ARBITRATOR_JOIN,
+            &join,
+        )
+        .map_err(|_| DisputeError::MalformedDispute)?;
         let signed = SignedArbitratorJoin {
             signature: self.gossip.sign(&bytes),
             join,
@@ -97,7 +104,11 @@ impl<S: KvStore + 'static> DisputeService<S> {
             commitment: commitment::compute(vote, &secret),
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&commit).map_err(|_| DisputeError::MalformedDispute)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::DISPUTE_VOTE_COMMIT,
+            &commit,
+        )
+        .map_err(|_| DisputeError::MalformedDispute)?;
         let signed = SignedVoteCommit {
             signature: self.gossip.sign(&bytes),
             commit,
@@ -118,7 +129,11 @@ impl<S: KvStore + 'static> DisputeService<S> {
             secret,
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&reveal).map_err(|_| DisputeError::MalformedDispute)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::DISPUTE_VOTE_REVEAL,
+            &reveal,
+        )
+        .map_err(|_| DisputeError::MalformedDispute)?;
         let signed = SignedVoteReveal {
             signature: self.gossip.sign(&bytes),
             reveal,

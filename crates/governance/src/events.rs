@@ -39,8 +39,11 @@ pub struct SignedProposalCreate {
 
 impl SignedProposalCreate {
     pub fn sign(create: ProposalCreate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&create)
-            .expect("ProposalCreate always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PROPOSAL_CREATE,
+            &create,
+        )
+        .expect("ProposalCreate always serializes");
         Self {
             signature: keypair.sign(&bytes),
             create,
@@ -53,8 +56,11 @@ impl SignedProposalCreate {
         if expected != self.create.author {
             return Err(GovernanceError::Unauthorized);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.create)
-            .map_err(|_| GovernanceError::MalformedProposal)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PROPOSAL_CREATE,
+            &self.create,
+        )
+        .map_err(|_| GovernanceError::MalformedProposal)?;
         verify(&self.create.author_public_key, &bytes, &self.signature)
             .map_err(|_| GovernanceError::InvalidSignature)
     }
@@ -93,8 +99,11 @@ pub struct SignedVoteCast {
 
 impl SignedVoteCast {
     pub fn sign(vote: VoteCast, keypair: &Keypair) -> Self {
-        let bytes =
-            openfiat_serialization::json::to_bytes(&vote).expect("VoteCast always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::VOTE_CAST,
+            &vote,
+        )
+        .expect("VoteCast always serializes");
         Self {
             signature: keypair.sign(&bytes),
             vote,
@@ -107,8 +116,11 @@ impl SignedVoteCast {
         if expected != self.vote.voter {
             return Err(GovernanceError::Unauthorized);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.vote)
-            .map_err(|_| GovernanceError::MalformedProposal)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::VOTE_CAST,
+            &self.vote,
+        )
+        .map_err(|_| GovernanceError::MalformedProposal)?;
         verify(&self.vote.voter_public_key, &bytes, &self.signature)
             .map_err(|_| GovernanceError::InvalidSignature)
     }
