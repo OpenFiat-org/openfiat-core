@@ -939,7 +939,8 @@ fn register_as_snapshot_provider<S: KvStore + 'static>(
 /// | `peers` | last-seen age, swept on the registry tick | Who this node is connected to now, not history. |
 /// | `registry_services` | health-update age, swept on the registry tick | A registration is a live claim that lapses when it stops being refreshed. |
 /// | reward observations | [`REWARD_OBSERVATION_EPOCHS`], swept below | In memory; see that constant for what pruning costs. |
-/// | `advertisements`, `reservations`, `settlements`, `disputes`, `attachments`, `identity_claims`, `governance_proposals`, `notification_*` | **nothing** | Kept regardless of retention, deliberately — see below. |
+/// | `identity_claims` (dead: revoked, expired, or superseded) | `CLAIM_RETENTION`, swept in [`poll_identity_pruning`] | A wallet's own dead claims, not the operator's window — see `IdentityRegistry::prune`. |
+/// | `advertisements`, `reservations`, `settlements`, `disputes`, `attachments`, `identity_claims` (live), `governance_proposals`, `notification_*` | **nothing** | Kept regardless of retention, deliberately — see below. |
 ///
 /// # Why the marketplace records are kept whatever the operator asked
 ///
@@ -1065,6 +1066,21 @@ fn poll_gossip_pruning<S: KvStore + 'static>(state: &NodeState<S>) {
             retained_days = GOSSIP_LOG_RETENTION.as_secs() / 86_400,
             "pruned the gossip event log"
         );
+    }
+}
+
+/// One sweep of dead identity claims.
+///
+/// `IdentityRegistry::prune` reclaims claims that are revoked, expired, or
+/// superseded and have sat that way past `CLAIM_RETENTION`; live claims are
+/// untouched, so `live_claim_count` — and the §13 cap in `apply_publish` —
+/// is unaffected. Without this sweep a wallet cycling publish/revoke never
+/// approaches the live cap, but every revoked claim still occupies the
+/// replicated `identity_claims` column family on every node, forever.
+fn poll_identity_pruning<S: KvStore + 'static>(state: &NodeState<S>) {
+    let dropped = state.identity.prune(openfiat_types::Timestamp::now());
+    if dropped > 0 {
+        tracing::info!(dropped, "pruned dead identity claims");
     }
 }
 
@@ -2452,6 +2468,7 @@ where
                         poll_expired_records(&state);
                         poll_snapshot_index_pruning(&state);
                         poll_reward_observation_pruning(&state);
+                        poll_identity_pruning(&state);
                     }
                     // Only polled when this node serves content: a
                     // `None` control means no accept loop was started, so
@@ -2892,6 +2909,74 @@ mod tests {
         assert_eq!(
             state.reward_observations.borrow().epochs_held(),
             vec![params.epoch_index(now)]
+        );
+    }
+
+    /// F-02 final review: `IdentityRegistry::prune` reclaims dead claims,
+    /// but nothing called it — the same unwired-sweep shape as
+    /// `LivenessLedger::prune_through` above. A wallet cycling
+    /// publish/revoke never approaches the §13 live-claim cap, so nothing
+    /// in `apply_publish` stops the replicated `identity_claims` column
+    /// family from growing on every node, forever. This test is here to
+    /// keep the tick loop's sweep calling it.
+    #[test]
+    fn a_revoked_claim_past_retention_is_dropped_by_the_identity_sweep() {
+        use openfiat_identity::events::{
+            ClaimPublish, ClaimRevoke, SignedClaimPublish, SignedClaimRevoke,
+        };
+        use openfiat_identity::{ClaimId, ClaimType};
+
+        let state = NodeState::new_for_test(MemoryStore::new());
+        let keypair = openfiat_crypto::Keypair::generate();
+        let wallet =
+            openfiat_network::identity::peer_id_from_public_key(&keypair.public_key()).unwrap();
+
+        // Old enough that, once revoked, it is also past `CLAIM_RETENTION`
+        // (a flat week) by the time `now` below is used to sweep.
+        let old = openfiat_types::Timestamp::from_millis(10_000_000_000);
+        let claim_id = ClaimId::new("revoked-and-old");
+
+        state
+            .identity
+            .apply_publish(SignedClaimPublish::sign(
+                ClaimPublish {
+                    id: claim_id.clone(),
+                    wallet: wallet.clone(),
+                    wallet_public_key: keypair.public_key(),
+                    claim_type: ClaimType::Telegram,
+                    value: "spammer".to_string(),
+                    verified: false,
+                    supersedes: None,
+                    expires_at: None,
+                    timestamp: old,
+                },
+                &keypair,
+            ))
+            .unwrap();
+        state
+            .identity
+            .apply_revoke(SignedClaimRevoke::sign(
+                ClaimRevoke {
+                    claim_id: claim_id.clone(),
+                    wallet,
+                    timestamp: old,
+                },
+                &keypair,
+            ))
+            .unwrap();
+
+        assert!(state.identity.get(&claim_id).is_some());
+
+        // The sweep reads `Timestamp::now()` itself, same as the tick loop
+        // calls it; `old` (1970) is unconditionally past `CLAIM_RETENTION`
+        // by the time this runs, so no wall-clock dependence is needed.
+        poll_identity_pruning(&state);
+
+        assert!(
+            state.identity.get(&claim_id).is_none(),
+            "a revoked claim published a week or more in the past must be reclaimed \
+             by the sweep the tick loop runs, not merely by IdentityRegistry::prune \
+             in isolation"
         );
     }
 
