@@ -83,6 +83,36 @@ pub const MAX_REACHABLE_ADDRESSES: usize = 256;
 /// per-address list of every peer id an attacker cares to mint.
 const MAX_OBSERVERS_PER_ADDRESS: usize = 8;
 
+/// Token-bucket capacity for one relaying peer's credit — see
+/// [`GossipService::consume_relay_credit`].
+///
+/// Keyed on the transport peer that handed us the envelope, never on the
+/// event's signed origin: `docs/dishonest-node.md` §4 rejects per-origin
+/// limits because identities are free and an honest bursty origin looks
+/// identical to a rotating attacker. A directly connected neighbour is a
+/// different fact — it cost a real connection — and bounding what one such
+/// neighbour can push at us cannot fall on any other peer's traffic, which
+/// is the property a shared or per-origin bucket would not have. A tuning
+/// parameter, not a protocol constant: raise it if an honest relay with
+/// many downstream peers is legitimately bursty at this rate.
+pub const GOSSIP_PEER_CREDIT_CAPACITY: u32 = 200;
+
+/// Refill rate for [`GOSSIP_PEER_CREDIT_CAPACITY`], in tokens per second.
+///
+/// A tuning parameter alongside it: chosen to keep pace with ordinary
+/// epidemic fan-out without letting a flooding neighbour's *sustained*
+/// rate exceed what the rest of this node's validation pipeline can
+/// absorb indefinitely.
+pub const GOSSIP_PEER_CREDIT_REFILL_PER_SEC: u32 = 20;
+
+/// Cumulative drops from one relaying peer before this node escalates
+/// beyond quietly dropping — see [`GossipService::escalate_relay_flood`].
+///
+/// A tuning parameter: high enough that an honest peer's transient burst
+/// (a reconnection replaying a backlog) never crosses it, low enough that
+/// a peer that will not stop is dealt with rather than metered forever.
+pub const GOSSIP_PEER_DROP_DISCONNECT_THRESHOLD: u64 = 1000;
+
 /// The byte budget for one recovery response.
 ///
 /// [`openfiat_network::MAX_ENVELOPE_BYTES`] is a hard 1 MiB and the codec
@@ -100,6 +130,55 @@ pub enum ReceiveOutcome {
     Stored,
     Duplicate,
     Rejected(GossipError),
+}
+
+/// One relaying peer's token bucket (see [`GOSSIP_PEER_CREDIT_CAPACITY`])
+/// plus its cumulative drop count.
+///
+/// The drop count is kept here rather than as a separate map so a peer's
+/// credit and its history of exhausting it are always read and evicted
+/// together — see [`GossipService::peer_credits`].
+struct PeerCredit {
+    /// Tokens currently available, fractional so a sub-second refill is
+    /// never rounded away in the flooder's favour.
+    tokens: f64,
+    last_refill: std::time::Instant,
+    /// Cumulative events dropped for this peer since the bucket was
+    /// created. Never reset while the connection lives — the point is
+    /// "how much has this peer forced us to refuse", not a rolling window.
+    drops: u64,
+    /// Set once [`GOSSIP_PEER_DROP_DISCONNECT_THRESHOLD`] is crossed, so
+    /// the escalation fires exactly once per connection rather than on
+    /// every drop after it.
+    escalated: bool,
+}
+
+impl PeerCredit {
+    fn new() -> Self {
+        Self {
+            tokens: GOSSIP_PEER_CREDIT_CAPACITY as f64,
+            last_refill: std::time::Instant::now(),
+            drops: 0,
+            escalated: false,
+        }
+    }
+
+    /// Refills by however long it has been since the last attempt, then
+    /// takes one token if one is available. `false` means the caller's
+    /// event must be dropped.
+    fn try_consume(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.last_refill = now;
+        self.tokens = (self.tokens + elapsed * GOSSIP_PEER_CREDIT_REFILL_PER_SEC as f64)
+            .min(GOSSIP_PEER_CREDIT_CAPACITY as f64);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 pub struct GossipService<S> {
@@ -196,6 +275,17 @@ pub struct GossipService<S> {
     /// which differs per origin/signature/timestamp even for identical
     /// content, so it does not by itself bound that kind of redundancy.
     forward_filters: Vec<ForwardFilter>,
+    /// One token bucket per directly connected relaying peer, bounding how
+    /// much any single neighbour can push at us regardless of what origin
+    /// it claims to be relaying — see [`GOSSIP_PEER_CREDIT_CAPACITY`] and
+    /// `docs/dishonest-node.md` §4 for why the key is the transport peer
+    /// and not the event's signed origin.
+    ///
+    /// Keyed on the connection and cleared in `ConnectionClosed`, the same
+    /// way as `recovery_served`: bounded by peers actually connected, and
+    /// a reconnection is a fresh handshake rather than a free reset an
+    /// attacker can request at will.
+    peer_credits: HashMap<Libp2pPeerId, PeerCredit>,
 }
 
 /// A callback notified of every event a [`GossipService`] stores.
@@ -245,6 +335,7 @@ impl<S: KvStore> GossipService<S> {
             newly_reachable: Vec::new(),
             event_handlers: Vec::new(),
             forward_filters: Vec::new(),
+            peer_credits: HashMap::new(),
         }
     }
 
@@ -372,6 +463,21 @@ impl<S: KvStore> GossipService<S> {
     ) -> ReceiveOutcome {
         if self.store.contains(&event.id) {
             return ReceiveOutcome::Duplicate;
+        }
+        // Charged to the peer that physically handed us this envelope,
+        // never to `event.origin` — see [`GOSSIP_PEER_CREDIT_CAPACITY`].
+        // `from` is `None` only for events injected without a transport
+        // source (this crate's own unit tests calling `receive_event`
+        // directly); there is no peer to charge, so none is.
+        //
+        // Before `validate`, deliberately: `validate` is where the
+        // signature check lives, and the whole point of a per-peer credit
+        // is that a flooding neighbour is turned away before it can make
+        // this node pay for a verification it will never need again.
+        if let Some(peer) = from
+            && !self.consume_relay_credit(peer)
+        {
+            return ReceiveOutcome::Rejected(GossipError::RelayCreditExhausted);
         }
         if let Err(err) = self.validate(&event) {
             return ReceiveOutcome::Rejected(err);
@@ -506,6 +612,56 @@ impl<S: KvStore> GossipService<S> {
         Ok(())
     }
 
+    /// Refills `peer`'s token bucket by elapsed time and takes one token
+    /// for the event currently being received. `false` means the bucket
+    /// was empty and the caller must drop the event without storing or
+    /// forwarding it.
+    ///
+    /// Every exhaustion is counted against `peer` regardless of outcome,
+    /// and crossing [`GOSSIP_PEER_DROP_DISCONNECT_THRESHOLD`] escalates —
+    /// see [`Self::escalate_relay_flood`]. First use of a peer id creates
+    /// a full bucket, so a peer's initial burst up to
+    /// [`GOSSIP_PEER_CREDIT_CAPACITY`] always succeeds.
+    fn consume_relay_credit(&mut self, peer: Libp2pPeerId) -> bool {
+        let credit = self
+            .peer_credits
+            .entry(peer)
+            .or_insert_with(PeerCredit::new);
+        if credit.try_consume() {
+            return true;
+        }
+        credit.drops += 1;
+        let should_escalate =
+            credit.drops >= GOSSIP_PEER_DROP_DISCONNECT_THRESHOLD && !credit.escalated;
+        if should_escalate {
+            credit.escalated = true;
+        }
+        let drops = credit.drops;
+        if should_escalate {
+            self.escalate_relay_flood(peer, drops);
+        }
+        false
+    }
+
+    /// What happens once a relaying peer's cumulative drops cross
+    /// [`GOSSIP_PEER_DROP_DISCONNECT_THRESHOLD`]: an operator-visible
+    /// warning, and disconnection.
+    ///
+    /// Disconnecting rather than continuing to meter forever, because a
+    /// peer that has already forced a thousand drops is not going to be
+    /// fixed by a thousand and one — it costs this node nothing further to
+    /// stop paying attention to it, and reconnecting costs the peer a real
+    /// handshake rather than a free retry.
+    fn escalate_relay_flood(&mut self, peer: Libp2pPeerId, drops: u64) {
+        tracing::warn!(
+            peer = %peer,
+            drops,
+            threshold = GOSSIP_PEER_DROP_DISCONNECT_THRESHOLD,
+            "disconnecting relaying peer: relay credit exhausted repeatedly"
+        );
+        let _ = self.node.graceful_disconnect(peer);
+    }
+
     /// Re-forward a received event, decrementing its TTL first (§12).
     /// Never sent back to whoever we received it from (§13).
     fn forward(&mut self, from: Option<Libp2pPeerId>, event: &EventEnvelope) {
@@ -571,6 +727,7 @@ impl<S: KvStore> GossipService<S> {
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 self.connected.remove(peer_id);
                 self.recovery_served.remove(peer_id);
+                self.peer_credits.remove(peer_id);
             }
             // What libp2p actually bound, one event per interface once a
             // wildcard is expanded. A local fact — nobody is being taken

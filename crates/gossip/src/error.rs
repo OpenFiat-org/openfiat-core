@@ -38,6 +38,16 @@ pub enum GossipError {
     /// and a duplicated identity is a compromised or copied `wallet.json`
     /// either way.
     IdentityInUseElsewhere,
+    /// The relaying peer's token bucket was empty (see
+    /// `service::GOSSIP_PEER_CREDIT_CAPACITY`).
+    ///
+    /// Keyed on the transport peer that handed us the envelope, never on
+    /// the event's signed origin — `docs/dishonest-node.md` §4 explains why
+    /// a per-origin limit is the wrong shape. This is a directly connected
+    /// neighbour outrunning what it is allowed to relay, and it is dropped
+    /// before the signature is even checked so that outrunning the bucket
+    /// is cheaper to detect than to attempt.
+    RelayCreditExhausted,
 }
 
 impl GossipError {
@@ -63,6 +73,10 @@ impl GossipError {
             // Neither of those is the remedy, and 2006 names the one
             // that is.
             Self::IdentityInUseElsewhere => ErrorCode::IdentityInUseElsewhere,
+            // Retryable, correctly: the bucket refills, so the same peer
+            // relaying the same event again once it has tokens is exactly
+            // the right remedy — unlike every other rejection above.
+            Self::RelayCreditExhausted => ErrorCode::RateLimitExceeded,
         }
     }
 }

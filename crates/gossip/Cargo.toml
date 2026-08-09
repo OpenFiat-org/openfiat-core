@@ -14,6 +14,7 @@ openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 openfiat-storage = { path = "../storage", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 libp2p = { version = "0.56.0", features = ["request-response"] }
+tracing = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }

@@ -3508,6 +3508,7 @@ dependencies = [
  "openfiat-types",
  "serde",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

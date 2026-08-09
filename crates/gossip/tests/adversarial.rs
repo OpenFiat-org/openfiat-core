@@ -19,7 +19,10 @@ use openfiat_gossip::protocol::{
     MESSAGE_TYPE_PUSH, MESSAGE_TYPE_RECOVERY_REQUEST, MESSAGE_TYPE_RECOVERY_RESPONSE, OFS_SPEC,
     RecoveryRequest, RecoveryResponse,
 };
-use openfiat_gossip::service::{MAX_REACHABLE_ADDRESSES, MAX_TTL, ReceiveOutcome};
+use openfiat_gossip::service::{
+    GOSSIP_PEER_CREDIT_CAPACITY, GOSSIP_PEER_DROP_DISCONNECT_THRESHOLD, MAX_REACHABLE_ADDRESSES,
+    MAX_TTL, ReceiveOutcome,
+};
 use openfiat_gossip::{EventStore, GossipService, event_id};
 use openfiat_network::behaviour::OpenFiatBehaviourEvent;
 use openfiat_network::identity::peer_id_from_public_key;
@@ -603,5 +606,167 @@ async fn an_event_relayed_from_an_origin_this_node_never_connected_to_still_vali
     assert!(
         chain[2].has_event(&id),
         "z has never connected to x, and must still be able to check x's signature"
+    );
+}
+
+/// A relaying peer's own credit runs out well before this node does —
+/// per-peer, never per-origin (`docs/dishonest-node.md` §4). The bucket is
+/// keyed on the transport peer that handed us the envelope, so a second
+/// peer relaying concurrently must be untouched by the first one's flood,
+/// which this asserts throughout the flood rather than only afterwards.
+///
+/// Runs until a fixed number of drops has actually been observed, rather
+/// than a fixed number of attempts: `validate` (real signature
+/// verification) runs on every accepted event, and in an unoptimized build
+/// that is slow enough that a fixed-attempt-count version of this test
+/// flaked — the bucket refills against the wall clock, so time spent
+/// verifying two hundred-odd real signatures was itself buying the
+/// flooder extra tokens. Looping to a target number of drops is immune to
+/// that: however much wall-clock time the loop takes, the bucket cannot
+/// hand out fewer tokens for it, only more, so needing more attempts to
+/// reach the target is the correct response, not a symptom to chase.
+#[test]
+fn a_flooding_relay_only_drains_its_own_credit_and_a_second_relay_is_unaffected() {
+    let mut honest = service(72);
+    let origin = Keypair::from_seed([73; 32]);
+    let flooder = Libp2pPeerId::random();
+    let quiet = Libp2pPeerId::random();
+    let at = Timestamp::now();
+
+    let target_drops = 40usize;
+    let mut flooder_stored = 0usize;
+    let mut flooder_exhausted = 0usize;
+    let mut quiet_sent = 0usize;
+    let mut i = 0usize;
+
+    while flooder_exhausted < target_drops {
+        let flood_event = signed(&origin, format!("flood-{i}").as_bytes(), 8, at);
+        match honest.receive_event(Some(flooder), flood_event) {
+            ReceiveOutcome::Stored => flooder_stored += 1,
+            ReceiveOutcome::Rejected(GossipError::RelayCreditExhausted) => flooder_exhausted += 1,
+            other => panic!("unexpected outcome for the flooding relay: {other:?}"),
+        }
+
+        // Interleaved with the flood, including well past the point the
+        // flooder's own bucket has run dry — not appended afterwards,
+        // because "buckets reset between peers" and "buckets are never
+        // shared" are different claims and only interleaving tests the
+        // second one.
+        if i.is_multiple_of(24) {
+            let quiet_event = signed(&origin, format!("quiet-{quiet_sent}").as_bytes(), 8, at);
+            assert_eq!(
+                honest.receive_event(Some(quiet), quiet_event),
+                ReceiveOutcome::Stored,
+                "a second relaying peer's credit must be untouched by another peer's flood, \
+                 round {i}"
+            );
+            quiet_sent += 1;
+        }
+
+        i += 1;
+        assert!(
+            i < 1_000_000,
+            "a relaying peer's credit never ran out after a million attempts — \
+             the bucket is not bounding anything"
+        );
+    }
+
+    assert!(
+        flooder_stored >= GOSSIP_PEER_CREDIT_CAPACITY as usize,
+        "the flooder's first bucket's worth must always be accepted before any drop, \
+         got {flooder_stored} stored against a capacity of {GOSSIP_PEER_CREDIT_CAPACITY}"
+    );
+    assert_eq!(
+        flooder_exhausted, target_drops,
+        "the loop above exists to make this hold by construction"
+    );
+    assert!(
+        quiet_sent >= 9,
+        "test sanity: the quiet peer must actually have relayed several events \
+         while the flooder was being throttled"
+    );
+}
+
+/// A burst no larger than the bucket's own capacity is ordinary, honest
+/// traffic — a peer catching another peer up, or reconnecting after a
+/// gap — and must never be dropped.
+#[test]
+fn an_honest_burst_within_capacity_all_passes() {
+    let mut honest = service(74);
+    let origin = Keypair::from_seed([75; 32]);
+    let relay = Libp2pPeerId::random();
+    let at = Timestamp::now();
+
+    for i in 0..(GOSSIP_PEER_CREDIT_CAPACITY as usize) {
+        let event = signed(&origin, format!("burst-{i}").as_bytes(), 8, at);
+        assert_eq!(
+            honest.receive_event(Some(relay), event),
+            ReceiveOutcome::Stored,
+            "a burst no larger than the bucket's own capacity must never be dropped, event {i}"
+        );
+    }
+}
+
+/// A neighbour that keeps relaying past its credit, over and over, is not
+/// metered forever: once its cumulative drops cross
+/// `GOSSIP_PEER_DROP_DISCONNECT_THRESHOLD`, this node disconnects it —
+/// the escalation path a quiet counter alone cannot provide, exercised
+/// here over a real connection so the disconnect is the genuine libp2p
+/// one, not a simulated stand-in.
+#[tokio::test]
+async fn a_peer_that_keeps_exceeding_its_credit_past_the_threshold_is_disconnected() {
+    let mut honest = service(76);
+    let honest_addr = listen_addr(&mut honest).await;
+
+    let attacker_keypair = Keypair::from_seed([77; 32]);
+    let mut attacker = Node::new(&attacker_keypair).unwrap();
+    connect(&mut honest, &mut attacker, honest_addr).await;
+    let attacker_peer = attacker.libp2p_peer_id();
+
+    // The flood itself goes straight through `receive_event` — the same
+    // entry point the wire handler (`on_request`) calls, and one of this
+    // crate's own recognised entry points (see this file's header) —
+    // rather than over the wire: what this test needs is a genuinely
+    // connected peer id to charge and a genuine libp2p disconnect to
+    // observe, not a benchmark of how fast this test can push bytes down
+    // one connection.
+    //
+    // Looped to a target *drop count* rather than a fixed number of
+    // attempts, for the same reason as the isolation test above: real
+    // signature verification on every accepted event costs real wall-clock
+    // time in an unoptimized build, which refills the bucket by however
+    // long it took, so a fixed attempt count can undershoot the threshold
+    // on a slow machine. Looping until the threshold is actually crossed
+    // is correct regardless of how long that takes.
+    let at = Timestamp::now();
+    let mut drops = 0usize;
+    let mut i = 0usize;
+    while drops <= GOSSIP_PEER_DROP_DISCONNECT_THRESHOLD as usize {
+        let event = signed(&attacker_keypair, format!("flood-{i}").as_bytes(), 8, at);
+        if let ReceiveOutcome::Rejected(GossipError::RelayCreditExhausted) =
+            honest.receive_event(Some(attacker_peer), event)
+        {
+            drops += 1;
+        }
+        i += 1;
+        assert!(
+            i < 2_000_000,
+            "cumulative drops never crossed GOSSIP_PEER_DROP_DISCONNECT_THRESHOLD after two \
+             million attempts — the counter is not accumulating"
+        );
+    }
+
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while honest.connected_peer_count() > 0 {
+            tokio::select! {
+                event = honest.node.next_event() => honest.handle(event),
+                event = attacker.next_event() => { let _ = event; }
+            }
+        }
+    })
+    .await
+    .expect(
+        "a peer whose drops cross GOSSIP_PEER_DROP_DISCONNECT_THRESHOLD must eventually \
+         be disconnected",
     );
 }
