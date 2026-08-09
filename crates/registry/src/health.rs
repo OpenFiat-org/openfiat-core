@@ -25,8 +25,11 @@ pub struct SignedHealthUpdate {
 
 impl SignedHealthUpdate {
     pub fn sign(update: HealthUpdate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&update)
-            .expect("HealthUpdate always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::HEALTH_UPDATE,
+            &update,
+        )
+        .expect("HealthUpdate always serializes");
         Self {
             signature: keypair.sign(&bytes),
             update,

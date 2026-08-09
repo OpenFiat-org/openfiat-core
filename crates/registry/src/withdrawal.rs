@@ -19,8 +19,11 @@ pub struct SignedWithdrawal {
 
 impl SignedWithdrawal {
     pub fn sign(withdrawal: Withdrawal, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&withdrawal)
-            .expect("Withdrawal always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::WITHDRAWAL,
+            &withdrawal,
+        )
+        .expect("Withdrawal always serializes");
         Self {
             signature: keypair.sign(&bytes),
             withdrawal,

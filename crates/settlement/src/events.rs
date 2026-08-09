@@ -32,8 +32,11 @@ pub struct SignedSettlementInitiate {
 
 impl SignedSettlementInitiate {
     pub fn sign(initiate: SettlementInitiate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&initiate)
-            .expect("SettlementInitiate always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SETTLEMENT_INITIATE,
+            &initiate,
+        )
+        .expect("SettlementInitiate always serializes");
         Self {
             signature: keypair.sign(&bytes),
             initiate,
@@ -46,15 +49,18 @@ impl SignedSettlementInitiate {
         if expected != self.initiate.buyer {
             return Err(SettlementError::Unauthorized);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.initiate)
-            .map_err(|_| SettlementError::MalformedSettlement)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SETTLEMENT_INITIATE,
+            &self.initiate,
+        )
+        .map_err(|_| SettlementError::MalformedSettlement)?;
         openfiat_crypto::verify(&self.initiate.buyer_public_key, &bytes, &self.signature)
             .map_err(|_| SettlementError::InvalidSignature)
     }
 }
 
 macro_rules! settlement_action {
-    ($unsigned:ident, $signed:ident { $( $(#[$meta:meta])* $field:ident: $ty:ty ),* $(,)? }) => {
+    ($unsigned:ident, $signed:ident, $tag:expr, { $( $(#[$meta:meta])* $field:ident: $ty:ty ),* $(,)? }) => {
         #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $unsigned {
             pub settlement_id: SettlementId,
@@ -70,22 +76,36 @@ macro_rules! settlement_action {
 
         impl $signed {
             pub fn sign(action: $unsigned, keypair: &Keypair) -> Self {
-                let bytes = openfiat_serialization::json::to_bytes(&action).expect(concat!(stringify!($unsigned), " always serializes"));
+                let bytes = openfiat_serialization::domain::preimage($tag, &action).expect(concat!(stringify!($unsigned), " always serializes"));
                 Self { signature: keypair.sign(&bytes), action }
             }
         }
     };
 }
 
-settlement_action!(PaymentSubmitted, SignedPaymentSubmitted { buyer: PeerId, payment_reference: Option<String> });
-settlement_action!(PaymentReversed, SignedPaymentReversed { buyer: PeerId });
+settlement_action!(
+    PaymentSubmitted,
+    SignedPaymentSubmitted,
+    openfiat_serialization::domain::tag::PAYMENT_SUBMITTED,
+    { buyer: PeerId, payment_reference: Option<String> }
+);
+settlement_action!(
+    PaymentReversed,
+    SignedPaymentReversed,
+    openfiat_serialization::domain::tag::PAYMENT_REVERSED,
+    { buyer: PeerId }
+);
 settlement_action!(
     SettlementApproved,
-    SignedSettlementApproved { seller: PeerId }
+    SignedSettlementApproved,
+    openfiat_serialization::domain::tag::SETTLEMENT_APPROVED,
+    { seller: PeerId }
 );
 settlement_action!(
     SettlementRejected,
-    SignedSettlementRejected {
+    SignedSettlementRejected,
+    openfiat_serialization::domain::tag::SETTLEMENT_REJECTED,
+    {
         seller: PeerId,
         /// Free text for a human reading the trade; `discrepancy` is what
         /// reputation counts. See `PaymentDiscrepancy`'s own doc for why
@@ -96,5 +116,7 @@ settlement_action!(
 );
 settlement_action!(
     SettlementCancelled,
-    SignedSettlementCancelled { canceller: PeerId }
+    SignedSettlementCancelled,
+    openfiat_serialization::domain::tag::SETTLEMENT_CANCELLED,
+    { canceller: PeerId }
 );

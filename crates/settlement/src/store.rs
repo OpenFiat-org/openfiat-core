@@ -27,7 +27,6 @@ use crate::protocol;
 use crate::record::{DisputeVerdict, Settlement, SettlementId, SettlementState};
 use openfiat_crypto::verify;
 use openfiat_reservations::ReservationRegistry;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventEnvelope, Timestamp};
@@ -126,8 +125,11 @@ impl<S: KvStore> SettlementRegistry<S> {
         if settlement.buyer != signed.action.buyer {
             return Err(SettlementError::Unauthorized);
         }
-        let bytes =
-            json::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PAYMENT_SUBMITTED,
+            &signed.action,
+        )
+        .map_err(|_| SettlementError::MalformedSettlement)?;
         verify(&settlement.buyer_public_key, &bytes, &signed.signature)
             .map_err(|_| SettlementError::InvalidSignature)?;
         if settlement.state != SettlementState::AwaitingPayment {
@@ -153,8 +155,11 @@ impl<S: KvStore> SettlementRegistry<S> {
         if settlement.buyer != signed.action.buyer {
             return Err(SettlementError::Unauthorized);
         }
-        let bytes =
-            json::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::PAYMENT_REVERSED,
+            &signed.action,
+        )
+        .map_err(|_| SettlementError::MalformedSettlement)?;
         verify(&settlement.buyer_public_key, &bytes, &signed.signature)
             .map_err(|_| SettlementError::InvalidSignature)?;
         if settlement.state != SettlementState::PaymentSubmitted {
@@ -184,8 +189,11 @@ impl<S: KvStore> SettlementRegistry<S> {
         if settlement.seller != signed.action.seller {
             return Err(SettlementError::Unauthorized);
         }
-        let bytes =
-            json::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SETTLEMENT_APPROVED,
+            &signed.action,
+        )
+        .map_err(|_| SettlementError::MalformedSettlement)?;
         verify(&settlement.seller_public_key, &bytes, &signed.signature)
             .map_err(|_| SettlementError::InvalidSignature)?;
         if settlement.state != SettlementState::PaymentSubmitted {
@@ -239,8 +247,11 @@ impl<S: KvStore> SettlementRegistry<S> {
         if settlement.seller != signed.action.seller {
             return Err(SettlementError::Unauthorized);
         }
-        let bytes =
-            json::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SETTLEMENT_REJECTED,
+            &signed.action,
+        )
+        .map_err(|_| SettlementError::MalformedSettlement)?;
         verify(&settlement.seller_public_key, &bytes, &signed.signature)
             .map_err(|_| SettlementError::InvalidSignature)?;
         if settlement.state != SettlementState::PaymentSubmitted {
@@ -277,8 +288,11 @@ impl<S: KvStore> SettlementRegistry<S> {
         } else {
             return Err(SettlementError::Unauthorized);
         };
-        let bytes =
-            json::to_bytes(&signed.action).map_err(|_| SettlementError::MalformedSettlement)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SETTLEMENT_CANCELLED,
+            &signed.action,
+        )
+        .map_err(|_| SettlementError::MalformedSettlement)?;
         verify(&canceller_key, &bytes, &signed.signature)
             .map_err(|_| SettlementError::InvalidSignature)?;
         if settlement.state != SettlementState::AwaitingPayment {

@@ -10,7 +10,6 @@ use crate::registration::SignedRegistration;
 use crate::withdrawal::SignedWithdrawal;
 use crate::{parse_event, protocol};
 use openfiat_crypto::verify;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventEnvelope, ServiceId, ServiceType, Timestamp};
@@ -87,8 +86,11 @@ impl<S: KvStore> Registry<S> {
         if record.provider != signed.update.provider {
             return Err(RegistryError::UnauthorizedUpdate);
         }
-        let bytes =
-            json::to_bytes(&signed.update).map_err(|_| RegistryError::MalformedRegistration)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::HEALTH_UPDATE,
+            &signed.update,
+        )
+        .map_err(|_| RegistryError::MalformedRegistration)?;
         verify(&record.provider_public_key, &bytes, &signed.signature)
             .map_err(|_| RegistryError::InvalidSignature)?;
 
@@ -107,8 +109,11 @@ impl<S: KvStore> Registry<S> {
         if record.provider != signed.withdrawal.provider {
             return Err(RegistryError::UnauthorizedUpdate);
         }
-        let bytes =
-            json::to_bytes(&signed.withdrawal).map_err(|_| RegistryError::MalformedRegistration)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::WITHDRAWAL,
+            &signed.withdrawal,
+        )
+        .map_err(|_| RegistryError::MalformedRegistration)?;
         verify(&record.provider_public_key, &bytes, &signed.signature)
             .map_err(|_| RegistryError::InvalidSignature)?;
 
