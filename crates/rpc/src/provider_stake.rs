@@ -325,10 +325,21 @@ mod tests {
         register_snapshot_provider(&state, &provider);
         let peer = peer_id_from_public_key(&provider.public_key()).unwrap();
 
-        // Governance's own SnapshotProvider minimum is the last slot.
-        // Deployed at 1,000 OPEN, well under this node's floor.
-        let deployed =
-            [500, 500, 1_000, 5_000, 1_000, 1_000, 1_000].map(|whole: u64| whole * 1_000_000);
+        // Governance's own SnapshotProvider minimum is the last slot. The
+        // other six mirror `staking::constants::RECOMMENDED_MIN_STAKE_BY_ROLE`
+        // (kept as a literal here rather than a dependency — crates/rpc has
+        // no business depending on the on-chain staking program crate; that
+        // constant is the source of truth if the two ever drift).
+        //
+        // Slot 6 is deliberately overridden *below* this node's own
+        // `MINIMUM_PROVIDER_STAKE` floor to exercise "an on-chain minimum
+        // under the floor must not lower it". Post-rebaseline, §4's real
+        // SnapshotProvider figure (100,000 OPEN) sits *above* the 10,000
+        // OPEN floor, so no real deployment would ever read this low —
+        // it stands in for a stale or misconfigured on-chain value.
+        let mut deployed = [500, 100_000, 500_000, 100_000, 100_000, 100_000, 100_000]
+            .map(|whole: u64| whole * 1_000_000);
+        deployed[6] = 1_000 * 1_000_000;
         poll_provider_stake(
             &state,
             &FixtureCluster::new().with_config(deployed).with_stake(
@@ -348,8 +359,12 @@ mod tests {
             StakeStanding::Qualified
         );
 
+        // Raise slot 6 to §4's actual post-rebaseline SnapshotProvider
+        // minimum — 100,000 OPEN, $1,000 at the $0.01 presale price — well
+        // above this node's floor, so the provider's existing
+        // `MINIMUM_PROVIDER_STAKE` stake (10,000 OPEN) is no longer enough.
         let mut raised = deployed;
-        raised[6] = 50_000 * 1_000_000;
+        raised[6] = 100_000 * 1_000_000;
         poll_provider_stake(
             &state,
             &FixtureCluster::new().with_config(raised).with_stake(
@@ -363,7 +378,7 @@ mod tests {
             state.snapshots.stake_standing(&peer, Timestamp::now()),
             StakeStanding::Insufficient {
                 held: MINIMUM_PROVIDER_STAKE,
-                required: 50_000 * 1_000_000,
+                required: 100_000 * 1_000_000,
             },
             "raising the on-chain minimum must raise this gate, with no code change"
         );

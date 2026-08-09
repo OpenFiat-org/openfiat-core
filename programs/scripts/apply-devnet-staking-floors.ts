@@ -1,7 +1,11 @@
 /**
  * Writes OFS-4100 §4's signed-off staking policy onto the devnet
- * `StakingConfig`: the 500-OPEN Merchant/Arbitrator floors and the 5%
- * slash rate.
+ * `StakingConfig`: the re-baselined (2026-08-09) static USD-equivalent
+ * per-role minimums — Node $5,000, Arbitrator and the four provider roles
+ * $1,000, Merchant unchanged at $5 — pinned at the $0.01 OPEN presale
+ * price, plus the 5% slash rate. These are *not* oracle-tracked; a future
+ * change to the USD target is a new governance-pushed OPEN figure, not a
+ * re-run of this script against a moving price.
  *
  * Run AFTER `scripts/migrate-devnet-staking-config.ts`, which grows the
  * account into the per-role-unbonding layout this script decodes. Running
@@ -10,12 +14,12 @@
  *   npx tsx scripts/apply-devnet-staking-floors.ts --dry-run
  *   npx tsx scripts/apply-devnet-staking-floors.ts
  *
- * # Why the arbitrator floor may be lowered at all
+ * # Why the arbitrator floor may be lowered from 10,000 at all
  *
  * 10,000 OPEN was the only thing standing between an attacker and every
  * seat on a dispute: seats went to whoever called `commit_dispute_vote`
- * first, so capture cost seven staked wallets. Dropping to 500 without
- * anything else changing would have made that twenty times cheaper.
+ * first, so capture cost seven staked wallets. Dropping it without
+ * anything else changing would have made that many times cheaper.
  *
  * What makes it safe is that per-case arbitrator sortition has landed —
  * `openfiat_programs_shared::sortition::qualifies_for_seat`, called from
@@ -68,19 +72,23 @@ const ROLE_NAMES = [
   "SnapshotProvider",
 ];
 
-const DECIMALS = 1_000_000_000n; // OPEN has 9 decimals (OFS-4100 §1)
+// OFS-4100 §1, re-baselined 2026-08-09: OPEN moved from 9 to 6 decimals,
+// matching USDC.
+const DECIMALS = 1_000_000n;
 const DAY = 24 * 60 * 60;
 
-/** Mirrors `staking::constants::RECOMMENDED_MIN_STAKE_BY_ROLE`. Merchant
- *  and Arbitrator are floors that scale above; the rest are flat. */
+/** Mirrors `staking::constants::RECOMMENDED_MIN_STAKE_BY_ROLE` — static
+ *  USD-equivalent minimums pinned at the $0.01 presale price (re-baselined
+ *  2026-08-09), not oracle-tracked. Merchant and Arbitrator are floors
+ *  that scale above; the rest are flat. */
 const TARGET_MIN_STAKE_BY_ROLE = [
-  500n * DECIMALS,
-  500n * DECIMALS,
-  1_000n * DECIMALS,
-  5_000n * DECIMALS,
-  1_000n * DECIMALS,
-  1_000n * DECIMALS,
-  1_000n * DECIMALS,
+  500n * DECIMALS, // Merchant — unchanged, $5
+  100_000n * DECIMALS, // Arbitrator — $1,000
+  500_000n * DECIMALS, // NodeOperator — $5,000
+  100_000n * DECIMALS, // NotificationProvider — $1,000
+  100_000n * DECIMALS, // OracleProvider — $1,000
+  100_000n * DECIMALS, // RiskIntelligenceProvider — $1,000
+  100_000n * DECIMALS, // SnapshotProvider — $1,000
 ];
 
 /** Mirrors `staking::constants::RECOMMENDED_UNBONDING_PERIOD_SECS_BY_ROLE`.

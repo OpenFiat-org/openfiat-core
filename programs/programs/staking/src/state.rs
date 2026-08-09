@@ -304,3 +304,59 @@ impl StakeAccount {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::RECOMMENDED_MIN_STAKE_BY_ROLE;
+
+    fn config_at_recommended_minimums() -> StakingConfig {
+        StakingConfig {
+            admin: Pubkey::default(),
+            mint: Pubkey::default(),
+            min_stake_by_role: RECOMMENDED_MIN_STAKE_BY_ROLE,
+            unbonding_period_secs_by_role: [0; Role::COUNT],
+            slash_bps: 0,
+            slashing_authority: Pubkey::default(),
+            slash_destination: Pubkey::default(),
+            rewards_authority: Pubkey::default(),
+            bump: 0,
+            stake_vault_bump: 0,
+            rewards_vault_bump: 0,
+        }
+    }
+
+    fn node_operator_stake(amount: u64) -> StakeAccount {
+        StakeAccount {
+            owner: Pubkey::default(),
+            role: Role::NodeOperator,
+            amount,
+            unbonding_amount: 0,
+            unbonding_release_at: 0,
+            slashed_total: 0,
+            pending_rewards: 0,
+            bump: 0,
+            first_staked_at: 0,
+        }
+    }
+
+    /// The re-baselined NodeOperator floor is 500,000 OPEN ($5,000 at the
+    /// $0.01 presale price) — one OPEN under it must not qualify, and
+    /// exactly at it must.
+    #[test]
+    fn node_operator_eligibility_sits_at_the_500_000_open_boundary() {
+        let config = config_at_recommended_minimums();
+        assert_eq!(
+            config.min_stake_for(Role::NodeOperator),
+            500_000 * crate::constants::OPEN_DECIMALS_MULTIPLIER
+        );
+
+        let below = node_operator_stake(499_999 * crate::constants::OPEN_DECIMALS_MULTIPLIER);
+        assert!(!config.is_legal_balance(Role::NodeOperator, below.amount));
+        assert_eq!(below.effective_stake(&config), 0);
+
+        let at_floor = node_operator_stake(500_000 * crate::constants::OPEN_DECIMALS_MULTIPLIER);
+        assert!(config.is_legal_balance(Role::NodeOperator, at_floor.amount));
+        assert_eq!(at_floor.effective_stake(&config), at_floor.amount);
+    }
+}

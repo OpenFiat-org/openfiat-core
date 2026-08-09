@@ -48,9 +48,19 @@ pub const OPEN_DECIMALS_MULTIPLIER: u64 = 1_000_000;
 /// The per-role minimum stakes OFS-4100 §4 signs off, in base units,
 /// indexed by [`Role::index`](openfiat_programs_shared::Role::index).
 ///
-/// Merchant and Arbitrator are **500 OPEN floors, not flat fees**: §4
-/// scales the requirement above the floor with the position a participant
-/// actually takes, and 500 is only where that scale starts.
+/// Re-baselined 2026-08-09: these are **static USD-equivalent amounts**,
+/// pinned at the $0.01 OPEN presale price (Node $5,000, Arbitrator and the
+/// four provider roles $1,000, Merchant unchanged at $5). They are *not*
+/// oracle-tracked — nothing here re-prices as OPEN's market price moves.
+/// When the USD target needs to change, governance re-derives the OPEN
+/// figure at whatever peg it chooses and pushes it through
+/// `update_staking_config`; this constant only supplies the value a fresh
+/// deployment (or an out-of-band `apply-devnet-staking-floors.ts` run)
+/// initializes with.
+///
+/// Merchant and Arbitrator are **floors, not flat fees**: §4 scales the
+/// requirement above the floor with the position a participant actually
+/// takes, and the figure below is only where that scale starts.
 ///
 /// # Why the arbitrator floor could be lowered from 10,000
 ///
@@ -76,13 +86,13 @@ pub const OPEN_DECIMALS_MULTIPLIER: u64 = 1_000_000;
 /// minimum is a governance-tunable figure and hardcoding it is what made
 /// the previous two-field layout unable to express §4 at all.
 pub const RECOMMENDED_MIN_STAKE_BY_ROLE: [u64; openfiat_programs_shared::Role::COUNT] = [
-    500 * OPEN_DECIMALS_MULTIPLIER,   // Merchant — floor, scaling above
-    500 * OPEN_DECIMALS_MULTIPLIER,   // Arbitrator — floor, scaling above
-    1_000 * OPEN_DECIMALS_MULTIPLIER, // NodeOperator
-    5_000 * OPEN_DECIMALS_MULTIPLIER, // NotificationProvider
-    1_000 * OPEN_DECIMALS_MULTIPLIER, // OracleProvider
-    1_000 * OPEN_DECIMALS_MULTIPLIER, // RiskIntelligenceProvider
-    1_000 * OPEN_DECIMALS_MULTIPLIER, // SnapshotProvider
+    500 * OPEN_DECIMALS_MULTIPLIER,     // Merchant — floor, scaling above (unchanged, $5)
+    100_000 * OPEN_DECIMALS_MULTIPLIER, // Arbitrator — floor, scaling above ($1,000)
+    500_000 * OPEN_DECIMALS_MULTIPLIER, // NodeOperator ($5,000)
+    100_000 * OPEN_DECIMALS_MULTIPLIER, // NotificationProvider ($1,000)
+    100_000 * OPEN_DECIMALS_MULTIPLIER, // OracleProvider ($1,000)
+    100_000 * OPEN_DECIMALS_MULTIPLIER, // RiskIntelligenceProvider ($1,000)
+    100_000 * OPEN_DECIMALS_MULTIPLIER, // SnapshotProvider ($1,000)
 ];
 
 /// The per-role unbonding periods OFS-4100 §4 signs off, in seconds,
