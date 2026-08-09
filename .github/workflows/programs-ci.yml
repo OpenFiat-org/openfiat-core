@@ -25,7 +25,7 @@ jobs:
       run:
         working-directory: programs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -38,7 +38,7 @@ jobs:
       run:
         working-directory: programs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -51,7 +51,7 @@ jobs:
     name: cargo deny (programs/)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           manifest-path: programs/Cargo.toml
@@ -63,7 +63,7 @@ jobs:
       run:
         working-directory: programs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -159,7 +159,7 @@ jobs:
     name: guard against accidental mainnet references
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Fail if mainnet-beta is used as a live config value anywhere in programs/
         run: |
           # Matches actual usage (a cluster value or RPC URL), not prose
