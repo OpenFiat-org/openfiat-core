@@ -86,6 +86,9 @@ pub struct InitializeSaleParams {
     pub min_contribution: u64,
     pub max_contribution: u64,
     pub max_slippage_bps: u16,
+    /// OPEN base units credited per 1 USDC base unit's worth of contribution
+    /// (100 for the presale — 1 USDC = 100 OPEN). Must be > 0.
+    pub open_per_usdc: u64,
     pub start_time: i64,
     pub end_time: i64,
     pub stablecoin_whitelist: Vec<Pubkey>,
@@ -117,6 +120,7 @@ pub fn handle_initialize_sale(
         params.max_slippage_bps > 0 && (params.max_slippage_bps as u64) <= BPS_DENOMINATOR,
         ErrorCode::InvalidSlippageBps
     );
+    require!(params.open_per_usdc > 0, ErrorCode::InvalidRate);
     require!(
         ctx.accounts.open_mint.decimals >= ctx.accounts.usdc_mint.decimals,
         ErrorCode::Overflow
@@ -135,6 +139,7 @@ pub fn handle_initialize_sale(
     sale_config.min_contribution = params.min_contribution;
     sale_config.max_contribution = params.max_contribution;
     sale_config.max_slippage_bps = params.max_slippage_bps;
+    sale_config.open_per_usdc = params.open_per_usdc;
     sale_config.open_decimals = ctx.accounts.open_mint.decimals;
     sale_config.usdc_decimals = ctx.accounts.usdc_mint.decimals;
     sale_config.start_time = params.start_time;

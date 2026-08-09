@@ -30,6 +30,9 @@ pub struct UpdateSaleParamsArgs {
     pub min_contribution: u64,
     pub max_contribution: u64,
     pub max_slippage_bps: u16,
+    /// OPEN base units credited per 1 USDC base unit's worth of contribution.
+    /// Must be > 0.
+    pub open_per_usdc: u64,
     pub end_time: i64,
 }
 
@@ -57,6 +60,7 @@ pub fn handle_update_sale_params(
         params.max_slippage_bps > 0 && (params.max_slippage_bps as u64) <= BPS_DENOMINATOR,
         ErrorCode::InvalidSlippageBps
     );
+    require!(params.open_per_usdc > 0, ErrorCode::InvalidRate);
     require!(
         params.end_time > sale_config.start_time,
         ErrorCode::InvalidSaleWindow
@@ -73,6 +77,7 @@ pub fn handle_update_sale_params(
     sale_config.min_contribution = params.min_contribution;
     sale_config.max_contribution = params.max_contribution;
     sale_config.max_slippage_bps = params.max_slippage_bps;
+    sale_config.open_per_usdc = params.open_per_usdc;
     sale_config.end_time = params.end_time;
     Ok(())
 }

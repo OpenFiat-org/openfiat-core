@@ -169,6 +169,7 @@ describe("presale", () => {
     minContribution: BN;
     maxContribution: BN;
     maxSlippageBps: number;
+    openPerUsdc: BN;
     startTime: BN;
     endTime: BN;
     stablecoinWhitelist: PublicKey[];
@@ -254,6 +255,7 @@ describe("presale", () => {
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(1_000_000),
           maxSlippageBps: 100,
+          openPerUsdc: new BN(100),
           startTime: new BN(now - 60),
           endTime: new BN(now + 3600),
           stablecoinWhitelist: [otherStableMint],
@@ -279,6 +281,7 @@ describe("presale", () => {
             minContribution: usdcUnit(1),
             maxContribution: usdcUnit(1_000_000),
             maxSlippageBps: 100,
+            openPerUsdc: new BN(100),
             startTime: new BN(now - 60),
             endTime: new BN(now + 3600),
             stablecoinWhitelist: [],
@@ -309,6 +312,7 @@ describe("presale", () => {
           minContribution: usdcUnit(50),
           maxContribution: usdcUnit(100),
           maxSlippageBps: 100,
+          openPerUsdc: new BN(100),
           startTime: new BN(now - 60),
           endTime: new BN(now + 3600),
           stablecoinWhitelist: [],
@@ -416,7 +420,10 @@ describe("presale", () => {
 
       const acc = await program.account.contribution.fetch(contribution);
       expect(acc.amountUsdc.toString()).to.equal(usdcUnit(60).toString());
-      expect(acc.openEntitlement.toString()).to.equal(openUnit(60).toString());
+      // openPerUsdc = 100 in this suite's sale config: 60 USDC -> 6,000 OPEN.
+      expect(acc.openEntitlement.toString()).to.equal(
+        openUnit(60 * 100).toString(),
+      );
     });
 
     it("rejects a follow-up contribution that exceeds the per-wallet maximum", async () => {
@@ -484,6 +491,7 @@ describe("presale", () => {
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(500),
           maxSlippageBps: 100,
+          openPerUsdc: new BN(100),
           startTime: new BN(now - 60),
           endTime: new BN(now + 3600),
           stablecoinWhitelist: [],
@@ -505,6 +513,7 @@ describe("presale", () => {
               minContribution: usdcUnit(1),
               maxContribution: usdcUnit(1_000),
               maxSlippageBps: 100,
+              openPerUsdc: new BN(100),
               endTime: new BN(Math.floor(Date.now() / 1000) + 3600),
             })
             .accountsPartial({ admin: impostor.publicKey, saleConfig })
@@ -524,6 +533,7 @@ describe("presale", () => {
             minContribution: usdcUnit(1),
             maxContribution: usdcUnit(1_000_000),
             maxSlippageBps: 100,
+            openPerUsdc: new BN(100),
             endTime: new BN(Math.floor(Date.now() / 1000) + 3600),
           })
           .accountsPartial({ admin: admin.publicKey, saleConfig })
@@ -552,6 +562,7 @@ describe("presale", () => {
             minContribution: usdcUnit(1),
             maxContribution: usdcUnit(1_000),
             maxSlippageBps: 100,
+            openPerUsdc: new BN(100),
             endTime: new BN(Math.floor(Date.now() / 1000) + 3600),
           })
           .accountsPartial({ admin: admin.publicKey, saleConfig })
@@ -574,6 +585,7 @@ describe("presale", () => {
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(1_000),
           maxSlippageBps: 100,
+          openPerUsdc: new BN(100),
           startTime: new BN(now + 3600),
           endTime: new BN(now + 7200),
           stablecoinWhitelist: [],
@@ -618,6 +630,7 @@ describe("presale", () => {
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(1_000),
           maxSlippageBps: 100,
+          openPerUsdc: new BN(100),
           startTime: new BN(now - 7200),
           endTime: new BN(now - 3600),
           stablecoinWhitelist: [],
@@ -672,6 +685,7 @@ describe("presale", () => {
           minContribution: usdcUnit(10),
           maxContribution: usdcUnit(500),
           maxSlippageBps: 100, // 1%
+          openPerUsdc: new BN(100),
           startTime: new BN(now - 60),
           endTime: new BN(now + 3600),
           stablecoinWhitelist: [otherStableMint],
@@ -791,7 +805,10 @@ describe("presale", () => {
 
       const acc = await program.account.contribution.fetch(contribution);
       expect(acc.amountUsdc.toString()).to.equal(actualOut.toString());
-      expect(acc.openEntitlement.toString()).to.equal(openUnit(99).toString());
+      // openPerUsdc = 100 in this suite's sale config: 99 USDC -> 9,900 OPEN.
+      expect(acc.openEntitlement.toString()).to.equal(
+        openUnit(99 * 100).toString(),
+      );
     });
 
     it("rejects a swap CPI targeting a program other than sale_config.swap_program", async () => {
@@ -839,6 +856,7 @@ describe("presale", () => {
           minContribution: usdcUnit(10),
           maxContribution: usdcUnit(1_000),
           maxSlippageBps: 100,
+          openPerUsdc: new BN(100),
           startTime: new BN(now - 60),
           // Derived from the validator's own clock, not this process's, and 12
           // seconds rather than 2 so the contribution below still lands inside
@@ -914,7 +932,10 @@ describe("presale", () => {
         "confirmed",
         TOKEN_2022_PROGRAM_ID,
       );
-      expect(openAcc.amount.toString()).to.equal(openUnit(80).toString());
+      // openPerUsdc = 100 in this suite's sale config: 80 USDC -> 8,000 OPEN.
+      expect(openAcc.amount.toString()).to.equal(
+        openUnit(80 * 100).toString(),
+      );
     });
 
     it("finalizes the sale and sweeps USDC to the treasury", async () => {
@@ -997,6 +1018,7 @@ describe("presale", () => {
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(1_000_000),
           maxSlippageBps: 100,
+          openPerUsdc: new BN(100),
           // -30s (not -5s): the suite's own on-chain clock can lag this
           // process's wall clock (see onchainNow's doc comment above), so a
           // wider buffer keeps the sale reliably Active by the time the
@@ -1048,9 +1070,10 @@ describe("presale", () => {
         .signers([buyer])
         .rpc({ commitment: "confirmed" });
 
+      // openPerUsdc = 100 in this suite's sale config: 60 USDC -> 6,000 OPEN.
       expect(
         (await getAccount(connection, buyerOpen, "confirmed", TOKEN_2022_PROGRAM_ID)).amount.toString(),
-      ).to.equal(openUnit(60).toString());
+      ).to.equal(openUnit(60 * 100).toString());
 
       // Re-claim with nothing new accrued -> NothingToClaim.
       await expectAnchorError(
@@ -1071,7 +1094,8 @@ describe("presale", () => {
         "NothingToClaim",
       );
 
-      // Contribute more, then claim only the delta (40 more OPEN, total 100).
+      // Contribute more, then claim only the delta (40 more USDC -> 4,000
+      // more OPEN at openPerUsdc = 100; total 10,000 OPEN).
       await program.methods
         .contributeUsdc(new BN(nonce), usdcUnit(40))
         .accountsPartial({
@@ -1104,7 +1128,7 @@ describe("presale", () => {
 
       expect(
         (await getAccount(connection, buyerOpen, "confirmed", TOKEN_2022_PROGRAM_ID)).amount.toString(),
-      ).to.equal(openUnit(100).toString());
+      ).to.equal(openUnit(100 * 100).toString());
     });
   });
 
@@ -1121,6 +1145,7 @@ describe("presale", () => {
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(1_000_000),
           maxSlippageBps: 100,
+          openPerUsdc: new BN(100),
           startTime: new BN(now - 30),
           endTime: new BN(now + 3600),
           stablecoinWhitelist: [],
@@ -1168,7 +1193,8 @@ describe("presale", () => {
         (await getAccount(connection, treasury, "confirmed", TOKEN_2022_PROGRAM_ID)).amount.toString(),
       ).to.equal(usdcUnit(150).toString());
 
-      // The buyer can still claim their full 200 OPEN — claims survive sweeps.
+      // The buyer can still claim their full 200 USDC's worth (20,000 OPEN
+      // at openPerUsdc = 100) — claims survive sweeps.
       await program.methods
         .claim(new BN(nonce))
         .accountsPartial({
@@ -1186,7 +1212,7 @@ describe("presale", () => {
 
       expect(
         (await getAccount(connection, buyerOpen, "confirmed", TOKEN_2022_PROGRAM_ID)).amount.toString(),
-      ).to.equal(openUnit(200).toString());
+      ).to.equal(openUnit(200 * 100).toString());
     });
 
     it("rejects a sweep from a non-admin signer", async () => {
@@ -1201,6 +1227,7 @@ describe("presale", () => {
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(1_000),
           maxSlippageBps: 100,
+          openPerUsdc: new BN(100),
           startTime: new BN(now - 30),
           endTime: new BN(now + 3600),
           stablecoinWhitelist: [],
@@ -1242,6 +1269,7 @@ describe("presale", () => {
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(1_000),
           maxSlippageBps: 100,
+          openPerUsdc: new BN(100),
           startTime: new BN(now - 30),
           endTime: new BN(now + 3600),
           stablecoinWhitelist: [],
@@ -1282,6 +1310,7 @@ describe("presale", () => {
           minContribution: usdcUnit(1),
           maxContribution: usdcUnit(1_000),
           maxSlippageBps: 100,
+          openPerUsdc: new BN(100),
           startTime: new BN(now - 30),
           endTime: new BN(now + 3600),
           stablecoinWhitelist: [],

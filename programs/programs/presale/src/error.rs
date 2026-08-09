@@ -62,4 +62,6 @@ pub enum ErrorCode {
     NothingToClaim,
     #[msg("sweep amount must be greater than zero and at most the vault balance")]
     InvalidSweepAmount,
+    #[msg("open_per_usdc must be greater than zero")]
+    InvalidRate,
 }
