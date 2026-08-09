@@ -15,6 +15,12 @@ env:
 
 jobs:
   build:
+    permissions:
+      contents: read
+      # Keyless build-provenance attestation (F-08): mint an OIDC token and
+      # record the signed attestation in this repo's attestation store.
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -64,10 +70,21 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: openfiat-node-*.${{ matrix.archive_ext }}
 
+      # Signed SLSA build provenance for the release archive (F-08). Keyless
+      # (Sigstore/OIDC) — no key to store or rotate. A downloader verifies
+      # with: gh attestation verify <archive> --repo OpenFiat-org/openfiat-core
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: openfiat-node-*.${{ matrix.archive_ext }}
+
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      # Only what publishing the GitHub Release needs (F-07).
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:

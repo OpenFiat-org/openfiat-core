@@ -13,6 +13,10 @@ env:
   SOLANA_VERSION: stable
   ANCHOR_VERSION: 1.1.2
 
+# Minimal token: CI only reads the repo (F-07).
+permissions:
+  contents: read
+
 jobs:
   fmt:
     name: cargo fmt (programs/)
