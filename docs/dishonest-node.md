@@ -149,6 +149,49 @@ the fix and strictly safer — a derived binding cannot be told a different
 key for an identity, and a map fed by remote input cannot grow without
 bound if nothing remote feeds it.
 
+### A flooding neighbour paid nothing for our forward budget
+
+A directly connected peer could relay well-formed events as fast as its
+link allowed, and each cost us a store write and a forward before anything
+bounded it. There is now a per-**peer** relay credit
+(`GOSSIP_PEER_CREDIT_CAPACITY`, refilled at `GOSSIP_PEER_CREDIT_REFILL_PER_SEC`):
+a token bucket keyed on the *transport* peer that delivered the envelope —
+never on the envelope's signed origin — checked before the signature
+verify, so a flooder is turned away before it can force the expensive op.
+An honest burst inside the bucket passes untouched; a peer sustaining more
+than the refill has its excess dropped, and a peer past a drop threshold is
+disconnected. This is explicitly **not** the per-origin limit §4 rejects:
+it bounds one *link*, not one *identity*, so key rotation does not evade it
+and an honest bursty origin does not trip it. See
+`crates/gossip/tests/adversarial.rs`.
+
+### The public RPC was unmetered
+
+The JSON-RPC surface (`/rpc`, `/ws`) accepted requests from any client as
+fast as they came. It is now rate-limited per client IP
+(`RPC_RATE_BURST` / `RPC_RATE_REFILL_PER_SEC`, keyed on the socket peer, not
+a spoofable header); `/health` and `/metrics` are exempt so monitoring is
+never throttled. Behind a reverse proxy, honouring `X-Forwarded-For` is a
+follow-up — v1 meters the socket peer.
+
+### Connections grew without bound
+
+The swarm accepted connections without a ceiling (noted below as belonging
+in `openfiat_network` — now done). `crates/network`'s combined behaviour
+carries a libp2p `connection_limits` guard
+(`NETWORK_MAX_ESTABLISHED` / `NETWORK_MAX_ESTABLISHED_INCOMING`).
+
+### One wallet's identity claims grew without bound
+
+`apply_publish` accepted unbounded claims from a single wallet. A wallet is
+now capped at `MAX_CLAIMS_PER_WALLET` **live** claims (non-revoked,
+non-expired against the node's own clock, non-superseded). A supersede is
+exempt only when it names a claim already in that wallet's live set, so a
+supersede of a fake/foreign/dead id cannot buy an exemption, and the
+liveness count uses trusted wall-clock time rather than the publisher's
+self-reported timestamp — both were bypasses caught in review. Dead claims
+are reclaimed by `prune` past the one-week retention the event log uses.
+
 ---
 
 ## 3. What you must not trust a node about
@@ -235,6 +278,12 @@ event, and a store that a timed sweep holds to a week. Spam therefore
 costs bandwidth for as long as it is sustained and leaves nothing behind.
 That is the honest trade, not an oversight.
 
+What *is* bounded is the per-**link** variant of this: a single connected
+peer flooding us is throttled by the per-peer relay credit (§2). That is a
+transport bound, not a per-origin one, so it does not contradict anything
+above — key rotation defeats a per-origin limit and is exactly why there
+isn't one, but it does not give an attacker more *links*.
+
 ### Priority is decorative
 
 `Priority` rides outside the signature and nothing in this workspace
@@ -247,8 +296,8 @@ envelope.
 
 `GossipService` holds one small entry per connected peer, which is far
 less than the swarm holds for the connection itself. Bounding how many
-connections a node accepts belongs in `openfiat_network`, and is not
-implemented there.
+connections a node accepts belongs in `openfiat_network` — and is now
+implemented there via libp2p's connection limits (§2), not in gossip.
 
 ### Two nodes on one wallet
 
