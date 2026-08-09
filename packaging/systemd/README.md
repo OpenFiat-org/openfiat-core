@@ -52,7 +52,11 @@ looks healthy from outside while serving nothing.
 
 **Back up `/var/lib/openfiat/wallet.json`.** It is this node's identity and
 it owns the node's stake. Lose it and any staked OPEN is stranded with no
-way to unbond.
+way to unbond. [`scripts/backup-node-keys.sh`](../../scripts/backup-node-keys.sh)
+makes a passphrase-encrypted, restore-verified archive of a node's keypairs
+that you then copy off the machine — it never transmits anything itself.
+Operators holding authority keys (program-upgrade, sale-admin, treasury) should
+run it before those keys ever touch real value.
 
 ## Manage
 
