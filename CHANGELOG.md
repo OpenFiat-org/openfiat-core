@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **BREAKING — domain-separated signing preimages for all client-signed wire
+  events (F-01).** Every client-signed marketplace event (advertisements,
+  reservations, registrations, settlements, sessions, disputes, votes,
+  proposals, claims, reviews, oracle/risk publishes, trade-channel entries,
+  notifications, …) is now signed over `domain::preimage(tag, payload)` —
+  `len(tag):u32be ‖ tag ‖ json(payload)` with a per-type `/v1` tag — instead of
+  the bare `json(payload)`. This binds the payload's *type* into the signature,
+  closing a class of signature-replay collisions where two events with the same
+  field shape (e.g. a claim-verify vs a claim-revoke) shared a preimage and one
+  signature validated for the other. A node on this version **rejects
+  signatures produced by any pre-domain-separation signer**, and older nodes
+  reject this version's signatures — so **all clients (Rust SDK, TypeScript
+  SDK, app) must upgrade in lockstep** (hard cutover; no dual-accept window).
+  The cross-language byte layout is frozen by
+  `crates/serialization/tests/vectors/client_signed_v1.json`. Also fixes a
+  latent bug where governance `withdraw_proposal`/`activate_proposal`'s
+  direct-sign path signed untagged bytes its verifier rejected.
+
 ### Added
 
 - Node logging. `openfiat-node` emits structured `tracing` output, filtered
