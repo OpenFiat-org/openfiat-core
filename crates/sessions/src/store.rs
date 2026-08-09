@@ -8,7 +8,6 @@ use crate::events::{
 use crate::protocol;
 use crate::record::{Session, SessionId};
 use openfiat_crypto::verify;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{EventEnvelope, PeerId};
@@ -135,7 +134,11 @@ impl<S: KvStore> SessionRegistry<S> {
         if session.wallet != signed.renew.wallet {
             return Err(SessionError::Unauthorized);
         }
-        let bytes = json::to_bytes(&signed.renew).map_err(|_| SessionError::MalformedSession)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SESSION_RENEW,
+            &signed.renew,
+        )
+        .map_err(|_| SessionError::MalformedSession)?;
         verify(&session.wallet_public_key, &bytes, &signed.signature)
             .map_err(|_| SessionError::InvalidSignature)?;
         if session.revoked {
@@ -159,7 +162,11 @@ impl<S: KvStore> SessionRegistry<S> {
         if session.wallet != signed.revoke.wallet {
             return Err(SessionError::Unauthorized);
         }
-        let bytes = json::to_bytes(&signed.revoke).map_err(|_| SessionError::MalformedSession)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SESSION_REVOKE,
+            &signed.revoke,
+        )
+        .map_err(|_| SessionError::MalformedSession)?;
         verify(&session.wallet_public_key, &bytes, &signed.signature)
             .map_err(|_| SessionError::InvalidSignature)?;
         if session.revoked {
@@ -179,7 +186,11 @@ impl<S: KvStore> SessionRegistry<S> {
         if session.wallet != signed.migrate.wallet {
             return Err(SessionError::Unauthorized);
         }
-        let bytes = json::to_bytes(&signed.migrate).map_err(|_| SessionError::MalformedSession)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SESSION_MIGRATE,
+            &signed.migrate,
+        )
+        .map_err(|_| SessionError::MalformedSession)?;
         verify(&session.wallet_public_key, &bytes, &signed.signature)
             .map_err(|_| SessionError::InvalidSignature)?;
         if session.revoked {

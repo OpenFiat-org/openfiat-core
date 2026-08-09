@@ -49,8 +49,11 @@ pub struct SignedSubscriptionUpdate {
 
 impl SignedSubscriptionUpdate {
     pub fn sign(update: SubscriptionUpdate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&update)
-            .expect("SubscriptionUpdate always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SUBSCRIPTION_UPDATE,
+            &update,
+        )
+        .expect("SubscriptionUpdate always serializes");
         Self {
             signature: keypair.sign(&bytes),
             update,
@@ -63,8 +66,11 @@ impl SignedSubscriptionUpdate {
         if expected != self.update.wallet {
             return Err(NotificationError::Unauthorized);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.update)
-            .map_err(|_| NotificationError::MalformedEvent)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::SUBSCRIPTION_UPDATE,
+            &self.update,
+        )
+        .map_err(|_| NotificationError::MalformedEvent)?;
         verify(&self.update.wallet_public_key, &bytes, &self.signature)
             .map_err(|_| NotificationError::InvalidSignature)
     }
@@ -90,8 +96,11 @@ pub struct SignedDeliveryReport {
 
 impl SignedDeliveryReport {
     pub fn sign(report: DeliveryReport, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&report)
-            .expect("DeliveryReport always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::DELIVERY_REPORT,
+            &report,
+        )
+        .expect("DeliveryReport always serializes");
         Self {
             signature: keypair.sign(&bytes),
             report,
@@ -104,8 +113,11 @@ impl SignedDeliveryReport {
         if expected != self.report.provider {
             return Err(NotificationError::Unauthorized);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.report)
-            .map_err(|_| NotificationError::MalformedEvent)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::DELIVERY_REPORT,
+            &self.report,
+        )
+        .map_err(|_| NotificationError::MalformedEvent)?;
         verify(&self.report.provider_public_key, &bytes, &self.signature)
             .map_err(|_| NotificationError::InvalidSignature)
     }
