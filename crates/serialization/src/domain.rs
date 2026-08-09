@@ -45,27 +45,33 @@ use crate::json::{self, EncodeError};
 /// Domain tags. One per signed payload type — never share a tag between two
 /// types, since sharing one recreates exactly the collision this prevents.
 ///
-/// # Which types are here, and which are not
+/// # Which types are here (as of F-01)
 ///
-/// These are the signed payloads that are constructed and verified entirely
-/// **inside this workspace** — by the node or the in-tree CLI, never by an SDK
-/// or the app. For those, the signing preimage is a private implementation
-/// detail this crate controls, so tagging them is a self-contained change that
-/// cannot desynchronise from an outside signer.
+/// This originally covered only the signed payloads constructed and verified
+/// entirely **inside this workspace** — by the node or the in-tree CLI, never
+/// by an SDK or the app — because tagging those was a self-contained change
+/// that could not desynchronise from an outside signer.
 ///
-/// The larger set of *client-signed* wire types — everything the SDKs
-/// (`openfiat-sdks`) or the app sign, which is most of the marketplace — is
-/// deliberately **absent**. Their preimage is a cross-repo contract: the Rust
-/// SDK, the TypeScript SDK, and the app each reconstruct it independently, and
-/// changing it here without changing it there in the same release would make
-/// every client-submitted event of that type fail verification. Rolling domain
-/// separation across those is a coordinated protocol change with a version
-/// bump, tracked separately — not something to do one repo at a time.
+/// F-01 (2026-08) extends this to the full set of *client-signed* wire
+/// types — everything the SDKs (`openfiat-sdks`) or the app sign, which is
+/// most of the marketplace. Their preimage is a cross-repo contract: the
+/// Rust SDK, the TypeScript SDK, and the app each reconstruct it
+/// independently, so the tag literals below are the frozen source of truth,
+/// and `tests/vectors/client_signed_v1.json` (checked by
+/// `tests/conformance_vectors.rs`) is the byte-for-byte proof that all four
+/// surfaces agree on the header. Landing the tag here is only step one —
+/// each node crate's own `Signed*::sign()`/`verify()` still has to switch to
+/// `preimage(tag::X, &payload)` (tracked per crate in the F-01 program) and
+/// the TS SDK / app need the equivalent header helper before the tag is
+/// actually load-bearing for that type.
 ///
-/// The structural guard in `tests/signed_payload_shapes.rs` protects the
-/// untagged types in the meantime: it fails the build the moment any two
-/// signed payloads share a field shape, which is the only condition under
-/// which a missing tag becomes exploitable.
+/// The structural guard in `tests/signed_payload_shapes.rs` protects every
+/// type that has not yet made that switch: it fails the build the moment any
+/// two signed payloads share a field shape, which is the only condition
+/// under which a missing tag becomes exploitable. It also enumerates every
+/// `Signed*` type known at F-01 time, so a newly added one that is not on
+/// that list — and therefore was never triaged for a tag — fails the build
+/// too.
 pub mod tag {
     pub const CLAIM_VERIFY: &str = "openfiat/identity/ClaimVerify/v1";
     pub const CLAIM_REVOKE: &str = "openfiat/identity/ClaimRevoke/v1";
@@ -74,6 +80,79 @@ pub mod tag {
     pub const MUTUAL_SETTLEMENT_AGREE: &str = "openfiat/disputes/MutualSettlementAgree/v1";
     pub const PAYMENT_METHOD_DEFINE: &str = "openfiat/taxonomy/PaymentMethodDefine/v1";
     pub const FEE_SETTLEMENT: &str = "openfiat/registry/FeeSettlement/v1";
+
+    // --- F-01: client-signed wire types (2026-08-08) ---------------------
+    // Every tag below is a cross-repo contract: the literal must be
+    // byte-identical to its counterpart in the TS SDK's `tags.ts` and the
+    // app's tag table. Do not rename one without renaming all three in the
+    // same release, and never reuse a literal for a different type.
+
+    // advertisements
+    pub const ADVERTISEMENT_CREATE: &str = "openfiat/advertisements/AdvertisementCreate/v1";
+    pub const ADVERTISEMENT_STATUS_SET: &str = "openfiat/advertisements/AdvertisementStatusSet/v1";
+    pub const ADVERTISEMENT_TERMS_UPDATE: &str =
+        "openfiat/advertisements/AdvertisementTermsUpdate/v1";
+    pub const ADVERTISEMENT_PRICE_UPDATE: &str =
+        "openfiat/advertisements/AdvertisementPriceUpdate/v1";
+
+    // reservations
+    pub const RESERVATION_REQUEST: &str = "openfiat/reservations/ReservationRequest/v1";
+    pub const RESERVATION_CANCEL: &str = "openfiat/reservations/ReservationCancel/v1";
+
+    // settlement
+    pub const SETTLEMENT_INITIATE: &str = "openfiat/settlement/SettlementInitiate/v1";
+    pub const PAYMENT_SUBMITTED: &str = "openfiat/settlement/PaymentSubmitted/v1";
+    pub const PAYMENT_REVERSED: &str = "openfiat/settlement/PaymentReversed/v1";
+    pub const SETTLEMENT_APPROVED: &str = "openfiat/settlement/SettlementApproved/v1";
+    pub const SETTLEMENT_REJECTED: &str = "openfiat/settlement/SettlementRejected/v1";
+    pub const SETTLEMENT_CANCELLED: &str = "openfiat/settlement/SettlementCancelled/v1";
+
+    // registry (FeeSettlement above is already tagged)
+    pub const REGISTRATION: &str = "openfiat/registry/Registration/v1";
+    pub const HEALTH_UPDATE: &str = "openfiat/registry/HealthUpdate/v1";
+    pub const WITHDRAWAL: &str = "openfiat/registry/Withdrawal/v1";
+
+    // sessions
+    pub const SESSION_CREATE: &str = "openfiat/sessions/SessionCreate/v1";
+    pub const SESSION_RENEW: &str = "openfiat/sessions/SessionRenew/v1";
+    pub const SESSION_REVOKE: &str = "openfiat/sessions/SessionRevoke/v1";
+    pub const SESSION_MIGRATE: &str = "openfiat/sessions/SessionMigrate/v1";
+
+    // reviews
+    pub const REVIEW_PUBLISH: &str = "openfiat/reviews/ReviewPublish/v1";
+
+    // risk
+    pub const RISK_PUBLISH: &str = "openfiat/risk/RiskPublish/v1";
+
+    // oracles
+    pub const ORACLE_PUBLISH: &str = "openfiat/oracles/OraclePublish/v1";
+
+    // snapshot (node-signed today, but tagged too — see the module doc)
+    pub const SNAPSHOT_ANNOUNCE: &str = "openfiat/snapshot/SnapshotAnnounce/v1";
+
+    // disputes (MutualSettlementAgree above is already tagged)
+    pub const DISPUTE_OPEN: &str = "openfiat/disputes/DisputeOpen/v1";
+    pub const ARBITRATOR_JOIN: &str = "openfiat/disputes/ArbitratorJoin/v1";
+    pub const DISPUTE_VOTE_COMMIT: &str = "openfiat/disputes/VoteCommit/v1";
+    pub const DISPUTE_VOTE_REVEAL: &str = "openfiat/disputes/VoteReveal/v1";
+
+    // governance (ProposalWithdraw/ProposalActivate above are already tagged)
+    pub const PROPOSAL_CREATE: &str = "openfiat/governance/ProposalCreate/v1";
+    pub const VOTE_CAST: &str = "openfiat/governance/VoteCast/v1";
+
+    // identity (ClaimVerify/ClaimRevoke above are already tagged)
+    pub const CLAIM_PUBLISH: &str = "openfiat/identity/ClaimPublish/v1";
+
+    // content (evidence attachments — the design doc's "AttachmentPublish")
+    pub const ATTACHMENT_PUBLISH: &str = "openfiat/content/AttachmentPublish/v1";
+
+    // notifications
+    pub const SUBSCRIPTION_UPDATE: &str = "openfiat/notifications/SubscriptionUpdate/v1";
+    pub const DELIVERY_REPORT: &str = "openfiat/notifications/DeliveryReport/v1";
+
+    // tradechannel
+    pub const TRADE_CHANNEL_KEY_GRANT: &str = "openfiat/tradechannel/TradeChannelKeyGrant/v1";
+    pub const TRADE_CHANNEL_ENTRY_POST: &str = "openfiat/tradechannel/TradeChannelEntryPost/v1";
 }
 
 /// The bytes to sign for `payload` under `tag`.
@@ -83,12 +162,24 @@ pub mod tag {
 /// not decoration.
 pub fn preimage<T: Serialize>(tag: &str, payload: &T) -> Result<Vec<u8>, EncodeError> {
     let body = json::to_bytes(payload)?;
+    Ok(preimage_raw(tag, &body))
+}
+
+/// The payload-agnostic form of [`preimage`]: builds the same
+/// `len(tag):u32be ‖ tag ‖ body` header around an already-encoded body.
+///
+/// This is what makes the header a testable, language-independent contract:
+/// a conformance vector can supply `body` as opaque bytes (e.g. a JSON
+/// string produced by a *different* language's encoder) and assert the
+/// resulting preimage matches, without this crate ever deserializing or
+/// caring what `body` contains.
+pub fn preimage_raw(tag: &str, body: &[u8]) -> Vec<u8> {
     let tag_bytes = tag.as_bytes();
     let mut out = Vec::with_capacity(4 + tag_bytes.len() + body.len());
     out.extend_from_slice(&(tag_bytes.len() as u32).to_be_bytes());
     out.extend_from_slice(tag_bytes);
-    out.extend_from_slice(&body);
-    Ok(out)
+    out.extend_from_slice(body);
+    out
 }
 
 #[cfg(test)]

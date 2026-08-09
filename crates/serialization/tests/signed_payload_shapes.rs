@@ -1,4 +1,6 @@
-//! Guards against a *new* signed payload type colliding with an existing one.
+//! Guards against a *new* signed payload type colliding with an existing one,
+//! and against a *new* `Signed*` type being added without ever being triaged
+//! for a domain tag.
 //!
 //! # Why a source-scanning test
 //!
@@ -16,15 +18,45 @@
 //! the same way. Both pairs now sign domain-separated preimages
 //! (`openfiat_serialization::domain`).
 //!
-//! Those two fixes protect the pairs that exist today. This protects the ones
-//! that do not exist yet: the collision is a property of *shape*, so it
-//! reappears the moment somebody adds a third `{id, wallet, timestamp}`
-//! payload — and it reappears silently, because nothing fails to compile and
-//! no signature stops verifying. A unit test in either crate could not see
-//! that, since the two halves may live in different crates. Reading the
-//! sources is the only vantage point that can.
+//! Those two fixes protect the pairs that exist today. The shape check below
+//! protects the ones that do not exist yet: the collision is a property of
+//! *shape*, so it reappears the moment somebody adds a third
+//! `{id, wallet, timestamp}` payload — and it reappears silently, because
+//! nothing fails to compile and no signature stops verifying. A unit test in
+//! either crate could not see that, since the two halves may live in
+//! different crates. Reading the sources is the only vantage point that can.
 //!
-//! # What it flags
+//! # F-01: why this got a second guard, not a replacement
+//!
+//! As of F-01 (2026-08), `openfiat_serialization::domain::tag` names a
+//! `/v1` tag for every `Signed*` type in the workspace (see `domain.rs`'s
+//! module doc) — but landing a tag *constant* and actually routing a type's
+//! `sign()`/`verify()` through it are two different commits, staged across
+//! several tasks so each node crate's own tests move in lockstep with its
+//! own migration. That means, mid-program, most `Signed*` types still sign
+//! over plain `json::to_bytes`, exactly as before — so the shape guard below
+//! is left doing real, unweakened work rather than being satisfied
+//! vacuously.
+//!
+//! Statically proving "every `Signed*` type's `sign()`/`verify()` calls
+//! `domain::preimage`" from *this* crate is not possible: `serialization` is
+//! a dependency of every node crate, not the other way around, so it cannot
+//! see their source at compile time, and a source-scanning integration test
+//! only sees files under this crate's own directory tree by construction of
+//! `CARGO_MANIFEST_DIR`. This test instead reads the whole workspace (as the
+//! shape check below already did) and adds a second, complementary check:
+//! [`CLIENT_SIGNED_TYPES`] is the checklist of every `Signed*` wrapper known
+//! at F-01 time, paired with the `tag::` constant a reviewer gave it. A
+//! `const _: &str = domain::tag::X;` reference for each entry makes a
+//! renamed-or-removed constant a compile error, and
+//! `every_signed_type_is_on_the_f01_checklist` fails the build if the
+//! workspace scan finds a `Signed*` type that is not in the checklist —
+//! catching a new type landing without ever being triaged for a tag. It does
+//! not (and structurally cannot, from here) prove that a *listed* type has
+//! actually finished moving its `sign`/`verify` over; that is what each
+//! per-crate migration task's own round-trip tests are for.
+//!
+//! # What the shape check flags
 //!
 //! Any two payload types reached by a `Signed*` wrapper that share a field
 //! shape, unless both already sign under distinct domain tags. It is
@@ -35,6 +67,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use openfiat_serialization::domain::tag;
+
 /// Payload structs that legitimately share a shape *and* already sign under
 /// distinct domain tags, so the confusion is closed. Anything here must have
 /// a `tag::` constant in `domain.rs` and use it on both sign and verify.
@@ -43,6 +77,69 @@ const DOMAIN_SEPARATED: &[&str] = &[
     "ClaimRevoke",
     "ProposalWithdraw",
     "ProposalActivate",
+];
+
+/// Every `Signed*` wrapper type known to exist in the workspace as of F-01,
+/// paired with the `domain::tag` constant a reviewer assigned it. A new
+/// `Signed*` type that is not added here (with a tag, or a documented reason
+/// it needs none) fails [`every_signed_type_is_on_the_f01_checklist`] —
+/// this is the "did anyone look at this" gate for domain separation.
+///
+/// The seven node-internal types tagged before F-01, plus the client-signed
+/// types F-01 added, are all listed — this is meant to be the *complete*
+/// set, not just the new ones, so the checklist stays a single source of
+/// truth instead of splitting across two lists that can drift apart.
+const CLIENT_SIGNED_TYPES: &[(&str, &str)] = &[
+    ("SignedClaimVerify", tag::CLAIM_VERIFY),
+    ("SignedClaimRevoke", tag::CLAIM_REVOKE),
+    ("SignedProposalWithdraw", tag::PROPOSAL_WITHDRAW),
+    ("SignedProposalActivate", tag::PROPOSAL_ACTIVATE),
+    ("SignedMutualSettlementAgree", tag::MUTUAL_SETTLEMENT_AGREE),
+    ("SignedPaymentMethodDefine", tag::PAYMENT_METHOD_DEFINE),
+    ("SignedFeeSettlement", tag::FEE_SETTLEMENT),
+    ("SignedAdvertisementCreate", tag::ADVERTISEMENT_CREATE),
+    ("SignedAdvertisementStatusSet", tag::ADVERTISEMENT_STATUS_SET),
+    ("SignedAdvertisementTermsUpdate", tag::ADVERTISEMENT_TERMS_UPDATE),
+    ("SignedAdvertisementPriceUpdate", tag::ADVERTISEMENT_PRICE_UPDATE),
+    ("SignedReservationRequest", tag::RESERVATION_REQUEST),
+    ("SignedReservationCancel", tag::RESERVATION_CANCEL),
+    ("SignedSettlementInitiate", tag::SETTLEMENT_INITIATE),
+    ("SignedPaymentSubmitted", tag::PAYMENT_SUBMITTED),
+    ("SignedPaymentReversed", tag::PAYMENT_REVERSED),
+    ("SignedSettlementApproved", tag::SETTLEMENT_APPROVED),
+    ("SignedSettlementRejected", tag::SETTLEMENT_REJECTED),
+    ("SignedSettlementCancelled", tag::SETTLEMENT_CANCELLED),
+    ("SignedRegistration", tag::REGISTRATION),
+    ("SignedHealthUpdate", tag::HEALTH_UPDATE),
+    ("SignedWithdrawal", tag::WITHDRAWAL),
+    ("SignedSessionCreate", tag::SESSION_CREATE),
+    ("SignedSessionRenew", tag::SESSION_RENEW),
+    ("SignedSessionRevoke", tag::SESSION_REVOKE),
+    ("SignedSessionMigrate", tag::SESSION_MIGRATE),
+    ("SignedReviewPublish", tag::REVIEW_PUBLISH),
+    ("SignedRiskPublish", tag::RISK_PUBLISH),
+    ("SignedOraclePublish", tag::ORACLE_PUBLISH),
+    ("SignedSnapshotAnnounce", tag::SNAPSHOT_ANNOUNCE),
+    ("SignedDisputeOpen", tag::DISPUTE_OPEN),
+    ("SignedArbitratorJoin", tag::ARBITRATOR_JOIN),
+    ("SignedVoteCommit", tag::DISPUTE_VOTE_COMMIT),
+    ("SignedVoteReveal", tag::DISPUTE_VOTE_REVEAL),
+    ("SignedProposalCreate", tag::PROPOSAL_CREATE),
+    ("SignedVoteCast", tag::VOTE_CAST),
+    ("SignedClaimPublish", tag::CLAIM_PUBLISH),
+    ("SignedAttachmentPublish", tag::ATTACHMENT_PUBLISH),
+    ("SignedSubscriptionUpdate", tag::SUBSCRIPTION_UPDATE),
+    ("SignedDeliveryReport", tag::DELIVERY_REPORT),
+    ("SignedTradeChannelKeyGrant", tag::TRADE_CHANNEL_KEY_GRANT),
+    ("SignedTradeChannelEntryPost", tag::TRADE_CHANNEL_ENTRY_POST),
+    // Deliberately NOT here, and out of scope for F-01:
+    // - `discovery::SignedAdvertisement` (peer-gossip identity, signs over
+    //   `wire::to_bytes` rather than JSON — a different contract entirely).
+    // - `wallet::SignedRequest<T>` (a generic, not-yet-wired future RPC-auth
+    //   envelope; its `{payload, wallet, nonce, timestamp}` shape already
+    //   includes a nonce, which is not a bare marketplace event payload).
+    // A reviewer adding either to real traffic must re-evaluate whether it
+    // belongs on this list.
 ];
 
 /// Field shape of a struct: the ordered `(name, type)` pairs. Order matters
@@ -191,5 +288,93 @@ fn no_two_signed_payload_types_share_a_shape() {
          openfiat_serialization::domain and use it on both sign and verify, then add \
          them to DOMAIN_SEPARATED here:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// Every identifier in `text` that starts with `Signed`, is a distinct word
+/// (not a substring of a longer identifier), and is immediately followed —
+/// skipping whitespace — by an opening brace. This matches both an
+/// ordinary `pub struct` definition and this workspace's one
+/// macro-generated case (`settlement_action!` in
+/// `crates/settlement/src/events.rs`), whose struct body is still written
+/// out literally as a macro argument, name-then-brace exactly like a plain
+/// struct definition. It also matches a struct literal expression
+/// constructing an already-known type, which just means that name gets
+/// found more than once — harmless, since the result is deduplicated.
+///
+/// (Note for anyone editing this comment: avoid writing a `Signed`-prefixed
+/// name directly followed by a brace here, or this very doc comment will
+/// trip the scan when this file is itself included in the workspace walk.)
+fn signed_type_names_followed_by_brace(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut names = Vec::new();
+    for (index, _) in text.match_indices("Signed") {
+        // Require a word boundary before the match, so `LastSigned` or
+        // `unsigned` do not count as a name starting with `Signed`.
+        if index > 0 {
+            let prev = bytes[index - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                continue;
+            }
+        }
+        let rest = &text[index..];
+        let ident_len = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let name = &rest[..ident_len];
+        // `Signed` alone (e.g. from `Signed*` in a doc comment, which is
+        // not a real identifier at all) never names a type.
+        if name == "Signed" {
+            continue;
+        }
+        let after = rest[ident_len..].trim_start();
+        if after.starts_with('{') {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+#[test]
+fn every_signed_type_is_on_the_f01_checklist() {
+    // Compile-time half of the guard: if any tag constant referenced by
+    // `CLIENT_SIGNED_TYPES` were renamed or removed, this file would fail to
+    // compile before the assertion below ever ran.
+    let _: Vec<(&str, &str)> = CLIENT_SIGNED_TYPES.to_vec();
+
+    let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/serialization has a parent");
+    let sources = crate_sources(crates_dir);
+
+    let checklist: std::collections::HashSet<&str> =
+        CLIENT_SIGNED_TYPES.iter().map(|(name, _)| *name).collect();
+
+    // Types this program has deliberately decided are out of scope for a
+    // client-signed `/v1` tag — see the comment at the end of
+    // `CLIENT_SIGNED_TYPES`. Anything else found on the wire but missing
+    // from both lists is what this test exists to catch.
+    let out_of_scope: std::collections::HashSet<&str> =
+        ["SignedAdvertisement", "SignedRequest"].into_iter().collect();
+
+    let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (_, text) in &sources {
+        for name in signed_type_names_followed_by_brace(text) {
+            found.insert(name);
+        }
+    }
+
+    let mut untriaged: Vec<&String> = found
+        .iter()
+        .filter(|name| !checklist.contains(name.as_str()) && !out_of_scope.contains(name.as_str()))
+        .collect();
+    untriaged.sort();
+
+    assert!(
+        untriaged.is_empty(),
+        "found `Signed*` type(s) not on the F-01 checklist and not marked out of scope: \
+         {untriaged:?}. Either give it a domain tag in openfiat_serialization::domain::tag \
+         and add it to CLIENT_SIGNED_TYPES in this file, or add it to `out_of_scope` here \
+         with a comment explaining why it needs no tag."
     );
 }
