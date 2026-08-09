@@ -152,6 +152,16 @@ error_registry! {
         // Not retryable: the duplicate holds the key until a human takes
         // it away.
         IdentityInUseElsewhere = 2006, "IDENTITY_IN_USE_ELSEWHERE", false;
+        // A wallet already holds `openfiat_identity::store::
+        // MAX_CLAIMS_PER_WALLET` live claims and this publish is not a
+        // SUPERSEDE of one of them. Its own code rather than
+        // `RateLimitExceeded`, for the same reason `PaymentMethodLimitReached`
+        // (3006) got its own: a rate limit is a speed, and every client
+        // that handles one handles it by waiting and trying again. This
+        // cap is a count. Nothing frees a slot but revoking, letting a
+        // claim expire, superseding one, or a prune sweep reclaiming a
+        // dead one — a caller told to back off will back off forever.
+        ClaimLimitReached = 2007, "CLAIM_LIMIT_REACHED", false;
     }
     range "Advertisement (3000-3999)" {
         AdvertisementNotFound = 3000, "ADVERTISEMENT_NOT_FOUND", false;

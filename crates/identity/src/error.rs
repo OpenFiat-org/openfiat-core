@@ -17,7 +17,8 @@ pub enum IdentityError {
     InvalidClaimState,
     /// §13 anti-spam: the publishing wallet already holds
     /// `store::MAX_CLAIMS_PER_WALLET` live claims and this publish is not a
-    /// SUPERSEDE, so it would add rather than replace one.
+    /// genuine SUPERSEDE of one of them, so it would add rather than
+    /// replace one.
     TooManyClaims,
 }
 
@@ -30,7 +31,15 @@ impl IdentityError {
             Self::MalformedClaim => ErrorCode::DeserializationError,
             Self::ClaimNotFound => ErrorCode::IdentityNotFound,
             Self::InvalidClaimState => ErrorCode::InvalidIdentityClaim,
-            Self::TooManyClaims => ErrorCode::RateLimitExceeded,
+            // Not `RateLimitExceeded`: a rate limit is a speed, and every
+            // client that handles one handles it by waiting and retrying.
+            // `MAX_CLAIMS_PER_WALLET` is a count that does not decay on its
+            // own — nothing frees a slot but revoking, expiry, a genuine
+            // SUPERSEDE, or a prune sweep reclaiming a dead claim — so a
+            // caller told to back off would back off forever. Same
+            // reasoning `openfiat_taxonomy::TaxonomyError::TooManyMethods`
+            // already applied to `PaymentMethodLimitReached`.
+            Self::TooManyClaims => ErrorCode::ClaimLimitReached,
         }
     }
 }

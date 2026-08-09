@@ -86,21 +86,35 @@ impl<S: KvStore> IdentityRegistry<S> {
         crate::current_encryption_key(&self.find_by_wallet(wallet), now)
     }
 
-    /// How many of `wallet`'s claims are live right now: not revoked, not
-    /// expired as of `now` (`Claim::is_valid`), and not superseded by
+    /// The ids of `wallet`'s claims that are live right now: not revoked,
+    /// not expired as of `now` (`Claim::is_valid`), and not superseded by
     /// another of the wallet's claims. Mirrors the "in force" logic
     /// `crate::current_encryption_key` applies per claim type, generalised
-    /// across all of them — this is the count the per-wallet cap bounds.
-    fn live_claim_count(&self, wallet: &PeerId, now: Timestamp) -> usize {
+    /// across all of them.
+    ///
+    /// Doubles as the answer to "is `id` a claim this wallet can
+    /// legitimately supersede right now" — `apply_publish` uses membership
+    /// in this set both to size the per-wallet cap and to decide whether a
+    /// `supersedes` target is genuine (this wallet's own, currently live)
+    /// rather than dangling, foreign, or already dead. A claim id that
+    /// fails that membership test was never a replacement in the first
+    /// place, so treating it as an exemption would let a `supersedes`
+    /// field alone buy a wallet past the cap.
+    fn live_claim_ids(
+        &self,
+        wallet: &PeerId,
+        now: Timestamp,
+    ) -> std::collections::HashSet<ClaimId> {
         let claims = self.find_by_wallet(wallet);
-        let superseded: std::collections::HashSet<&ClaimId> = claims
+        let superseded: std::collections::HashSet<ClaimId> = claims
             .iter()
-            .filter_map(|claim| claim.supersedes.as_ref())
+            .filter_map(|claim| claim.supersedes.clone())
             .collect();
         claims
-            .iter()
+            .into_iter()
             .filter(|claim| claim.is_valid(now) && !superseded.contains(&claim.id))
-            .count()
+            .map(|claim| claim.id)
+            .collect()
     }
 
     pub fn apply_publish(&self, signed: SignedClaimPublish) -> Result<ClaimId, IdentityError> {
@@ -115,15 +129,35 @@ impl<S: KvStore> IdentityRegistry<S> {
         if !signed.publish.claim_type.accepts(&signed.publish.value) {
             return Err(IdentityError::MalformedClaim);
         }
-        // §13 anti-spam: only a genuinely new claim can push a wallet over
-        // its cap. A SUPERSEDE replaces the claim it names in the live
-        // count computed above — net-zero — so gating it here would
-        // eventually make key rotation itself impossible for a wallet
-        // sitting at the cap.
-        if signed.publish.supersedes.is_none()
-            && self.live_claim_count(&signed.publish.wallet, signed.publish.timestamp)
-                >= MAX_CLAIMS_PER_WALLET
-        {
+        // §13 anti-spam. Two things a naive version of this check gets
+        // wrong, both exploitable at zero cost by an ordinary wallet:
+        //
+        // 1. Liveness must be judged against this node's own clock, not
+        //    `publish.timestamp`. That field is signed by the publisher,
+        //    not by anyone else, so a wallet can claim any timestamp it
+        //    likes — including one far enough in the future to make an
+        //    otherwise-live, `expires_at`-bearing claim of its own look
+        //    expired to the check below, undercounting its own live set
+        //    and buying room under the cap that was never actually free.
+        //    `publish.timestamp` is still what gets stored as the claim's
+        //    `created_at`/`updated_at` below; only this liveness check
+        //    must run on trusted time.
+        // 2. `supersedes.is_some()` is not by itself proof of a
+        //    replacement. Only a target this same wallet actually holds
+        //    live right now is one — a `supersedes` naming a claim that
+        //    was never published, belongs to another wallet, or is
+        //    already dead (revoked, expired, or itself superseded) frees
+        //    no slot, so exempting it from the cap would let a wallet
+        //    publish unboundedly by wearing a `supersedes` field on every
+        //    claim.
+        let now = Timestamp::now();
+        let live = self.live_claim_ids(&signed.publish.wallet, now);
+        let is_genuine_supersede = signed
+            .publish
+            .supersedes
+            .as_ref()
+            .is_some_and(|target| live.contains(target));
+        if !is_genuine_supersede && live.len() >= MAX_CLAIMS_PER_WALLET {
             return Err(IdentityError::TooManyClaims);
         }
         let publish = signed.publish;
@@ -724,7 +758,10 @@ mod tests {
                 .unwrap();
         }
         let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
-        assert_eq!(registry.find_by_wallet(&wallet).len(), MAX_CLAIMS_PER_WALLET);
+        assert_eq!(
+            registry.find_by_wallet(&wallet).len(),
+            MAX_CLAIMS_PER_WALLET
+        );
 
         let result = registry.apply_publish(SignedClaimPublish::sign(
             publish_claim(&keypair, "claim-overflow", false),
@@ -787,7 +824,10 @@ mod tests {
         // `a` is at the cap; `b`, who has published nothing, is unaffected.
         assert!(
             registry
-                .apply_publish(SignedClaimPublish::sign(publish_claim(&b, "b-1", false), &b))
+                .apply_publish(SignedClaimPublish::sign(
+                    publish_claim(&b, "b-1", false),
+                    &b
+                ))
                 .is_ok()
         );
 
@@ -919,6 +959,156 @@ mod tests {
                 .apply_publish(SignedClaimPublish::sign(refill, &keypair))
                 .is_ok(),
             "revoking (and pruning) one of the cap's claims frees a slot"
+        );
+    }
+
+    /// Regression guard: `supersedes.is_some()` alone must never exempt a
+    /// publish from the cap. Only a target this same wallet actually holds
+    /// live right now is a genuine replacement; a claim id that was never
+    /// published, belongs to someone else, or was already dead frees no
+    /// slot, and a version of the check that took the field at face value
+    /// let a wallet at the cap publish without bound by wearing a
+    /// `supersedes` on every claim.
+    #[test]
+    fn a_supersede_naming_a_fake_foreign_or_already_dead_claim_does_not_bypass_the_cap() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
+
+        // A claim that is already dead before the wallet ever reaches the
+        // cap — not one of the `MAX_CLAIMS_PER_WALLET` live claims below.
+        let dead_id = registry
+            .apply_publish(SignedClaimPublish::sign(
+                publish_claim(&keypair, "already-dead", false),
+                &keypair,
+            ))
+            .unwrap();
+        registry
+            .apply_revoke(SignedClaimRevoke::sign(
+                ClaimRevoke {
+                    claim_id: dead_id.clone(),
+                    wallet: wallet.clone(),
+                    timestamp: Timestamp::now(),
+                },
+                &keypair,
+            ))
+            .unwrap();
+
+        // Fill the wallet to the live cap with genuinely new claims.
+        for i in 0..MAX_CLAIMS_PER_WALLET {
+            registry
+                .apply_publish(SignedClaimPublish::sign(
+                    publish_claim(&keypair, &format!("claim-{i}"), false),
+                    &keypair,
+                ))
+                .unwrap();
+        }
+
+        // Repeated supersedes naming claim ids that were never published:
+        // each must be rejected, not silently accumulate live claims.
+        for n in 0..5 {
+            let mut fake_target = publish_claim(&keypair, &format!("bypass-fake-{n}"), false);
+            fake_target.supersedes = Some(ClaimId::new(format!("never-published-{n}")));
+            assert_eq!(
+                registry.apply_publish(SignedClaimPublish::sign(fake_target, &keypair)),
+                Err(IdentityError::TooManyClaims),
+                "a supersede naming a claim that was never published must not exempt the cap"
+            );
+        }
+
+        // A supersede naming a claim that belongs to a different wallet.
+        let other = Keypair::generate();
+        let other_claim_id = registry
+            .apply_publish(SignedClaimPublish::sign(
+                publish_claim(&other, "other-wallets-claim", false),
+                &other,
+            ))
+            .unwrap();
+        let mut foreign_target = publish_claim(&keypair, "bypass-foreign", false);
+        foreign_target.supersedes = Some(other_claim_id);
+        assert_eq!(
+            registry.apply_publish(SignedClaimPublish::sign(foreign_target, &keypair)),
+            Err(IdentityError::TooManyClaims),
+            "a supersede naming another wallet's claim must not exempt the cap"
+        );
+
+        // A supersede naming this wallet's own claim, but one that was
+        // already dead before the wallet ever reached the cap — it frees
+        // nothing now.
+        let mut dead_target = publish_claim(&keypair, "bypass-dead", false);
+        dead_target.supersedes = Some(dead_id);
+        assert_eq!(
+            registry.apply_publish(SignedClaimPublish::sign(dead_target, &keypair)),
+            Err(IdentityError::TooManyClaims),
+            "a supersede naming an already-dead claim must not exempt the cap"
+        );
+
+        // None of the rejected publishes above left a trace.
+        assert_eq!(
+            registry.find_by_wallet(&wallet).len(),
+            MAX_CLAIMS_PER_WALLET + 1, // the live cap, plus the pre-revoked claim
+            "every rejected publish above must have left no trace"
+        );
+
+        // A genuine supersede of one of the wallet's own live claims still
+        // works at the cap — the fix must not have broken the exemption it
+        // is supposed to preserve.
+        let mut real_supersede = publish_claim(&keypair, "bypass-legit", false);
+        real_supersede.supersedes = Some(ClaimId::new("claim-0"));
+        assert!(
+            registry
+                .apply_publish(SignedClaimPublish::sign(real_supersede, &keypair))
+                .is_ok(),
+            "a genuine supersede of a live own claim must still be exempt"
+        );
+    }
+
+    /// Regression guard: the cap must be decided on this node's own clock,
+    /// never on the publisher-supplied `publish.timestamp`. A wallet
+    /// holding an `expires_at`-bearing claim that is genuinely still valid
+    /// could otherwise publish a new claim self-reporting a far-future
+    /// timestamp, making that still-live claim look expired to the cap
+    /// check and undercounting its own live set.
+    #[test]
+    fn a_forged_future_timestamp_does_not_bypass_the_cap() {
+        let registry = IdentityRegistry::new(MemoryStore::new());
+        let keypair = Keypair::generate();
+        let wallet = peer_id_from_public_key(&keypair.public_key()).unwrap();
+        let year_ms = 365 * 24 * 60 * 60 * 1000;
+
+        // A claim that is genuinely still valid under the real clock.
+        let mut expiring = publish_claim(&keypair, "expiring-claim", false);
+        expiring.expires_at = Some(Timestamp::from_millis(
+            Timestamp::now().as_millis() + year_ms,
+        ));
+        registry
+            .apply_publish(SignedClaimPublish::sign(expiring, &keypair))
+            .unwrap();
+
+        // Fill the rest of the cap with ordinary claims.
+        for i in 0..MAX_CLAIMS_PER_WALLET - 1 {
+            registry
+                .apply_publish(SignedClaimPublish::sign(
+                    publish_claim(&keypair, &format!("claim-{i}"), false),
+                    &keypair,
+                ))
+                .unwrap();
+        }
+        assert_eq!(
+            registry.find_by_wallet(&wallet).len(),
+            MAX_CLAIMS_PER_WALLET
+        );
+
+        // A genuinely new claim, self-reporting a timestamp a century in
+        // the future. If the cap trusted `publish.timestamp`,
+        // "expiring-claim" would read as expired and this would fit under
+        // the cap; it must not.
+        let mut forged = publish_claim(&keypair, "forged-future", false);
+        forged.timestamp = Timestamp::from_millis(Timestamp::now().as_millis() + 100 * year_ms);
+        assert_eq!(
+            registry.apply_publish(SignedClaimPublish::sign(forged, &keypair)),
+            Err(IdentityError::TooManyClaims),
+            "the cap must be judged on this node's clock, not the publisher's self-reported timestamp"
         );
     }
 }
