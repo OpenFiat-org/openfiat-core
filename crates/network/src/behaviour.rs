@@ -18,6 +18,7 @@
 
 use crate::envelope::{EnvelopeCodec, PROTOCOL};
 use crate::heartbeat;
+use libp2p::connection_limits::{self, ConnectionLimits};
 use libp2p::kad::{self, store::MemoryStore};
 use libp2p::request_response::ProtocolSupport;
 use libp2p::swarm::NetworkBehaviour;
@@ -26,6 +27,19 @@ use std::iter;
 
 /// The user-agent string OpenFiat nodes identify themselves with.
 pub const AGENT_VERSION: &str = concat!("openfiat/", env!("CARGO_PKG_VERSION"));
+
+/// Ceiling on total established connections (inbound + outbound), across
+/// all peers. Bounds the file-descriptor and memory cost an unbounded
+/// swarm would otherwise let any number of peers impose (OFNP dishonest-
+/// node analysis §4).
+pub const NETWORK_MAX_ESTABLISHED: u32 = 512;
+
+/// Ceiling on established *incoming* connections specifically — the
+/// subset a remote party can grow just by dialing us, without this node
+/// choosing to dial out. Kept well under [`NETWORK_MAX_ESTABLISHED`] so
+/// outbound connections this node initiates (to peers it has chosen to
+/// trust more, e.g. via discovery) always have room.
+pub const NETWORK_MAX_ESTABLISHED_INCOMING: u32 = 256;
 
 #[derive(NetworkBehaviour)]
 pub struct OpenFiatBehaviour {
@@ -44,6 +58,12 @@ pub struct OpenFiatBehaviour {
     /// calls only when its operator has not declined — a behaviour that
     /// exists is not a node that has announced itself.
     pub content_routing: kad::Behaviour<MemoryStore>,
+    /// Caps total and incoming connection counts so an unbounded number
+    /// of peers cannot exhaust this node's file descriptors or memory
+    /// simply by dialing in (OFNP dishonest-node analysis §4). Enforced
+    /// by libp2p itself — this behaviour has no events worth handling,
+    /// it only refuses connections past the configured limits.
+    pub connection_limits: connection_limits::Behaviour,
 }
 
 impl OpenFiatBehaviour {
@@ -65,12 +85,39 @@ impl OpenFiatBehaviour {
             request_response::Config::default(),
         );
 
+        let connection_limits = connection_limits::Behaviour::new(
+            ConnectionLimits::default()
+                .with_max_established(Some(NETWORK_MAX_ESTABLISHED))
+                .with_max_established_incoming(Some(NETWORK_MAX_ESTABLISHED_INCOMING)),
+        );
+
         Self {
             content_routing: crate::content_routing::behaviour(local_peer_id),
             identify,
             ping,
             envelope,
             content: libp2p_stream::Behaviour::new(),
+            connection_limits,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The behaviour must construct with the connection limits wired in —
+    /// a compile-time and runtime smoke check that `connection_limits`
+    /// is part of the derived swarm behaviour. Enforcement itself (a
+    /// dial past the cap being refused) is libp2p's own responsibility
+    /// and is covered by its upstream test suite.
+    #[test]
+    fn constructs_with_connection_limits() {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        let behaviour = OpenFiatBehaviour::new(keypair.public());
+        // Field exists and is the expected type; this is what makes the
+        // assertion meaningful rather than tautological — it would fail
+        // to compile if `connection_limits` were removed from the struct.
+        let _: &connection_limits::Behaviour = &behaviour.connection_limits;
     }
 }
