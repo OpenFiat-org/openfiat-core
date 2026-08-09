@@ -2,9 +2,10 @@
  * Genesis verification script (Phase 2 exit criteria).
  *
  * Reads back on-chain state for a cluster already processed by genesis.ts
- * and asserts: mint supply matches the fixed 1B, decimals = 9, mint and
- * freeze authority are both revoked (null), and the sum of all 7 bucket
- * balances equals the total supply.
+ * and asserts: mint supply matches the fixed 100B, decimals = 6, mint and
+ * freeze authority are both revoked (null), each bucket's balance matches
+ * its bps share of total supply, and the sum of all 7 bucket balances
+ * equals the total supply.
  *
  * Usage:
  *   npx ts-node scripts/verify-genesis.ts --cluster localnet
@@ -14,18 +15,26 @@ import * as path from "path";
 import { Connection, PublicKey, clusterApiUrl } from "@solana/web3.js";
 import { TOKEN_2022_PROGRAM_ID, getMint, getAccount } from "@solana/spl-token";
 
-const DECIMALS = 9;
-const TOTAL_SUPPLY_UNITS = 1_000_000_000n * 10n ** BigInt(DECIMALS);
+const DECIMALS = 6; // OFS-4100 §1 (re-baselined 2026-08-09; was 9)
+const TOTAL_SUPPLY = 100_000_000_000n; // OFS-4100 §1 (re-baselined 2026-08-09; was 1_000_000_000n)
+const TOTAL_SUPPLY_UNITS = TOTAL_SUPPLY * 10n ** BigInt(DECIMALS);
 
-const BUCKET_NAMES = [
-  "community-presale",
-  "allenhark-treasury",
-  "ecosystem-treasury",
-  "infrastructure-bootstrap",
-  "community-incentives",
-  "liquidity-programs",
-  "strategic-reserve",
+// Mirrors genesis.ts's BUCKETS bps exactly — must stay in lockstep so this
+// script verifies what genesis.ts actually distributed, not a re-derivation
+// that could silently drift from it.
+const BUCKETS: Array<{ name: string; bps: number }> = [
+  { name: "community-presale", bps: 2000 },
+  { name: "allenhark-treasury", bps: 1400 },
+  { name: "ecosystem-treasury", bps: 1700 },
+  { name: "infrastructure-bootstrap", bps: 1200 },
+  { name: "community-incentives", bps: 1700 },
+  { name: "liquidity-programs", bps: 1200 },
+  { name: "strategic-reserve", bps: 800 },
 ];
+
+function bucketAmount(bps: number): bigint {
+  return (TOTAL_SUPPLY * BigInt(bps)) / 10_000n;
+}
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -68,15 +77,15 @@ async function main() {
   assert(mintInfo.decimals === DECIMALS, `decimals === ${DECIMALS}`);
   assert(
     mintInfo.supply === TOTAL_SUPPLY_UNITS,
-    `total supply === 1,000,000,000 OPEN (${TOTAL_SUPPLY_UNITS} base units)`,
+    `total supply === 100,000,000,000 OPEN (${TOTAL_SUPPLY_UNITS} base units)`,
   );
   assert(mintInfo.mintAuthority === null, "mint authority is permanently revoked (null)");
   assert(mintInfo.freezeAuthority === null, "freeze authority is permanently revoked (null)");
 
   let bucketSum = 0n;
   const bucketAddrs: string[] = [];
-  for (const name of BUCKET_NAMES) {
-    const key = `bucket_${name}`;
+  for (const bucket of BUCKETS) {
+    const key = `bucket_${bucket.name}`;
     const addr = addresses[key];
     assert(!!addr, `devnet-addresses.json has an entry for ${key}`);
     bucketAddrs.push(addr);
@@ -85,6 +94,11 @@ async function main() {
       new PublicKey(addr),
       "confirmed",
       TOKEN_2022_PROGRAM_ID,
+    );
+    const expected = bucketAmount(bucket.bps) * 10n ** BigInt(DECIMALS);
+    assert(
+      account.amount === expected,
+      `bucket "${bucket.name}" balance === ${bucket.bps / 100}% of total supply (${expected} base units)`,
     );
     bucketSum += account.amount;
   }

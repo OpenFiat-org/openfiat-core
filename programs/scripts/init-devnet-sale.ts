@@ -28,7 +28,12 @@ import {
   SYSVAR_RENT_PUBKEY,
   clusterApiUrl,
 } from "@solana/web3.js";
-import { TOKEN_2022_PROGRAM_ID, createMint, getOrCreateAssociatedTokenAccount } from "@solana/spl-token";
+import {
+  TOKEN_2022_PROGRAM_ID,
+  createMint,
+  getOrCreateAssociatedTokenAccount,
+  getAccount,
+} from "@solana/spl-token";
 import * as anchor from "@anchor-lang/core";
 import { BN } from "@anchor-lang/core";
 
@@ -44,6 +49,9 @@ const JUPITER_V6_PROGRAM_ID = new PublicKey(
 // colliding with (or trying to migrate) the stale nonce-0 sale.
 const SALE_NONCE = 1;
 const USDC_DECIMALS = 6;
+// OFS-4100 §3 (re-baselined 2026-08-09): 1 USDC = 100 OPEN during the
+// presale phase.
+const OPEN_PER_USDC = 100;
 
 async function main() {
   const connection = new Connection(clusterApiUrl("devnet"), "confirmed");
@@ -120,10 +128,35 @@ async function main() {
   } else {
     const now = Math.floor(Date.now() / 1000);
     const usdcUnit = (n: number) => new BN(n).mul(new BN(10).pow(new BN(USDC_DECIMALS)));
+    const hardCap = usdcUnit(1_000);
+
+    // Guard: the sale must never be able to promise more OPEN than the
+    // presale vault actually holds. hard_cap (USDC base units) * the
+    // configured rate is the maximum OPEN the sale can entitle buyers to;
+    // the vault holds the full Community Presale bucket (20B OPEN at 6
+    // decimals = 2e16 base units), so this is trivially satisfied for this
+    // script's small devnet-testing hard cap, but it's asserted rather than
+    // assumed so a future change to either number can't silently promise
+    // OPEN the vault can't deliver.
+    const presaleVaultAccount = await getAccount(
+      connection,
+      presaleVault,
+      "confirmed",
+      TOKEN_2022_PROGRAM_ID,
+    );
+    const maxOpenOwed = BigInt(hardCap.toString()) * BigInt(OPEN_PER_USDC);
+    if (maxOpenOwed > presaleVaultAccount.amount) {
+      throw new Error(
+        `hard_cap (${hardCap.toString()} USDC base units) * openPerUsdc (${OPEN_PER_USDC}) ` +
+          `= ${maxOpenOwed} OPEN base units, which exceeds the presale vault's balance ` +
+          `(${presaleVaultAccount.amount}) — lower hard_cap or re-check the vault funding.`,
+      );
+    }
+
     console.log("\nCalling initialize_sale (small, testable devnet terms)...");
     await program.methods
       .initializeSale(new BN(SALE_NONCE), {
-        hardCap: usdcUnit(1_000),
+        hardCap,
         // soft_cap is forced to 0 by the program (no refund path — see the
         // claim-anytime/sweep_proceeds change); a non-zero value is rejected
         // with SoftCapNotSupported.
@@ -131,6 +164,7 @@ async function main() {
         minContribution: usdcUnit(1),
         maxContribution: usdcUnit(500),
         maxSlippageBps: 100,
+        openPerUsdc: new BN(OPEN_PER_USDC),
         startTime: new BN(now - 60),
         endTime: new BN(now + 60 * 60 * 24 * 30), // 30 days
         stablecoinWhitelist: [],
@@ -163,6 +197,7 @@ async function main() {
     usdcVault: usdcVault.toBase58(),
     treasury: treasury.address.toBase58(),
     hardCapUsdc: 1_000,
+    openPerUsdc: OPEN_PER_USDC,
     softCapUsdc: 0,
     minContributionUsdc: 1,
     maxContributionUsdc: 500,

@@ -1,7 +1,7 @@
 /**
  * OPEN token genesis script (OFS-4100 §1-2, OFS-4200 §3).
  *
- * Creates the fixed-supply Token-2022 mint, mints the entire 1,000,000,000
+ * Creates the fixed-supply Token-2022 mint, mints the entire 100,000,000,000
  * OPEN supply once, permanently revokes mint AND freeze authority, then
  * distributes the supply across the 7 allocation buckets per OFS-4100 §2.
  *
@@ -42,8 +42,8 @@ import {
   transfer,
 } from "@solana/spl-token";
 
-const DECIMALS = 9; // OFS-4100 §1 [CONFIRMED]
-const TOTAL_SUPPLY = 1_000_000_000n; // OFS-4100 §1 [CONFIRMED]
+const DECIMALS = 6; // OFS-4100 §1 (re-baselined 2026-08-09; was 9)
+const TOTAL_SUPPLY = 100_000_000_000n; // OFS-4100 §1 (re-baselined 2026-08-09; was 1_000_000_000n)
 
 // OFS-4100 §2 — Community Presale is [CONFIRMED] at 20% (the full bucket
 // funds two sequential sale phases — presale then public sale — rather than
@@ -62,6 +62,30 @@ const BUCKETS: Array<{ name: string; bps: number }> = [
 
 function bucketAmount(bps: number): bigint {
   return (TOTAL_SUPPLY * BigInt(bps)) / 10_000n;
+}
+
+/**
+ * Every amount this script ever hands to an on-chain u64 field (the mint's
+ * total base-unit supply, and each bucket's base-unit share) must fit u64.
+ * At 6 decimals the total is 1e17 — comfortably under u64::MAX (~1.8e19) —
+ * but this is re-checked here rather than assumed, so a future decimals or
+ * supply change fails loudly before any mint/transfer instead of silently
+ * wrapping on-chain.
+ */
+function assertU64Bounds(): void {
+  const U64_MAX = (1n << 64n) - 1n;
+  const totalBase = TOTAL_SUPPLY * 10n ** BigInt(DECIMALS);
+  if (totalBase > U64_MAX) {
+    throw new Error(`total supply ${totalBase} base units exceeds u64::MAX`);
+  }
+  for (const bucket of BUCKETS) {
+    const base = bucketAmount(bucket.bps) * 10n ** BigInt(DECIMALS);
+    if (base > U64_MAX) {
+      throw new Error(
+        `bucket "${bucket.name}" ${base} base units exceeds u64::MAX`,
+      );
+    }
+  }
 }
 
 function parseArgs() {
@@ -92,6 +116,8 @@ function loadOrCreateBucketKeypair(name: string): Keypair {
 }
 
 async function main() {
+  assertU64Bounds();
+
   const { cluster } = parseArgs();
   if (cluster === "mainnet-beta" || cluster === "mainnet") {
     throw new Error(

@@ -20,10 +20,19 @@
  * # Why every field is read before it is written
  *
  * `update_sale_params` **replaces all six** of its fields — it is not a patch.
- * `end_time` and `max_slippage_bps` are not being changed here, so they are
+ * `end_time`, `max_slippage_bps`, and (as of the 2026-08-09 tokenomics
+ * re-baseline) `open_per_usdc` are not being changed here, so they are all
  * read from the live account and passed straight back. Omitting them, or
  * passing a plausible-looking constant, would silently move the sale's
- * closing date.
+ * closing date or its OPEN-per-USDC rate.
+ *
+ * The byte offsets below assume the presale program deployed on the target
+ * cluster already has the `open_per_usdc` field in `SaleConfig` (added
+ * alongside `UpdateSaleParamsArgs.open_per_usdc` — see OFS-4100 §3's
+ * re-baselined presale rate). That requires a program upgrade beyond what
+ * this script performs; running this against an un-upgraded deployment
+ * whose `SaleConfig` predates that field will misread every offset from
+ * `open_per_usdc` onward.
  *
  * Usage: SALE_NONCE=1 npx ts-node scripts/update-devnet-sale-params.ts [--commit]
  * Without `--commit` the script simulates and prints the diff, changing nothing.
@@ -101,7 +110,10 @@ const discriminator = (name: string) =>
 /**
  * Field offsets for `SaleConfig`, taken from the on-chain IDL's own field
  * order (which was cross-checked against `presale/src/state.rs`): an 8-byte
- * discriminator, then seven pubkeys, then the numeric bounds.
+ * discriminator, then seven pubkeys, then the numeric bounds. `open_per_usdc`
+ * (u64) sits between `max_slippage_bps` and `open_decimals` in the Rust
+ * struct, which pushes `start_time`/`end_time` 8 bytes later than they were
+ * before that field existed — see this file's header note.
  */
 const OFF = {
   admin: 8,
@@ -110,8 +122,9 @@ const OFF = {
   minContribution: 248,
   maxContribution: 256,
   maxSlippageBps: 264,
-  startTime: 268,
-  endTime: 276,
+  openPerUsdc: 266,
+  startTime: 276,
+  endTime: 284,
 };
 
 interface LiveConfig {
@@ -121,6 +134,7 @@ interface LiveConfig {
   minContribution: bigint;
   maxContribution: bigint;
   maxSlippageBps: number;
+  openPerUsdc: bigint;
   startTime: bigint;
   endTime: bigint;
 }
@@ -133,6 +147,7 @@ function decodeSaleConfig(data: Buffer): LiveConfig {
     minContribution: data.readBigUInt64LE(OFF.minContribution),
     maxContribution: data.readBigUInt64LE(OFF.maxContribution),
     maxSlippageBps: data.readUInt16LE(OFF.maxSlippageBps),
+    openPerUsdc: data.readBigUInt64LE(OFF.openPerUsdc),
     startTime: data.readBigInt64LE(OFF.startTime),
     endTime: data.readBigInt64LE(OFF.endTime),
   };
@@ -182,17 +197,22 @@ async function main() {
     minContribution: asUsdc(before.minContribution),
     maxContribution: asUsdc(before.maxContribution),
     maxSlippageBps: before.maxSlippageBps,
+    openPerUsdc: before.openPerUsdc.toString(),
     endTime: new Date(Number(before.endTime) * 1000).toISOString(),
   });
 
-  // `end_time` and `max_slippage_bps` are carried through unchanged — see
-  // this file's header on why they must be resent rather than omitted.
+  // `end_time`, `max_slippage_bps`, and `open_per_usdc` are carried through
+  // unchanged — see this file's header on why they must be resent rather
+  // than omitted. Field order here must match `UpdateSaleParamsArgs` in
+  // `update_sale_params.rs`: hard_cap, soft_cap, min_contribution,
+  // max_contribution, max_slippage_bps, open_per_usdc, end_time.
   const args = Buffer.concat([
     u64(TARGET.hardCap),
     u64(TARGET.softCap),
     u64(TARGET.minContribution),
     u64(TARGET.maxContribution),
     u16(before.maxSlippageBps),
+    u64(before.openPerUsdc),
     i64(before.endTime),
   ]);
 
@@ -215,6 +235,7 @@ async function main() {
     minContribution: asUsdc(TARGET.minContribution),
     maxContribution: asUsdc(TARGET.maxContribution),
     maxSlippageBps: before.maxSlippageBps + " (unchanged)",
+    openPerUsdc: before.openPerUsdc.toString() + " (unchanged)",
     endTime:
       new Date(Number(before.endTime) * 1000).toISOString() + " (unchanged)",
   });
@@ -253,6 +274,7 @@ async function main() {
     minContribution: asUsdc(after.minContribution),
     maxContribution: asUsdc(after.maxContribution),
     maxSlippageBps: after.maxSlippageBps,
+    openPerUsdc: after.openPerUsdc.toString(),
     endTime: new Date(Number(after.endTime) * 1000).toISOString(),
   });
 
@@ -263,12 +285,15 @@ async function main() {
     mismatches.push("maxContribution");
   if (after.minContribution !== TARGET.minContribution)
     mismatches.push("minContribution");
-  // The two fields this script does not set. They are asserted against the
-  // pre-call values, not against a constant, so an accidental edit to the
-  // args above surfaces here instead of silently rescheduling the sale.
+  // The three fields this script does not set. They are asserted against
+  // the pre-call values, not against a constant, so an accidental edit to
+  // the args above surfaces here instead of silently rescheduling the sale
+  // or changing its rate.
   if (after.endTime !== before.endTime) mismatches.push("endTime MOVED");
   if (after.maxSlippageBps !== before.maxSlippageBps)
     mismatches.push("maxSlippageBps MOVED");
+  if (after.openPerUsdc !== before.openPerUsdc)
+    mismatches.push("openPerUsdc MOVED");
   if (mismatches.length > 0) {
     throw new Error(`on-chain state does not match intent: ${mismatches.join(", ")}`);
   }
