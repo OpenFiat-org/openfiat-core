@@ -98,9 +98,18 @@ const CLIENT_SIGNED_TYPES: &[(&str, &str)] = &[
     ("SignedPaymentMethodDefine", tag::PAYMENT_METHOD_DEFINE),
     ("SignedFeeSettlement", tag::FEE_SETTLEMENT),
     ("SignedAdvertisementCreate", tag::ADVERTISEMENT_CREATE),
-    ("SignedAdvertisementStatusSet", tag::ADVERTISEMENT_STATUS_SET),
-    ("SignedAdvertisementTermsUpdate", tag::ADVERTISEMENT_TERMS_UPDATE),
-    ("SignedAdvertisementPriceUpdate", tag::ADVERTISEMENT_PRICE_UPDATE),
+    (
+        "SignedAdvertisementStatusSet",
+        tag::ADVERTISEMENT_STATUS_SET,
+    ),
+    (
+        "SignedAdvertisementTermsUpdate",
+        tag::ADVERTISEMENT_TERMS_UPDATE,
+    ),
+    (
+        "SignedAdvertisementPriceUpdate",
+        tag::ADVERTISEMENT_PRICE_UPDATE,
+    ),
     ("SignedReservationRequest", tag::RESERVATION_REQUEST),
     ("SignedReservationCancel", tag::RESERVATION_CANCEL),
     ("SignedSettlementInitiate", tag::SETTLEMENT_INITIATE),
@@ -354,8 +363,9 @@ fn every_signed_type_is_on_the_f01_checklist() {
     // client-signed `/v1` tag — see the comment at the end of
     // `CLIENT_SIGNED_TYPES`. Anything else found on the wire but missing
     // from both lists is what this test exists to catch.
-    let out_of_scope: std::collections::HashSet<&str> =
-        ["SignedAdvertisement", "SignedRequest"].into_iter().collect();
+    let out_of_scope: std::collections::HashSet<&str> = ["SignedAdvertisement", "SignedRequest"]
+        .into_iter()
+        .collect();
 
     let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (_, text) in &sources {

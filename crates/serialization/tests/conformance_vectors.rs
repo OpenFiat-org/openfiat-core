@@ -24,8 +24,12 @@ struct Vector {
 }
 
 fn vectors() -> Vec<Vector> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/client_signed_v1.json");
-    let text = std::fs::read_to_string(path).expect("client_signed_v1.json must exist and be readable");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/vectors/client_signed_v1.json"
+    );
+    let text =
+        std::fs::read_to_string(path).expect("client_signed_v1.json must exist and be readable");
     serde_json::from_str(&text).expect("client_signed_v1.json must be a JSON array of vectors")
 }
 
