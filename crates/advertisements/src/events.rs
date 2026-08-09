@@ -72,8 +72,11 @@ pub struct SignedAdvertisementCreate {
 
 impl SignedAdvertisementCreate {
     pub fn sign(create: AdvertisementCreate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&create)
-            .expect("AdvertisementCreate always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ADVERTISEMENT_CREATE,
+            &create,
+        )
+        .expect("AdvertisementCreate always serializes");
         Self {
             signature: keypair.sign(&bytes),
             create,
@@ -89,8 +92,11 @@ impl SignedAdvertisementCreate {
         if expected != self.create.merchant {
             return Err(AdvertisementError::UnauthorizedUpdate);
         }
-        let bytes = openfiat_serialization::json::to_bytes(&self.create)
-            .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ADVERTISEMENT_CREATE,
+            &self.create,
+        )
+        .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
         verify(&self.create.merchant_public_key, &bytes, &self.signature)
             .map_err(|_| AdvertisementError::InvalidSignature)
     }
@@ -115,8 +121,11 @@ pub struct SignedAdvertisementStatusSet {
 
 impl SignedAdvertisementStatusSet {
     pub fn sign(set: AdvertisementStatusSet, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&set)
-            .expect("AdvertisementStatusSet always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ADVERTISEMENT_STATUS_SET,
+            &set,
+        )
+        .expect("AdvertisementStatusSet always serializes");
         Self {
             signature: keypair.sign(&bytes),
             set,
@@ -158,8 +167,11 @@ pub struct SignedAdvertisementTermsUpdate {
 
 impl SignedAdvertisementTermsUpdate {
     pub fn sign(update: AdvertisementTermsUpdate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&update)
-            .expect("AdvertisementTermsUpdate always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ADVERTISEMENT_TERMS_UPDATE,
+            &update,
+        )
+        .expect("AdvertisementTermsUpdate always serializes");
         Self {
             signature: keypair.sign(&bytes),
             update,
@@ -183,8 +195,11 @@ pub struct SignedAdvertisementPriceUpdate {
 
 impl SignedAdvertisementPriceUpdate {
     pub fn sign(update: AdvertisementPriceUpdate, keypair: &Keypair) -> Self {
-        let bytes = openfiat_serialization::json::to_bytes(&update)
-            .expect("AdvertisementPriceUpdate always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ADVERTISEMENT_PRICE_UPDATE,
+            &update,
+        )
+        .expect("AdvertisementPriceUpdate always serializes");
         Self {
             signature: keypair.sign(&bytes),
             update,

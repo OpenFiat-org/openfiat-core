@@ -10,7 +10,6 @@ use crate::events::{
 use crate::protocol;
 use crate::record::{Advertisement, AdvertisementId, AdvertisementStatus, Direction};
 use openfiat_crypto::verify;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_taxonomy::PaymentMethodRef;
@@ -120,8 +119,11 @@ impl<S: KvStore> AdvertisementRegistry<S> {
         &self,
         signed: SignedAdvertisementStatusSet,
     ) -> Result<(), AdvertisementError> {
-        let bytes =
-            json::to_bytes(&signed.set).map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ADVERTISEMENT_STATUS_SET,
+            &signed.set,
+        )
+        .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
         let mut ad = self.authorize(
             &signed.set.id,
             &signed.set.merchant,
@@ -150,8 +152,11 @@ impl<S: KvStore> AdvertisementRegistry<S> {
         &self,
         signed: SignedAdvertisementTermsUpdate,
     ) -> Result<(), AdvertisementError> {
-        let bytes = json::to_bytes(&signed.update)
-            .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ADVERTISEMENT_TERMS_UPDATE,
+            &signed.update,
+        )
+        .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
         let mut ad = self.authorize(
             &signed.update.id,
             &signed.update.merchant,
@@ -209,8 +214,11 @@ impl<S: KvStore> AdvertisementRegistry<S> {
         &self,
         signed: SignedAdvertisementPriceUpdate,
     ) -> Result<(), AdvertisementError> {
-        let bytes = json::to_bytes(&signed.update)
-            .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::ADVERTISEMENT_PRICE_UPDATE,
+            &signed.update,
+        )
+        .map_err(|_| AdvertisementError::MalformedAdvertisement)?;
         let mut ad = self.authorize(
             &signed.update.id,
             &signed.update.merchant,

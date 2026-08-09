@@ -12,7 +12,6 @@ use crate::store::{ExpirySweep, ReservationRegistry};
 use openfiat_advertisements::AdvertisementId;
 use openfiat_advertisements::AdvertisementRegistry;
 use openfiat_gossip::GossipService;
-use openfiat_serialization::json;
 use openfiat_serialization::wire;
 use openfiat_storage::KvStore;
 use openfiat_types::{Amount, EventType, Priority, Timestamp};
@@ -88,7 +87,11 @@ impl<S: KvStore + 'static> ReservationService<S> {
             agreed_mid,
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&request).expect("ReservationRequest always serializes");
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::RESERVATION_REQUEST,
+            &request,
+        )
+        .expect("ReservationRequest always serializes");
         let signed = SignedReservationRequest {
             signature: self.gossip.sign(&bytes),
             request,
@@ -103,7 +106,11 @@ impl<S: KvStore + 'static> ReservationService<S> {
             requester: self.gossip.node.local_peer_id(),
             timestamp: Timestamp::now(),
         };
-        let bytes = json::to_bytes(&cancel).map_err(|_| ReservationError::MalformedReservation)?;
+        let bytes = openfiat_serialization::domain::preimage(
+            openfiat_serialization::domain::tag::RESERVATION_CANCEL,
+            &cancel,
+        )
+        .map_err(|_| ReservationError::MalformedReservation)?;
         let signed = SignedReservationCancel {
             signature: self.gossip.sign(&bytes),
             cancel,
