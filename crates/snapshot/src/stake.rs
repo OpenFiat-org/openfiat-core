@@ -87,10 +87,10 @@ use openfiat_types::{PeerId, PublicKey, Timestamp};
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// OPEN's base units per whole token (OFS-4100 §1) — nine decimals, the
-/// mint's own precision. Quoted so the figure below reads as the number a
-/// human would say.
-const OPEN: u64 = 1_000_000_000;
+/// OPEN's base units per whole token (OFS-4100 §1, re-baselined 2026-08-09)
+/// — six decimals, the mint's own precision. Quoted so the figure below
+/// reads as the number a human would say.
+const OPEN: u64 = 1_000_000; // 6 decimals
 
 /// The stake this node requires of a snapshot provider before it will
 /// import from it, floor.

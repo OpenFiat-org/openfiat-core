@@ -280,7 +280,7 @@ mod tests {
         PeerId::from_bytes(vec![tag; 8])
     }
 
-    const OPEN: u64 = 1_000_000_000;
+    const OPEN: u64 = 1_000_000; // 6 decimals
 
     /// Each test peer gets its own stake account, which is what
     /// derivation from a distinct identity would produce.

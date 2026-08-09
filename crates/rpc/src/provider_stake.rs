@@ -328,7 +328,7 @@ mod tests {
         // Governance's own SnapshotProvider minimum is the last slot.
         // Deployed at 1,000 OPEN, well under this node's floor.
         let deployed =
-            [500, 500, 1_000, 5_000, 1_000, 1_000, 1_000].map(|whole: u64| whole * 1_000_000_000);
+            [500, 500, 1_000, 5_000, 1_000, 1_000, 1_000].map(|whole: u64| whole * 1_000_000);
         poll_provider_stake(
             &state,
             &FixtureCluster::new().with_config(deployed).with_stake(
@@ -349,7 +349,7 @@ mod tests {
         );
 
         let mut raised = deployed;
-        raised[6] = 50_000 * 1_000_000_000;
+        raised[6] = 50_000 * 1_000_000;
         poll_provider_stake(
             &state,
             &FixtureCluster::new().with_config(raised).with_stake(
@@ -363,7 +363,7 @@ mod tests {
             state.snapshots.stake_standing(&peer, Timestamp::now()),
             StakeStanding::Insufficient {
                 held: MINIMUM_PROVIDER_STAKE,
-                required: 50_000 * 1_000_000_000,
+                required: 50_000 * 1_000_000,
             },
             "raising the on-chain minimum must raise this gate, with no code change"
         );

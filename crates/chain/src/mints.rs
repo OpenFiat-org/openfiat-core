@@ -118,7 +118,7 @@ pub const KNOWN_MINTS: &[KnownMint] = DEVNET;
 const OPEN: KnownMint = KnownMint {
     mint: crate::programs::IDS.mint,
     symbol: "OPEN",
-    decimals: 9,
+    decimals: 6,
 };
 
 /// What this build knows about `mint` for the purpose of putting a
@@ -274,9 +274,10 @@ mod tests {
 
     /// `OPEN.decimals` is a transcription of something read off the
     /// cluster, so it can drift exactly the way a transcribed address can.
-    /// The recorded value came from
-    /// `getTokenSupply(29w8Tro…)` on devnet: decimals 9, amount
-    /// 1000000000000000000.
+    /// The prior reading, `getTokenSupply(29w8Tro…)` on devnet, gave
+    /// decimals 9, amount 1000000000000000000, under the original mint;
+    /// OFS-4100's 2026-08-09 re-baseline moves OPEN to 6 decimals ahead of
+    /// the fresh-mint re-genesis that will record its own reading.
     #[test]
     fn the_protocols_own_token_is_scaled_by_the_recorded_deployment_not_a_guess() {
         let json: serde_json::Value =
@@ -303,7 +304,7 @@ mod tests {
         let open = MintAddress::parse(crate::programs::IDS.mint).expect("the pinned mint parses");
 
         let priced = priced(&open).expect("a fee denominated in OPEN has to be scalable");
-        assert_eq!(priced.decimals, 9);
+        assert_eq!(priced.decimals, 6);
         assert_eq!(priced.symbol, "OPEN");
 
         // Everything the escrow-facing reasoning protects is unchanged.

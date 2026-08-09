@@ -16,9 +16,10 @@
 /// `BPS_DENOMINATOR` so a reader comparing the two sees one convention.
 pub const BPS_DENOMINATOR: u64 = 10_000;
 
-/// OPEN's decimal precision (OFS-4100 §1), used only to express the
-/// defaults below in whole OPEN rather than base units.
-const OPEN: u64 = 1_000_000_000;
+/// OPEN's decimal precision (OFS-4100 §1, re-baselined 2026-08-09 to 6
+/// decimals), used only to express the defaults below in whole OPEN rather
+/// than base units.
+const OPEN: u64 = 1_000_000; // 6 decimals
 
 /// §9.2's parameters, in the units the arithmetic actually uses:
 /// milliseconds for time and base units for amounts, so no conversion

@@ -19,8 +19,8 @@
   },
   "devnet": {
     "mint": "29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj",
-    "mintDecimals": 9,
-    "mintDecimalsProvenance": "Read off the cluster, not assumed: getTokenSupply(29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj) on devnet returns decimals 9 and amount 1000000000000000000 (1e9 OPEN). Recorded here as a structured field because openfiat-core/crates/chain/src/mints.rs now pins a constant against it: a quantity of OPEN cannot be rendered or converted without an exponent, and a caller that guesses one is wrong by a factor of a thousand silently. The prose note under devnet_programs says the same thing and is not machine-readable.",
+    "mintDecimals": 6,
+    "mintDecimalsProvenance": "Superseded 2026-08-09: the prior reading, getTokenSupply(29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj) on devnet, returned decimals 9 and amount 1000000000000000000 (1e9 OPEN) under the original 9-decimal mint. OFS-4100's 2026-08-09 tokenomics re-baseline moves OPEN to 6 decimals / 100B supply; this field is pinned to that target ahead of the fresh-mint re-genesis (tokenomics re-baseline plan, Task 4) that mints the new 6-decimal token and will record its own on-chain reading here. Recorded here as a structured field because openfiat-core/crates/chain/src/mints.rs pins a constant against it: a quantity of OPEN cannot be rendered or converted without an exponent, and a caller that guesses one is wrong by a factor of a thousand silently. The prose note under devnet_programs describes the pre-re-baseline deployment and predates this change; it is not machine-readable and is corrected when Task 4 re-genesis lands.",
     "admin": "EA8TyQ58C3eavg3ThRFTMu1KLyV9e1v2oTQubSBQ9s5z",
     "bucket_community-presale_owner": "CicL1pD1fQoVRXYExKfdRMNfeyqTWuBw1nUueBw7p4ai",
     "bucket_community-presale": "7Da3NGQkXJGVcF4y5Z3ahpZe4vxDNgqnrhCUvB8PW5wM",

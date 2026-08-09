@@ -39,10 +39,11 @@ pub const STAKE_RECOVERY_RECEIPT_SEED: &[u8] = b"stake_recovery_receipt";
 #[constant]
 pub const BPS_DENOMINATOR: u64 = 10_000;
 
-/// OPEN's decimal places (OFS-4100 §1) — the multiplier the figures below
+/// OPEN's decimal places (OFS-4100 §1, re-baselined 2026-08-09: OPEN moved
+/// from 9 to 6 decimals, matching USDC) — the multiplier the figures below
 /// are quoted in. Whole-OPEN amounts are what the spec states and what
 /// anyone reads; base units are what the account stores.
-pub const OPEN_DECIMALS_MULTIPLIER: u64 = 1_000_000_000;
+pub const OPEN_DECIMALS_MULTIPLIER: u64 = 1_000_000;
 
 /// The per-role minimum stakes OFS-4100 §4 signs off, in base units,
 /// indexed by [`Role::index`](openfiat_programs_shared::Role::index).

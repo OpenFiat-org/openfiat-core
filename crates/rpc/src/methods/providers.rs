@@ -946,10 +946,10 @@ mod tests {
                 "a fee denominated in USDC must be settleable in OPEN"
             );
             // 2.50 USDC at 4 OPEN per USDC is 10 OPEN, and OPEN is a
-            // nine-decimal mint — an exponent read off the cluster, never
+            // six-decimal mint — an exponent read off the cluster, never
             // assumed.
-            assert_eq!(answer["settlementAmount"]["base_units"], 10_000_000_000u64);
-            assert_eq!(answer["settlementAmount"]["decimals"], 9);
+            assert_eq!(answer["settlementAmount"]["base_units"], 10_000_000u64);
+            assert_eq!(answer["settlementAmount"]["decimals"], 6);
             assert_eq!(answer["settlementMint"], OPEN);
         }
 
