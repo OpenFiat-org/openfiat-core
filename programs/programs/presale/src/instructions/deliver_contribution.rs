@@ -171,7 +171,10 @@ pub fn handle_deliver_contribution(
     let sc = &ctx.accounts.sale_config;
     let first = ctx.accounts.contribution.amount_usdc == 0;
     if first {
-        require!(delta >= sc.min_contribution, ErrorCode::BelowMinimumContribution);
+        require!(
+            delta >= sc.min_contribution,
+            ErrorCode::BelowMinimumContribution
+        );
     }
     let new_wallet_total = ctx
         .accounts
@@ -183,7 +186,10 @@ pub fn handle_deliver_contribution(
         new_wallet_total <= sc.max_contribution,
         ErrorCode::AboveMaximumContribution
     );
-    let new_total_raised = sc.total_raised.checked_add(delta).ok_or(ErrorCode::Overflow)?;
+    let new_total_raised = sc
+        .total_raised
+        .checked_add(delta)
+        .ok_or(ErrorCode::Overflow)?;
     require!(new_total_raised <= sc.hard_cap, ErrorCode::HardCapExceeded);
     let open_out = sc.open_entitlement_for(delta)?;
     let open_decimals = sc.open_decimals;
@@ -214,7 +220,10 @@ pub fn handle_deliver_contribution(
         .checked_add(open_out)
         .ok_or(ErrorCode::Overflow)?;
     // Delivered now, in this same instruction — nothing left to `claim`.
-    c.claimed_open = c.claimed_open.checked_add(open_out).ok_or(ErrorCode::Overflow)?;
+    c.claimed_open = c
+        .claimed_open
+        .checked_add(open_out)
+        .ok_or(ErrorCode::Overflow)?;
     c.bump = ctx.bumps.contribution;
     ctx.accounts.sale_config.total_raised = new_total_raised;
 

@@ -91,7 +91,7 @@ pub const OPEN_DECIMALS_MULTIPLIER: u64 = 1_000_000;
 /// minimum is a governance-tunable figure and hardcoding it is what made
 /// the previous two-field layout unable to express §4 at all.
 pub const RECOMMENDED_MIN_STAKE_BY_ROLE: [u64; openfiat_programs_shared::Role::COUNT] = [
-    500 * OPEN_DECIMALS_MULTIPLIER,     // Merchant — floor, scaling above (unchanged, $5)
+    500 * OPEN_DECIMALS_MULTIPLIER, // Merchant — floor, scaling above (unchanged, $5)
     100_000 * OPEN_DECIMALS_MULTIPLIER, // Arbitrator — floor, scaling above ($1,000)
     500_000 * OPEN_DECIMALS_MULTIPLIER, // NodeOperator ($5,000)
     100_000 * OPEN_DECIMALS_MULTIPLIER, // NotificationProvider ($1,000)

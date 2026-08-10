@@ -76,11 +76,7 @@ pub mod presale {
         crate::instructions::claim::handle_claim(ctx, sale_nonce)
     }
 
-    pub fn sweep_proceeds(
-        ctx: Context<SweepProceeds>,
-        sale_nonce: u64,
-        amount: u64,
-    ) -> Result<()> {
+    pub fn sweep_proceeds(ctx: Context<SweepProceeds>, sale_nonce: u64, amount: u64) -> Result<()> {
         crate::instructions::sweep_proceeds::handle_sweep_proceeds(ctx, sale_nonce, amount)
     }
 
