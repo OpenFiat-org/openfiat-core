@@ -180,7 +180,7 @@ async function main() {
   console.log("\nDistributing to allocation buckets (OFS-4100 §2)...");
   const [presaleVaultPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("presale_vault")],
-    new PublicKey("75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7"), // presale program ID
+    new PublicKey("7KaEpDzZuqye1xqqp3RnvBJXnDxbU3W9zVrUr5vBS2fU"), // presale program ID
   );
 
   const addresses: Record<string, string> = {

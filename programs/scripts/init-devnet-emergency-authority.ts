@@ -35,7 +35,7 @@ import {
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-const GOVERNANCE = new PublicKey("AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE");
+const GOVERNANCE = new PublicKey("2k71DBDoxM4SUFYGbyMXFiTSUynPuY2CqFUsx3FuarXF");
 const EMERGENCY_AUTHORITY_SEED = Buffer.from("emergency_authority");
 
 /**

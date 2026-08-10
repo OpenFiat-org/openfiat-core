@@ -43,10 +43,10 @@ import {
 } from "./lib";
 
 const PROGRAMS: Record<string, PublicKey> = {
-  presale: new PublicKey("75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7"),
-  escrow: new PublicKey("HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP"),
-  staking: new PublicKey("HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx"),
-  governance: new PublicKey("AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE"),
+  presale: new PublicKey("7KaEpDzZuqye1xqqp3RnvBJXnDxbU3W9zVrUr5vBS2fU"),
+  escrow: new PublicKey("CYdn27x69hQ8WBxBeWRGpr9c8B4dcKj8GvyBn6Sdma9s"),
+  staking: new PublicKey("3MF1nAPiECRAGs36RpQTkLb8CvMZuhcgXv1hGZoXEiid"),
+  governance: new PublicKey("2k71DBDoxM4SUFYGbyMXFiTSUynPuY2CqFUsx3FuarXF"),
 };
 
 /** Send an EA8Ty-signed SetAuthority moving `programId` to `newAuthority`. */

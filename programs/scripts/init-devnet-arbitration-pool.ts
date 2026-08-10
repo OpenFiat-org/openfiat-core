@@ -53,7 +53,7 @@ import {
 } from "@solana/web3.js";
 
 const ESCROW_PROGRAM_ID = new PublicKey(
-  "HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP",
+  "CYdn27x69hQ8WBxBeWRGpr9c8B4dcKj8GvyBn6Sdma9s",
 );
 /** Arbitration deposits are OPEN-denominated (OFS-4100 §6). */
 const OPEN_MINT = new PublicKey("29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj");

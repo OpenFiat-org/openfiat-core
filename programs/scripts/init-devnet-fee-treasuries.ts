@@ -35,7 +35,7 @@ import { homedir } from "node:os";
 
 const RPC_URL = process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com";
 const ESCROW_PROGRAM_ID = new PublicKey(
-  "HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP",
+  "CYdn27x69hQ8WBxBeWRGpr9c8B4dcKj8GvyBn6Sdma9s",
 );
 /**
  * The settlement fee is a slice of the *traded* amount, and `release_escrow`

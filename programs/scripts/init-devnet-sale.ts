@@ -38,7 +38,7 @@ import * as anchor from "@anchor-lang/core";
 import { BN } from "@anchor-lang/core";
 
 const PRESALE_PROGRAM_ID = new PublicKey(
-  "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7",
+  "7KaEpDzZuqye1xqqp3RnvBJXnDxbU3W9zVrUr5vBS2fU",
 );
 const JUPITER_V6_PROGRAM_ID = new PublicKey(
   "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
