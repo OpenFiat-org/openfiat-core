@@ -64,4 +64,6 @@ pub enum ErrorCode {
     InvalidSweepAmount,
     #[msg("open_per_usdc must be greater than zero")]
     InvalidRate,
+    #[msg("The measured usdc_vault balance increase did not match the requested delivery amount")]
+    UsdcDeliveryMismatch,
 }

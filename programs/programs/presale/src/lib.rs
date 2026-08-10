@@ -49,6 +49,25 @@ pub mod presale {
         )
     }
 
+    /// Cross-chain auto-delivery entry point for a deBridge Solana Hook
+    /// (SP-B). Credits + delivers OPEN for `recipient` in one instruction,
+    /// funded/signed by `payer` (the deBridge executor) — see
+    /// `deliver_contribution` for the no-free-mint and payer/recipient
+    /// binding invariants.
+    pub fn deliver_contribution(
+        ctx: Context<DeliverContribution>,
+        sale_nonce: u64,
+        recipient: Pubkey,
+        usdc_amount: u64,
+    ) -> Result<()> {
+        crate::instructions::deliver_contribution::handle_deliver_contribution(
+            ctx,
+            sale_nonce,
+            recipient,
+            usdc_amount,
+        )
+    }
+
     pub fn finalize_sale(ctx: Context<FinalizeSale>, sale_nonce: u64) -> Result<()> {
         crate::instructions::finalize_sale::handle_finalize_sale(ctx, sale_nonce)
     }
