@@ -621,9 +621,9 @@ current list — the table below is a snapshot, not the source of truth):
 
 | Program | Devnet program id | OFS spec |
 |---|---|---|
-| `openfiat-escrow` | `HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP` | OFS-4200 §4 |
-| `openfiat-staking` | `HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx` | OFS-4200 §5 |
-| `openfiat-governance` | `AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE` | OFS-4200 §6 |
+| `openfiat-escrow` | `CYdn27x69hQ8WBxBeWRGpr9c8B4dcKj8GvyBn6Sdma9s` | OFS-4200 §4 |
+| `openfiat-staking` | `3MF1nAPiECRAGs36RpQTkLb8CvMZuhcgXv1hGZoXEiid` | OFS-4200 §5 |
+| `openfiat-governance` | `2k71DBDoxM4SUFYGbyMXFiTSUynPuY2CqFUsx3FuarXF` | OFS-4200 §6 |
 
 A node never builds or signs an on-chain transaction on a caller's
 behalf — a client (using `openfiat-sdk`'s `onchain` module, or any

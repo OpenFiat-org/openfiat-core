@@ -65,7 +65,7 @@ const PROPOSAL_DISCRIMINATOR: [u8; 8] = [26, 94, 189, 187, 116, 136, 53, 33];
 /// Solana client) to state which program's accounts it is willing to
 /// believe. The test below re-reads the deployment record, so the copy
 /// cannot drift into pointing at a program that never writes proposals.
-pub const GOVERNANCE_PROGRAM_ID: &str = "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE";
+pub const GOVERNANCE_PROGRAM_ID: &str = "2k71DBDoxM4SUFYGbyMXFiTSUynPuY2CqFUsx3FuarXF";
 
 /// Byte offsets into a `Proposal` account, in the program's declaration
 /// order: discriminator(8), id(8), category(1), proposer(32),
@@ -529,7 +529,7 @@ mod tests {
         // of their choosing and fill it with a passing tally.
         let hash = offchain_id_hash(&ProposalId::new("ofip-0001"));
         let result = decode_proposal(
-            "HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP",
+            "CYdn27x69hQ8WBxBeWRGpr9c8B4dcKj8GvyBn6Sdma9s",
             &proposal_bytes(7, 2, true, hash),
         );
         assert_eq!(result, Err(GovernanceError::Unauthorized));
@@ -654,10 +654,10 @@ mod tests {
     #[test]
     fn a_proposal_address_matches_what_a_solana_client_derives() {
         for (id, expected) in [
-            (0u64, "8TACBS35SgEU3RDQSqs8hmCPCRGAY5LNVfvBLHoJrYS8"),
-            (1, "G7EgazwBMorPCPcHyY9ySSL6dBVithAuEg5L1K2Gj38d"),
-            (7, "CLTLFb1YRbg3seL6xQMYM6fLQiMUHyjoC6orQ7UMgj7G"),
-            (70_000, "AmBots1BbXKRnTHnqBEkNnDxa8VAoJCgHu1ccy8MdAhd"),
+            (0u64, "47nrzhhcFwg6BfdWFw1hDQeGAWjS9kSSc5c9eB1dqtcj"),
+            (1, "3HemzTNJN65CTzLFxt8jsk8SkcntqUTXRsmvXfTzDXxs"),
+            (7, "4ZMTNoMJiFTwR8kNSbXMEkbwzjdDwx9K6mTxRbRBF5xm"),
+            (70_000, "G7XdKTtG6k9DFuzfWxYF4vf97FcjtYkuvEvmR74gmEPK"),
         ] {
             assert_eq!(onchain_proposal_address(id), expected);
         }

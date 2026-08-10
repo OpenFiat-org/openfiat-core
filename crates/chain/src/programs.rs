@@ -92,11 +92,11 @@ pub struct ProgramIds {
 /// real vote.
 pub const DEVNET: ProgramIds = ProgramIds {
     network: "devnet",
-    staking: "HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx",
-    governance: "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE",
-    escrow: "HaPpM1QYM3dKp3sX7zhEdft9hB6ncu6xfALAbkyQChQP",
-    presale: "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7",
-    mint: "29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj",
+    staking: "3MF1nAPiECRAGs36RpQTkLb8CvMZuhcgXv1hGZoXEiid",
+    governance: "2k71DBDoxM4SUFYGbyMXFiTSUynPuY2CqFUsx3FuarXF",
+    escrow: "CYdn27x69hQ8WBxBeWRGpr9c8B4dcKj8GvyBn6Sdma9s",
+    presale: "7KaEpDzZuqye1xqqp3RnvBJXnDxbU3W9zVrUr5vBS2fU",
+    mint: "GwieDVo2mWeWpqAErbH9TQ94Pd2GusrfWQscJeJ4p532",
 };
 
 // Compile-time proof that each id above is a real base58-encoded 32-byte

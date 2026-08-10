@@ -148,7 +148,7 @@ pub const STAKE_REVALIDATION_INTERVAL: Duration = Duration::from_secs(2 * 60);
 /// `openfiat_governance::onchain::GOVERNANCE_PROGRAM_ID`. The test below
 /// re-reads the deployment record, so the copy cannot drift into pointing
 /// at a program that never wrote a stake account.
-pub const STAKING_PROGRAM_ID: &str = "HYEXk8XQukBkZbiYB33JyVefQDxqyCpPudad3wBCyYmx";
+pub const STAKING_PROGRAM_ID: &str = "3MF1nAPiECRAGs36RpQTkLb8CvMZuhcgXv1hGZoXEiid";
 
 /// `sha256("account:StakeAccount")[..8]`, taken verbatim from a real
 /// `anchor build`'s `programs/target/idl/staking.json`.
@@ -459,7 +459,7 @@ mod tests {
         // staking program, and fill it with a qualifying balance.
         assert_eq!(
             decode_provider_stake(
-                "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE",
+                "2k71DBDoxM4SUFYGbyMXFiTSUynPuY2CqFUsx3FuarXF",
                 &stake_account_bytes(6, MINIMUM_PROVIDER_STAKE)
             ),
             Err(SnapshotError::ForeignStakeAccount)
@@ -768,12 +768,12 @@ mod tests {
     fn the_derived_addresses_match_what_a_solana_client_derives() {
         assert_eq!(
             staking_config_address(),
-            "2wrGGjcUFSn1ZiYzo2o64r7ZC88QNhvvgUYktNs2ifT9"
+            "13USnBJUTbx2X4LETdDof7wisSYL9psfDoZkDDtiZpsU"
         );
         let provider = Keypair::from_seed([7u8; 32]).public_key();
         assert_eq!(
             provider_stake_address(&provider),
-            "G73zLXLtW19EY5BSb28XNt5ubWah4raYo53dM56d6vqQ"
+            "Gxpyahfq4LE2aDSPdHkwcJQBB8wc2PWaiUEpj4gcTJUu"
         );
     }
 }

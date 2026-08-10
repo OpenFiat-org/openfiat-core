@@ -784,7 +784,7 @@ mod tests {
         /// The protocol's own token. Absent from the settlement table and
         /// from every display path — and priceable, which is the whole
         /// point of this method.
-        const OPEN: &str = "29w8TroBTYoaqrXBDcpv5L54VZRA8Kf7kU5U1cakvFdj";
+        const OPEN: &str = "GwieDVo2mWeWpqAErbH9TQ94Pd2GusrfWQscJeJ4p532";
         /// Circle's canonical devnet USDC, which this deployment
         /// deliberately does not use and this build has never heard of.
         const A_STRANGER: &str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
