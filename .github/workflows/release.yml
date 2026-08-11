@@ -96,3 +96,6 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+          # A semver-prerelease tag (one containing a hyphen, e.g. v0.2.0-rc.1)
+          # is published as a pre-release, never marked "Latest".
+          prerelease: ${{ contains(github.ref_name, '-') }}
