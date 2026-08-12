@@ -250,49 +250,37 @@
   },
   "faucet_open_draw": {
     "reason": "Devnet faucet tooling, NOT an accounting anomaly. OPEN's mint authority is permanently unset, so the devnet faucet cannot mint OPEN the way it mints mock USDC/USDT — the only movable OPEN on devnet is the Community Presale bucket, and the only way out of it is claim() on a Finalized sale. Each draw below is the proceeds of one deliberate, fully-executed presale cycle on its own nonce, run purely to stock the faucet. Nothing was sold and nothing is owed to anyone. Reproduce or audit with scripts/extract-open-for-faucet.ts.",
-    "sizing": "10000000 OPEN is 833 grants at the faucet's 12,000 OPEN per-request drip. 12,000 is a deliberate boundary against the live StakingConfig (2wrGGjcUFSn1ZiYzo2o64r7ZC88QNhvvgUYktNs2ifT9): it buys EXACTLY arbitrator + merchant + node operator (10,000 + 1,000 + 1,000) with zero slack. It does NOT cover arbitrator + notification provider (15,000) or all seven roles (20,000) — those need a second grant the next day, since the cap is per 24h. Because 12,000 is exact for that three-role bundle, nothing may be deducted from an OPEN grant for fees or rent; those come out of the faucet's separate SOL grant.",
+    "sizing": "600000000 OPEN is 50000 grants at the faucet's 12,000 OPEN per-request drip. 12,000 is a deliberate boundary against the live StakingConfig (2wrGGjcUFSn1ZiYzo2o64r7ZC88QNhvvgUYktNs2ifT9): it buys EXACTLY arbitrator + merchant + node operator (10,000 + 1,000 + 1,000) with zero slack. It does NOT cover arbitrator + notification provider (15,000) or all seven roles (20,000) — those need a second grant the next day, since the cap is per 24h. Because 12,000 is exact for that three-role bundle, nothing may be deducted from an OPEN grant for fees or rent; those come out of the faucet's separate SOL grant.",
     "moreAvailable": "This is not an irreversible commitment. The presale_vault PDA is a singleton with no nonce, shared by every sale, and initialize_sale only verifies its mint and owner rather than funding it — so any future sale we open as admin reaches the same vault, and topping the faucet up later is one more cycle on a fresh nonce. Add it to DRAWS in the script; do not try to re-open a finalized sale, which is impossible.",
-    "openDrawnTotal": 10000000,
-    "presaleVault": "7Da3NGQkXJGVcF4y5Z3ahpZe4vxDNgqnrhCUvB8PW5wM",
+    "openDrawnTotal": 600000000,
+    "presaleVault": "G6ggjBTzAc7Z3CkLmfQLC8oBcaqZXiDTSQtLsbSGcAHe",
     "presaleVaultOpenBefore": 200000000,
-    "presaleVaultOpenAfter": 190000000,
+    "presaleVaultOpenAfter": 19399999800,
     "faucetAuthority": "4oiCmGrMRL4m4RJsRX6F7nCDeEqoiKLYm5hsDcLFvAJB",
-    "faucetOpenAta": "6CogAbrEmPmLNv9B4efaFWwF3Ca742k9rNm1vX4A7dKD",
-    "faucetOpenBalance": 10000000,
+    "faucetOpenAta": "FcD5kwUd5XExz1sT4UyP5H3ccbNg6Jvy6LfWGN9JWggo",
+    "faucetOpenBalance": 600000000,
     "draws": [
       {
         "saleNonce": 2,
-        "saleConfig": "GUY6GFhEk5CjjhmYx7hSa5JURYuFQTYzLaysBGBrtxfe",
-        "openDrawn": 1000000,
-        "usdcContributed": 1000000,
+        "saleConfig": "2erN1zGT8B2eJGEaKFYRgGueHrBmsPX4SpDT9FWnC6U7",
+        "openDrawn": 600000000,
+        "usdcContributed": 600000000,
         "signatures": {
-          "initializeSale": "2iBcYm1JDxiUdp8uBKwh9Bc8omHVPgUbJKxrrErqu6UuNtK5oMCJ4mEYqAUz9aAnh4b6Hz8CAaKTA8SjRBiz8tvF",
-          "mintUsdc": "3hpF1WhCQU2TheHCwh8k96644BKmVAbzPgVfDBg4WGC4rkZE46tMsCKCQ5YUpkTafkB3VwfCKuHoiTsVzV1kd6Vd",
-          "contributeUsdc": "Q5RoBKuechjGRC6He7kMtb5EMhYwtqLGbssuKZFVh2GC6HgPL8gJDwvg9wzm9FLiphg46Yu1dEGx8D6jQbaBDpN",
-          "finalizeSale": "57AJExpDvEWSZTduxnnPV9X6ihhNR6uJDtqRSkMpvofqYfJ9d5UuHVpAEZX16uXhRRViReseA5ZeqtAQrw9fPbwn",
-          "claim": "5Cc6ixdv1uf5aeMjFidfzN4KAF7BQtfmKTuejd3KhgCsxY4fU1jaJrM6Ym4m9ibuJfxmjgejk3nCjqnSBag3XqkL"
-        }
-      },
-      {
-        "saleNonce": 3,
-        "saleConfig": "99rm2F3e8qcCMkafoBFHmxuUGq7TzE6TSi1GaY9h4y3C",
-        "openDrawn": 9000000,
-        "usdcContributed": 9000000,
-        "signatures": {
-          "initializeSale": "Ksz1eHDF8aTYS6Mp97xUuSzVvTXJLjrKXFijq5ngLWWKp4bgc5HgXkuGoTPEqD6gxyhWx8nWFkHCDpXR5ooxzfn",
-          "mintUsdc": "5whfTRuMfxoVaGaU72z2uC6Ejja9VPmLGEvgz9PKDfwccScRyUqnMm9y2rBU8SnaFhV2S1kmALui9TXVkWfZYVbL",
-          "contributeUsdc": "Ksrid7dKtUQfD8DeeGq7pKGJrhoQ5iNufTj97h2b3cfeQ3WXUcThbeLM2wxcXXvhQ4vnrH18BLnGiN8rjUt2qA5",
-          "finalizeSale": "62yReACzqXtTvXnnpQHq6QGTHHP5FNpDtgXZTomvjVqwatscC5t3vMTZazVZ1dTGVCZYqZvdbLjJvN76Rwm7KDmh",
-          "claim": "NRFB5homykw8gB85Fx9B8zLVQ8t4Ze2sXqxy5yHgFfNj6VfzLHHGNAPZgM8DQ4Kw9cXmvw16vRD6ZmkRYLyvPt1"
+          "initializeSale": "48TqesrmFKJcFJKTgAZNV1QQz9nzPY6g96ov3FkiVu7jGeyJXGCtpprdrAREqtC6beBwxrisBgayXiYMRvQfKzUM",
+          "mintUsdc": "6Wygyr1JgVjjZMzbjvDeJv3UXz5RJsY57qifTrfMATkxTTrrjCRkARMqgLUS7xFNDxfSR9eqUAnB3DrPyjyqdMs",
+          "contributeUsdc": "33KPTnG4pwmqdjS8jWpp3VVyyk6Q4ngZupTXjyj1LJVaV2AeeStnaHyrzcnHGodt1inANKPSqDkpNRGsLqhGRiYG",
+          "finalizeSale": "4ip2DsjptG8yyMbEkNzEcvQBSVfiGx2tMjM6U5gF4TQzKiFozHc7aBpDByV8sikXyposPj1mB48joN7bBZH6jtEE",
+          "claim": "iMrgA1Guss5Sz9BPXcnpaKNat2D1Dhh31QLmkMwFoPT12RngtmSLVkizkfYDpgGbyDFSq18zum1VPYUVr99pjzS"
         }
       }
     ],
     "transferToFaucetSignatures": [
       "N1hrppKC4owbt357bsDkuKBi5woY9xhrcdroDpBPqi6jee6ExAj1TrDem92KFp8AN5xggxD58wS9CwaBJ2KNwrE",
-      "2kpLUEC8B8wWhgzkQPVfWZLwREBXEHNJ7HWDrT8w7tv5KAgLrHTo5crw5nAUuet4DC5tFpzh7uZTqixq2MkaK1N2"
+      "2kpLUEC8B8wWhgzkQPVfWZLwREBXEHNJ7HWDrT8w7tv5KAgLrHTo5crw5nAUuet4DC5tFpzh7uZTqixq2MkaK1N2",
+      "4BvEbELDqsytTwU3ieBXi1gN8fESpzHvAG1rVrHM8eunK6XYcb6ZRH4zWSArNcXTPXKvf6A9cNRWVaSS7P2JDJ83"
     ],
     "executedAt": "2026-07-30T12:47:00.000Z",
-    "lastVerifiedAt": "2026-07-30T13:02:02.684Z"
+    "lastVerifiedAt": "2026-08-12T08:05:10.440Z"
   },
   "devnet_nodes": {
     "note": "Persistent identities for the docker-compose devnet cluster, living at /data/wallet.json inside each node's volume. Before 2026-07-30 no such file existed, so openfiat-node's load_or_generate_wallet fell through to Wallet::generate() and every node minted a FRESH identity on each boot. That made staking a node impossible in practice: the stake would be stranded against a pubkey that ceased to exist at the next restart. Do not delete these volumes without first unstaking, and keep the keypairs backed up outside the volumes -- node0's key is the only thing that can move its stake.",

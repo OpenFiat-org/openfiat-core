@@ -8,10 +8,12 @@
  * and OPEN. The first three it can *mint* — it holds their mint authority.
  * OPEN it cannot: the OPEN mint's authority is permanently unset (verified
  * below at runtime, not assumed), so the total supply is fixed forever and the
- * only OPEN that can still move on devnet is the 200,000,000 sitting in the
+ * only OPEN that can still move on devnet is the ~20,000,000,000 sitting in the
  * Community Presale bucket. The presale program's only exit from that bucket
  * is `claim`, and `claim` only pays out to a wallet that actually contributed
- * to a sale which actually reached `Finalized`.
+ * to a sale which actually reached `Finalized`. That the bucket's owner really
+ * is the program's `presale_vault` PDA — and so that no key can move it
+ * directly — is checked at Step 0 rather than believed.
  *
  * So there is no shortcut here and this script does not attempt one: for each
  * draw it opens a real sale at a fresh nonce, mints itself test-USDC,
@@ -21,7 +23,7 @@
  *
  * This is devnet faucet tooling. It is NOT a tokenomics event: the OPEN moved
  * here is not sold, not allocated, and not owed to anyone. Anyone auditing the
- * presale bucket later and finding a 10,000,000 OPEN outflow should read the
+ * presale bucket later and finding a 600,000,000 OPEN outflow should read the
  * `faucet_open_draw` record this script writes into devnet-addresses.json.
  *
  * IDEMPOTENT. Every step of every draw checks on-chain state first and skips
@@ -54,11 +56,16 @@ import {
 import * as anchor from "@anchor-lang/core";
 import { BN } from "@anchor-lang/core";
 
+/* Both ids are the re-baseline deployment's (2026-08-09), not the originals.
+   The governance id is not free to choose: `contribute_usdc` derives its
+   `ban_record` under `openfiat_programs_shared::GOVERNANCE_PROGRAM_ID`, which
+   is compiled into the deployed presale binary, so this must be the id that
+   binary was built against or every contribution fails on `ConstraintSeeds`. */
 const PRESALE_PROGRAM_ID = new PublicKey(
-  "75rJ9MRAaSnAc8tg4AfeTFVDCVrN6jdD5CqeyE4UoUw7",
+  "7KaEpDzZuqye1xqqp3RnvBJXnDxbU3W9zVrUr5vBS2fU",
 );
 const GOVERNANCE_PROGRAM_ID = new PublicKey(
-  "AVJfKUjHsizkGGUy8sdz4Xma2hVgmgvgg8GmUMs8E4eE",
+  "2k71DBDoxM4SUFYGbyMXFiTSUynPuY2CqFUsx3FuarXF",
 );
 const JUPITER_V6_PROGRAM_ID = new PublicKey(
   "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
@@ -83,15 +90,24 @@ const FAUCET_AUTHORITY = new PublicKey(
  *
  * Nonce 0 is a stale sale against the pre-correction mint. Nonce 1 is the live,
  * tester-facing presale and MUST be left alone: it has to stay `Active` until
- * its 2026-08-26 close, and this script calls `finalize_sale`, which is
+ * its 2026-09-09 close, and this script calls `finalize_sale`, which is
  * irreversible. Finalizing nonce 1 to claim from it would end the presale for
  * every future tester. Hence fresh nonces, and `PROTECTED_SALE_NONCES` below,
  * which makes pointing this script at nonce 1 impossible rather than merely
  * inadvisable.
+ *
+ * RESET 2026-08-12 for the re-baseline. The previous entries (nonce 2 for
+ * 1,000,000 OPEN and nonce 3 for 9,000,000) were draws against the RETIRED
+ * deployment — presale program 75rJ9…, the 9-decimal mint 29w8Tro…, and a
+ * different `presale_vault` PDA. They are not history this list can carry
+ * forward: nonces are per-program, so leaving them here would not describe
+ * past outflows, it would instruct this script to open two brand-new sales on
+ * 7KaEp… and draw 10,000,000 OPEN nobody asked for. The old draws remain
+ * reconstructable from the retired program's own chain history and from the
+ * `faucet_open_draw` record in devnet-addresses.json.
  */
 const DRAWS: { nonce: number; openAmount: number }[] = [
-  { nonce: 2, openAmount: 1_000_000 },
-  { nonce: 3, openAmount: 9_000_000 },
+  { nonce: 2, openAmount: 600_000_000 },
 ];
 
 /** Sales that exist for reasons other than faucet tooling, and that this
@@ -99,22 +115,49 @@ const DRAWS: { nonce: number; openAmount: number }[] = [
 const PROTECTED_SALE_NONCES = [0, 1];
 
 /** The entire Community Presale bucket, in OPEN. A hard cap above this would
- *  let a sale promise entitlements the vault cannot pay. */
-const PRESALE_BUCKET_OPEN = 200_000_000;
+ *  let a sale promise entitlements the vault cannot pay. 20,000,000,000 under
+ *  the re-baselined 100B supply, up from 200,000,000 under the old 1B. */
+const PRESALE_BUCKET_OPEN = 20_000_000_000;
 
 /**
- * Total OPEN to deliver to the faucet across all draws. 1 OPEN = 1 USDC, so
- * this is also the total USDC contribution required to earn it.
+ * Total OPEN to deliver to the faucet across all draws.
  *
- * 10,000,000 is 833 grants at the faucet's 12,000 OPEN drip. It leaves
- * 190,000,000 in the bucket, and it is not an irreversible commitment: the
+ * 600,000,000 is 599 grants at the faucet's 1,000,500 OPEN drip. It leaves
+ * ~19.4B in the bucket, and it is not an irreversible commitment: the
  * `presale_vault` PDA is a singleton shared by every sale, so a later top-up is
  * always one more cycle away.
  */
 const TOTAL_TARGET_OPEN = DRAWS.reduce((sum, d) => sum + d.openAmount, 0);
 
 const USDC_DECIMALS = 6;
-const OPEN_DECIMALS = 9;
+/* 6, not 9 — the re-genesis mint. Step 0 asserts this against the chain, so a
+   stale value here stops the script rather than mis-sizing a draw. */
+const OPEN_DECIMALS = 6;
+
+/**
+ * OPEN credited per USDC. NOT 1:1 any more, which is the trap in this file:
+ * the previous version set every cap and contribution to `usdcUnits(openAmount)`
+ * on the assumption that a wallet contributing N USDC receives N OPEN. Under
+ * the re-baselined rate a contribution of N USDC receives 100N OPEN, so that
+ * arithmetic would size a sale to draw one hundred times the intended amount —
+ * and it would succeed, because the bucket is large enough to pay it.
+ *
+ * Must match the `openPerUsdc` the sale is initialized with; `saleParams`
+ * passes this same constant, so the two cannot drift.
+ */
+const OPEN_PER_USDC = 100;
+
+/** USDC needed to earn `openAmount` OPEN at the configured rate. Exact by
+ *  construction: every draw is a whole multiple of OPEN_PER_USDC. */
+function usdcFor(openAmount: number): number {
+  if (openAmount % OPEN_PER_USDC !== 0) {
+    throw new Error(
+      `draw of ${openAmount} OPEN is not a whole multiple of the ${OPEN_PER_USDC} ` +
+        "OPEN-per-USDC rate, so it cannot be bought exactly",
+    );
+  }
+  return openAmount / OPEN_PER_USDC;
+}
 
 /**
  * Sale window, in seconds either side of the *chain's* clock (never the local
@@ -146,6 +189,9 @@ interface SaleConfigAccount {
   maxContribution: BN;
   totalRaised: BN;
   endTime: BN;
+  /** Optional because a sale predating the re-baseline has no such field;
+   *  the rate check treats its absence as a mismatch rather than assuming. */
+  openPerUsdc?: BN;
 }
 interface ContributionAccount {
   amountUsdc: BN;
@@ -279,11 +325,12 @@ async function loadIdl(provider: anchor.AnchorProvider): Promise<anchor.Idl> {
  */
 function saleParams(chainNow: number, openAmount: number) {
   return {
-    hardCap: usdcUnits(openAmount),
+    hardCap: usdcUnits(usdcFor(openAmount)),
     softCap: 0n,
     minContribution: usdcUnits(1),
-    maxContribution: usdcUnits(openAmount),
+    maxContribution: usdcUnits(usdcFor(openAmount)),
     maxSlippageBps: 100,
+    openPerUsdc: OPEN_PER_USDC,
     startTime: chainNow - WINDOW_BACKDATE_SECS,
     endTime: chainNow + WINDOW_LENGTH_SECS,
   };
@@ -354,6 +401,11 @@ async function runDrawCycle(
         minContribution: bn(p.minContribution),
         maxContribution: bn(p.maxContribution),
         maxSlippageBps: p.maxSlippageBps,
+        /* Omitting this does not fail to compile and does not fail to encode —
+           Anchor serializes the absent u64 as zero, and the only thing that
+           catches it is the program's own `open_per_usdc > 0` check. Every
+           field of `saleParams` has to be spelled out here. */
+        openPerUsdc: new BN(p.openPerUsdc),
         startTime: new BN(p.startTime),
         endTime: new BN(p.endTime),
         stablecoinWhitelist: [],
@@ -384,13 +436,24 @@ async function runDrawCycle(
 
   // A pre-existing sale at this nonce may have terms that cannot deliver this
   // draw. Refuse rather than contribute into a dead end.
-  if (BigInt(sale.softCap.toString()) > usdcUnits(openAmount)) {
+  if (BigInt(sale.softCap.toString()) > usdcUnits(usdcFor(openAmount))) {
     throw new Error(
       `sale nonce ${nonce} has softCap ${whole(BigInt(sale.softCap.toString()), USDC_DECIMALS)} ` +
-        `USDC, above the ${openAmount} contribution — it would resolve SoftCapMissed and never permit claim`,
+        `USDC, above the ${usdcFor(openAmount)} USDC contribution — it would resolve ` +
+        "SoftCapMissed and never permit claim",
     );
   }
-  if (BigInt(sale.maxContribution.toString()) < usdcUnits(openAmount)) {
+  /* A pre-existing sale's rate matters as much as its caps: the contribution
+     below is sized from OPEN_PER_USDC, so a sale initialized at a different
+     rate would under- or over-deliver against this draw. */
+  const saleRate = BigInt(sale.openPerUsdc?.toString() ?? "0");
+  if (saleRate !== BigInt(OPEN_PER_USDC)) {
+    throw new Error(
+      `sale nonce ${nonce} credits ${saleRate} OPEN per USDC, not the ${OPEN_PER_USDC} ` +
+        "this draw is sized for — use a fresh nonce rather than contributing into it",
+    );
+  }
+  if (BigInt(sale.maxContribution.toString()) < usdcUnits(usdcFor(openAmount))) {
     throw new Error(
       `sale nonce ${nonce} caps a wallet at ` +
         `${whole(BigInt(sale.maxContribution.toString()), USDC_DECIMALS)} USDC, below this draw`,
@@ -409,7 +472,7 @@ async function runDrawCycle(
   const alreadyContributed = contributionInfo
     ? BigInt((await accounts.contribution.fetch(contributionPda)).amountUsdc.toString())
     : 0n;
-  const stillToContribute = usdcUnits(openAmount) - alreadyContributed;
+  const stillToContribute = usdcUnits(usdcFor(openAmount)) - alreadyContributed;
 
   if (stillToContribute <= 0n) {
     console.log(`already contributed ${whole(alreadyContributed, USDC_DECIMALS)} USDC — skipping`);
