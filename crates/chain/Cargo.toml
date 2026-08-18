@@ -24,7 +24,7 @@ openfiat-storage = { path = "../storage", version = "0.1.0" }
 openfiat-serialization = { path = "../serialization", version = "0.1.0" }
 serde = { version = "1.0.229", features = ["derive"] }
 solana-client = "3"
-solana-transaction = "3"
+solana-transaction = "4"
 solana-hash = "3"
 solana-signature = "3"
 solana-commitment-config = "3"
