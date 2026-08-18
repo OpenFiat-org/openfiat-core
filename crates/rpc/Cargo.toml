@@ -51,7 +51,7 @@ tower_governor = { version = "0.8", default-features = false, features = ["axum"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
 tracing = "0.1.44"
 libp2p-stream = "0.4.0-alpha"
-libp2p-identity = "0.2"
+libp2p-identity = "0.3"
 openfiat-discovery = { version = "0.1.0", path = "../discovery" }
 bs58 = "0.5"
 

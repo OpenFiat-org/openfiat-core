@@ -2476,7 +2476,7 @@ dependencies = [
  "libp2p-core",
  "libp2p-dns",
  "libp2p-identify",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-kad",
  "libp2p-mdns",
  "libp2p-metrics",
@@ -2501,7 +2501,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d16ccf824ee859ca83df301e1c0205270206223fd4b1f2e512a693e1912a8f4a"
 dependencies = [
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-swarm",
 ]
 
@@ -2512,7 +2512,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a18b8b607cf3bfa2f8c57db9c7d8569a315d5cc0a282e6bfd5ebfc0a9840b2a0"
 dependencies = [
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-swarm",
 ]
 
@@ -2526,7 +2526,7 @@ dependencies = [
  "fnv",
  "futures",
  "futures-timer",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "multiaddr",
  "multihash",
  "multistream-select",
@@ -2551,7 +2551,7 @@ dependencies = [
  "futures",
  "hickory-resolver",
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "parking_lot",
  "smallvec",
  "tracing",
@@ -2569,7 +2569,7 @@ dependencies = [
  "futures-bounded",
  "futures-timer",
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-swarm",
  "quick-protobuf",
  "quick-protobuf-codec",
@@ -2597,6 +2597,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "libp2p-identity"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d77f16caa4f4d2667a1fad5bb1a3a4a4556967c1bff93525ebb2975847fa3de"
+dependencies = [
+ "tracing",
+]
+
+[[package]]
 name = "libp2p-kad"
 version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2610,7 +2619,7 @@ dependencies = [
  "futures-bounded",
  "futures-timer",
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-swarm",
  "quick-protobuf",
  "quick-protobuf-codec",
@@ -2633,7 +2642,7 @@ dependencies = [
  "hickory-proto",
  "if-watch",
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-swarm",
  "rand 0.8.7",
  "smallvec",
@@ -2651,7 +2660,7 @@ dependencies = [
  "futures",
  "libp2p-core",
  "libp2p-identify",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-kad",
  "libp2p-ping",
  "libp2p-swarm",
@@ -2670,7 +2679,7 @@ dependencies = [
  "bytes",
  "futures",
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "multiaddr",
  "multihash",
  "quick-protobuf",
@@ -2692,7 +2701,7 @@ dependencies = [
  "futures",
  "futures-timer",
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-swarm",
  "rand 0.8.7",
  "tracing",
@@ -2709,7 +2718,7 @@ dependencies = [
  "futures-timer",
  "if-watch",
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-tls",
  "quinn",
  "quinn-proto",
@@ -2732,7 +2741,7 @@ dependencies = [
  "futures",
  "futures-bounded",
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-swarm",
  "rand 0.8.7",
  "smallvec",
@@ -2747,7 +2756,7 @@ checksum = "1d6bd8025c80205ec2810cfb28b02f362ab48a01bee32c50ab5f12761e033464"
 dependencies = [
  "futures",
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-swarm",
  "rand 0.8.7",
  "tracing",
@@ -2765,7 +2774,7 @@ dependencies = [
  "futures-timer",
  "hashlink",
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "libp2p-swarm-derive",
  "multistream-select",
  "rand 0.8.7",
@@ -2811,7 +2820,7 @@ dependencies = [
  "futures",
  "futures-rustls",
  "libp2p-core",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "rcgen",
  "ring",
  "rustls",
@@ -3032,7 +3041,7 @@ dependencies = [
  "arrayref",
  "byteorder",
  "data-encoding",
- "libp2p-identity",
+ "libp2p-identity 0.2.14",
  "multibase",
  "multihash",
  "percent-encoding",
@@ -3482,7 +3491,7 @@ dependencies = [
  "async-trait",
  "futures",
  "libp2p",
- "libp2p-identity",
+ "libp2p-identity 0.3.0",
  "libp2p-stream",
  "libp2p-swarm",
  "openfiat-crypto",
@@ -3772,7 +3781,7 @@ dependencies = [
  "bs58",
  "futures-util",
  "http-body-util",
- "libp2p-identity",
+ "libp2p-identity 0.3.0",
  "libp2p-stream",
  "openfiat-advertisements",
  "openfiat-chain",
