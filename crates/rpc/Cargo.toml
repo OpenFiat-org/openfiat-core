@@ -40,7 +40,7 @@ base64 = "0.22"
 axum = { version = "0.8.9", features = ["ws"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 # Per-IP token-bucket (GCRA) rate limiting on /rpc and /ws (F-02 task 2).
 # `default-features = false` + only the `axum` feature keeps this out of
 # the `tonic`/gRPC dependency chain the crate's default features pull in,
